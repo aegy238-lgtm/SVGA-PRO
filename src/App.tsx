@@ -215,9 +215,12 @@ export default function App() {
 
 
 
-  // Toggle Admin Attribute and Style on Body for Unrestricted Text Selection and Context Menu
+  const isSecurityEnforced =
+    !isAdminUser || adminPreviewRole === 'free_user' || adminPreviewRole === 'pro_user';
+
+  // Toggle Admin Attribute and Style on Body for Unrestricted Text Selection vs Enforced Protection
   useEffect(() => {
-    if (isAdminUser) {
+    if (!isSecurityEnforced) {
       document.body.setAttribute('data-role', 'admin');
       document.body.classList.add('is-admin');
       document.body.style.userSelect = 'text';
@@ -228,14 +231,22 @@ export default function App() {
       document.body.style.userSelect = 'none';
       document.body.style.webkitUserSelect = 'none';
     }
-  }, [isAdminUser]);
+  }, [isSecurityEnforced]);
 
   // Programmatic Security, Anti-Inspection & Anti-Screenshot Protection
   useEffect(() => {
-    // If user is Admin, completely allow right click, copying, text selection, devtools, and shortcuts!
-    if (isAdminUser) {
+    if (!isSecurityEnforced) {
       return;
     }
+
+    const triggerShield = () => {
+      setScreenShieldActive(true);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          navigator.clipboard.writeText('');
+        } catch {}
+      }
+    };
 
     const handleContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -247,41 +258,38 @@ export default function App() {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Devtools shortcuts
+      // Devtools shortcuts (F12, Ctrl+Shift+I/J/C, Ctrl+U)
       if (
         e.key === 'F12' ||
+        e.keyCode === 123 ||
         ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
-        ((e.ctrlKey || e.metaKey) && ['u', 'U', 's', 'S'].includes(e.key))
+        ((e.ctrlKey || e.metaKey) && ['u', 'U', 's', 'S', 'p', 'P'].includes(e.key))
       ) {
         e.preventDefault();
         e.stopPropagation();
+        triggerShield();
         return false;
       }
 
-      // PrintScreen & Screenshot / Recording shortcuts
+      // PrintScreen & Screenshot / Recording shortcuts (Win+Shift+S, Cmd+Shift+3/4/5)
       if (
         e.key === 'PrintScreen' ||
         e.code === 'PrintScreen' ||
+        e.keyCode === 44 ||
         ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'S'].includes(e.key))
       ) {
         e.preventDefault();
         e.stopPropagation();
-        setScreenShieldActive(true);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('');
-        }
+        triggerShield();
         return false;
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'PrintScreen' || e.code === 'PrintScreen') {
+      if (e.key === 'PrintScreen' || e.code === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
         e.stopPropagation();
-        setScreenShieldActive(true);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('');
-        }
+        triggerShield();
       }
     };
 
@@ -298,22 +306,33 @@ export default function App() {
       }
     };
 
+    const handleCopy = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      e.preventDefault();
+      triggerShield();
+    };
+
     window.addEventListener('contextmenu', handleContextMenu, { capture: true });
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('dragstart', handleDragStart, { capture: true });
+    window.addEventListener('copy', handleCopy, { capture: true });
 
     return () => {
       window.removeEventListener('contextmenu', handleContextMenu, { capture: true });
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
       window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('dragstart', handleDragStart, { capture: true });
+      window.removeEventListener('copy', handleCopy, { capture: true });
     };
-  }, [isAdminUser]);
+  }, [isSecurityEnforced]);
 
   // Anti-Screen-Recording Interception (Media Capture API override)
   useEffect(() => {
-    if (isAdminUser) return;
+    if (!isSecurityEnforced) return;
 
     if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
       const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(
@@ -328,7 +347,7 @@ export default function App() {
         navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
       };
     }
-  }, [isAdminUser]);
+  }, [isSecurityEnforced]);
 
   useEffect(() => {
     initMotionToolsFixed();
@@ -552,6 +571,32 @@ export default function App() {
             >
               <span>⚙️</span>
               <span>{t.navAdminDashboard}</span>
+            </button>
+          )}
+
+          {/* Test Shield Button for Admin */}
+          {currentUser?.role === 'admin' && (
+            <button
+              type="button"
+              id="testShieldBtn"
+              onClick={() => setScreenShieldActive(true)}
+              style={{
+                padding: '4px 10px',
+                borderRadius: '99px',
+                border: '1px solid rgba(239, 68, 68, 0.6)',
+                background: 'rgba(239, 68, 68, 0.18)',
+                color: '#fca5a5',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title={isAr ? 'تجربة إيقاف ومعاينة درع منع تسجيل الشاشة' : 'Test Anti-Screen Recording Shield'}
+            >
+              <span>🛡️</span>
+              <span>{isAr ? 'اختبار درع الحماية' : 'Test Shield'}</span>
             </button>
           )}
 
