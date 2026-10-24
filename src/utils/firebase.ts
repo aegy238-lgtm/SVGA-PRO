@@ -1,0 +1,308 @@
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
+import {
+  getFirestore,
+  Firestore,
+  doc,
+  getDoc,
+  setDoc,
+  onSnapshot,
+  collection,
+  getDocs,
+  enableIndexedDbPersistence,
+} from 'firebase/firestore';
+import { getAuth, Auth } from 'firebase/auth';
+import type { PlatformSettings, UserAccount, BroadcastNotification } from './platformStore';
+
+export const firebaseConfig = {
+  apiKey: "AIzaSyAVWL1Ba0RjwAv6aNKRIQDoSfhrTJE4amA",
+  authDomain: "bbbbbbbb-4e020.firebaseapp.com",
+  projectId: "bbbbbbbb-4e020",
+  storageBucket: "bbbbbbbb-4e020.firebasestorage.app",
+  messagingSenderId: "964224897996",
+  appId: "1:964224897996:web:7a7321877b3860c53e4369"
+};
+
+export interface FirebaseConnectionStatus {
+  isConfigured: boolean;
+  isConnected: boolean;
+  isTesting: boolean;
+  projectId: string;
+  latencyMs?: number;
+  lastCheckedAt?: string;
+  message?: string;
+  serverTimestamp?: string;
+  error?: string;
+}
+
+let app: FirebaseApp | null = null;
+let db: Firestore | null = null;
+let auth: Auth | null = null;
+
+let currentStatus: FirebaseConnectionStatus = {
+  isConfigured: true,
+  isConnected: false,
+  isTesting: false,
+  projectId: firebaseConfig.projectId,
+  message: 'جاري تهيئة الاتصال...',
+};
+
+if (typeof window !== 'undefined') {
+  (window as any).__firebaseConfig = firebaseConfig;
+  (window as any).__testFirebase = testFirebaseConnection;
+  (window as any).__currentFirebaseStatus = () => currentStatus;
+}
+
+const listeners = new Set<(status: FirebaseConnectionStatus) => void>();
+
+export function subscribeToFirebaseStatus(callback: (status: FirebaseConnectionStatus) => void): () => void {
+  listeners.add(callback);
+  callback({ ...currentStatus });
+  return () => {
+    listeners.delete(callback);
+  };
+}
+
+function updateStatus(updates: Partial<FirebaseConnectionStatus>) {
+  currentStatus = { ...currentStatus, ...updates };
+  listeners.forEach((cb) => {
+    try {
+      cb({ ...currentStatus });
+    } catch (e) {
+      console.error('Error notifying status listener:', e);
+    }
+  });
+}
+
+export function initFirebase(): { app: FirebaseApp; db: Firestore; auth: Auth } {
+  if (!app) {
+    if (!getApps().length) {
+      app = initializeApp(firebaseConfig);
+    } else {
+      app = getApp();
+    }
+    db = getFirestore(app);
+    auth = getAuth(app);
+  }
+  return { app, db: db!, auth: auth! };
+}
+
+export function getFirebaseDb(): Firestore {
+  if (!db) {
+    initFirebase();
+  }
+  return db!;
+}
+
+export function getFirebaseAuth(): Auth {
+  if (!auth) {
+    initFirebase();
+  }
+  return auth!;
+}
+
+/**
+ * Tests live connection to Firebase project bbbbbbbb-4e020
+ */
+export async function testFirebaseConnection(force = false): Promise<FirebaseConnectionStatus> {
+  if (currentStatus.isTesting && !force) {
+    return currentStatus;
+  }
+  updateStatus({ isTesting: true });
+  const start = performance.now();
+
+  try {
+    initFirebase();
+
+    // 1. Fast verification with Google Firebase Auth / Identity Toolkit endpoint
+    let isApiLive = false;
+    try {
+      const res = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${firebaseConfig.apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ continueUri: 'http://localhost' }),
+        }
+      );
+      // HTTP 200 or 400 (MISSING_IDENTIFIER) confirms the API key belongs to an active Google Cloud / Firebase project
+      if (res.status === 200 || res.status === 400) {
+        isApiLive = true;
+      }
+    } catch {
+      // network fallback
+    }
+
+    const latency = Math.round(performance.now() - start);
+
+    if (isApiLive) {
+      const result: FirebaseConnectionStatus = {
+        isConfigured: true,
+        isConnected: true,
+        isTesting: false,
+        projectId: firebaseConfig.projectId,
+        latencyMs: latency,
+        lastCheckedAt: new Date().toISOString(),
+        message: `تم التحقق بنجاح: مشروع Firebase (${firebaseConfig.projectId}) متصل وشغال تماماً (زمن الاستجابة: ${latency}ms)`,
+      };
+      updateStatus(result);
+      return result;
+    }
+
+    // 2. Fallback: Check Firestore getDoc with 2s timeout
+    try {
+      const pingDocRef = doc(getFirebaseDb(), '_connection_test', 'ping');
+      const firestoreTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('firestore-timeout')), 2000)
+      );
+      await Promise.race([getDoc(pingDocRef), firestoreTimeout]);
+    } catch (fsErr: any) {
+      if (
+        fsErr?.code === 'permission-denied' ||
+        fsErr?.message?.includes('insufficient permissions') ||
+        fsErr?.code === 'not-found'
+      ) {
+        const fsLatency = Math.round(performance.now() - start);
+        const result: FirebaseConnectionStatus = {
+          isConfigured: true,
+          isConnected: true,
+          isTesting: false,
+          projectId: firebaseConfig.projectId,
+          latencyMs: fsLatency,
+          lastCheckedAt: new Date().toISOString(),
+          message: `تم التحقق بنجاح: قاعدة بيانات Firebase (${firebaseConfig.projectId}) متصلة بنجاح.`,
+        };
+        updateStatus(result);
+        return result;
+      }
+    }
+
+    const result: FirebaseConnectionStatus = {
+      isConfigured: true,
+      isConnected: false,
+      isTesting: false,
+      projectId: firebaseConfig.projectId,
+      latencyMs: latency,
+      lastCheckedAt: new Date().toISOString(),
+      error: 'تعذر الوصول إلى خوادم Firebase',
+      message: 'تنبيه: يرجى التحقق من اتصال الإنترنت أو إعدادات المشروع في Firebase Console.',
+    };
+    updateStatus(result);
+    return result;
+  } catch (err: any) {
+    const latency = Math.round(performance.now() - start);
+    const result: FirebaseConnectionStatus = {
+      isConfigured: true,
+      isConnected: false,
+      isTesting: false,
+      projectId: firebaseConfig.projectId,
+      latencyMs: latency,
+      lastCheckedAt: new Date().toISOString(),
+      error: err?.message || 'تعذر الاتصال بـ Firebase',
+      message: `تنبيه الاتصال: ${err?.message || 'تحقق من اتصال الإنترنت'}`,
+    };
+    updateStatus(result);
+    return result;
+  }
+}
+
+/**
+ * Sync platform settings to Firestore
+ */
+export async function syncSettingsToFirestore(settings: PlatformSettings): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    const docRef = doc(db, 'platform_settings', 'config');
+    await setDoc(docRef, {
+      ...settings,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    return true;
+  } catch (err) {
+    console.warn('Firestore syncSettings notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Sync accounts to Firestore
+ */
+export async function syncUsersToFirestore(users: UserAccount[]): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    for (const u of users) {
+      const uRef = doc(db, 'users', u.id);
+      await setDoc(uRef, { ...u, updatedAt: new Date().toISOString() }, { merge: true });
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firestore syncUsers notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Sync notifications to Firestore
+ */
+export async function syncNotificationsToFirestore(notifications: BroadcastNotification[]): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    for (const n of notifications) {
+      const nRef = doc(db, 'broadcast_notifications', n.id);
+      await setDoc(nRef, { ...n, updatedAt: new Date().toISOString() }, { merge: true });
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firestore syncNotifications notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Full sync helper for Admin
+ */
+export async function syncAllToFirebase(data: {
+  settings: PlatformSettings;
+  users: UserAccount[];
+  notifications: BroadcastNotification[];
+}): Promise<{ success: boolean; message: string }> {
+  try {
+    const { db } = initFirebase();
+    // 1. Settings
+    await setDoc(doc(db, 'platform_settings', 'config'), {
+      ...data.settings,
+      syncedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    // 2. Users
+    for (const u of data.users) {
+      await setDoc(doc(db, 'users', u.id), {
+        ...u,
+        syncedAt: new Date().toISOString(),
+      }, { merge: true });
+    }
+
+    // 3. Notifications
+    for (const n of data.notifications) {
+      await setDoc(doc(db, 'broadcast_notifications', n.id), {
+        ...n,
+        syncedAt: new Date().toISOString(),
+      }, { merge: true });
+    }
+
+    updateStatus({
+      isConnected: true,
+      lastCheckedAt: new Date().toISOString(),
+      message: 'تمت مزامنة جميع الإعدادات والحسابات والإشعارات مع قاعدة بيانات Firebase بنجاح!',
+    });
+
+    return {
+      success: true,
+      message: 'تمت المزامنة وحفظ البيانات في Firebase بنجاح.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `خطأ أثناء المزامنة: ${err?.message || 'تحقق من قواعد الأمان وقاعدة البيانات'}`,
+    };
+  }
+}

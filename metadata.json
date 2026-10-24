@@ -1,0 +1,8 @@
+{
+  "name": "MotionTools",
+  "description": "Browser-native motion graphics studio for previewing, editing, compressing, and converting SVGA, Lottie, DotLottie, VAP, YYEVA, PAG, GIF, WebP, APNG, MP4, MOV, and PNG sequences.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
