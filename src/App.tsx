@@ -574,32 +574,6 @@ export default function App() {
             </button>
           )}
 
-          {/* Test Shield Button for Admin */}
-          {currentUser?.role === 'admin' && (
-            <button
-              type="button"
-              id="testShieldBtn"
-              onClick={() => setScreenShieldActive(true)}
-              style={{
-                padding: '4px 10px',
-                borderRadius: '99px',
-                border: '1px solid rgba(239, 68, 68, 0.6)',
-                background: 'rgba(239, 68, 68, 0.18)',
-                color: '#fca5a5',
-                fontSize: '11px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-              title={isAr ? 'تجربة إيقاف ومعاينة درع منع تسجيل الشاشة' : 'Test Anti-Screen Recording Shield'}
-            >
-              <span>🛡️</span>
-              <span>{isAr ? 'اختبار درع الحماية' : 'Test Shield'}</span>
-            </button>
-          )}
-
           {/* WhatsApp Header Link */}
           {whatsappUrl && (
             <a
@@ -1195,7 +1169,7 @@ export default function App() {
       />
 
       {/* Screen Security & Anti-Recording Shield Overlay */}
-      {screenShieldActive && (
+      {screenShieldActive && isSecurityEnforced && (
         <div
           id="screenSecurityShield"
           role="alertdialog"
