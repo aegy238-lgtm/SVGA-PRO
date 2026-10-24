@@ -43,6 +43,14 @@ export default function App() {
   const [watermarkText, setWatermarkText] = useState('');
 
   const [platformState, setPlatformState] = useState<PlatformState>(() => loadPlatformState());
+  const { settings, users, currentUserId, notifications, readNotificationIds, adminPreviewRole } =
+    platformState;
+  const currentUser = users.find((u) => u.id === currentUserId) || null;
+  const isAdminUser =
+    currentUser?.role === 'admin' ||
+    currentUser?.email === 'aegy238@gmail.com' ||
+    currentUser?.email === 'admin@motiontools.com';
+
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
     'users' | 'pro' | 'branding' | 'notifications' | 'firebase'
@@ -58,6 +66,7 @@ export default function App() {
   const [proModalOpen, setProModalOpen] = useState(false);
   const [blockedFormatKey, setBlockedFormatKey] = useState('svga');
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [screenShieldActive, setScreenShieldActive] = useState(false);
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
@@ -172,8 +181,30 @@ export default function App() {
     };
   }, []);
 
-  // Programmatic Security & Anti-Inspection Protection
+
+
+  // Toggle Admin Attribute and Style on Body for Unrestricted Text Selection and Context Menu
   useEffect(() => {
+    if (isAdminUser) {
+      document.body.setAttribute('data-role', 'admin');
+      document.body.classList.add('is-admin');
+      document.body.style.userSelect = 'text';
+      document.body.style.webkitUserSelect = 'text';
+    } else {
+      document.body.removeAttribute('data-role');
+      document.body.classList.remove('is-admin');
+      document.body.style.userSelect = 'none';
+      document.body.style.webkitUserSelect = 'none';
+    }
+  }, [isAdminUser]);
+
+  // Programmatic Security, Anti-Inspection & Anti-Screenshot Protection
+  useEffect(() => {
+    // If user is Admin, completely allow right click, copying, text selection, devtools, and shortcuts!
+    if (isAdminUser) {
+      return;
+    }
+
     const handleContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
@@ -184,6 +215,7 @@ export default function App() {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Devtools shortcuts
       if (
         e.key === 'F12' ||
         ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
@@ -192,6 +224,32 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         return false;
+      }
+
+      // PrintScreen & Screenshot / Recording shortcuts
+      if (
+        e.key === 'PrintScreen' ||
+        e.code === 'PrintScreen' ||
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'S'].includes(e.key))
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        setScreenShieldActive(true);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText('');
+        }
+        return false;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'PrintScreen' || e.code === 'PrintScreen') {
+        e.preventDefault();
+        e.stopPropagation();
+        setScreenShieldActive(true);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText('');
+        }
       }
     };
 
@@ -210,14 +268,35 @@ export default function App() {
 
     window.addEventListener('contextmenu', handleContextMenu, { capture: true });
     window.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('dragstart', handleDragStart, { capture: true });
 
     return () => {
       window.removeEventListener('contextmenu', handleContextMenu, { capture: true });
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('dragstart', handleDragStart, { capture: true });
     };
-  }, []);
+  }, [isAdminUser]);
+
+  // Anti-Screen-Recording Interception (Media Capture API override)
+  useEffect(() => {
+    if (isAdminUser) return;
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+      const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(
+        navigator.mediaDevices
+      );
+      navigator.mediaDevices.getDisplayMedia = async (options) => {
+        setScreenShieldActive(true);
+        throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة لضمان حماية حقوق الملكية.');
+      };
+
+      return () => {
+        navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
+      };
+    }
+  }, [isAdminUser]);
 
   useEffect(() => {
     initMotionToolsFixed();
@@ -325,10 +404,7 @@ export default function App() {
 
   const isAr = platformState.language === 'ar';
   const t = getTranslation(platformState.language);
-  const { settings, users, currentUserId, notifications, readNotificationIds, adminPreviewRole } =
-    platformState;
 
-  const currentUser = users.find((u) => u.id === currentUserId) || null;
   const effectiveIsPro =
     adminPreviewRole === 'free_user'
       ? false
@@ -998,6 +1074,77 @@ export default function App() {
           updatePlatformState((prev) => ({ ...prev, adminPreviewRole: role }))
         }
       />
+
+      {/* Screen Security & Anti-Recording Shield Overlay */}
+      {screenShieldActive && !isAdminUser && (
+        <div
+          id="screenSecurityShield"
+          role="alertdialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 999999,
+            background: '#040407',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            textAlign: 'center',
+            color: '#fff',
+            backdropFilter: 'blur(20px)',
+          }}
+        >
+          <div
+            style={{
+              width: '84px',
+              height: '84px',
+              borderRadius: '50%',
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '2px solid #ef4444',
+              display: 'grid',
+              placeItems: 'center',
+              fontSize: '38px',
+              marginBottom: '20px',
+              boxShadow: '0 0 50px rgba(239, 68, 68, 0.4)',
+            }}
+          >
+            🚫
+          </div>
+          <h2 style={{ fontSize: '22px', fontWeight: 800, color: '#fca5a5', margin: '0 0 10px' }}>
+            تنبيه أمني: محاولة تصوير / تسجيل الشاشة!
+          </h2>
+          <p
+            style={{
+              maxWidth: '520px',
+              fontSize: '14px',
+              color: '#cbd5e1',
+              lineHeight: 1.6,
+              margin: '0 0 24px',
+            }}
+          >
+            يمنع منعاً باتاً التقاط صور الشاشة (Screenshots) أو تسجيل مقاطع الفيديو لمحتوى المنصة لحماية حقوق الملكية والبيانات. تم إيقاف الرؤية لحماية محتوى الموقع.
+          </p>
+          <button
+            type="button"
+            onClick={() => setScreenShieldActive(false)}
+            style={{
+              padding: '12px 28px',
+              borderRadius: '10px',
+              background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+              border: 0,
+              color: '#fff',
+              fontWeight: 800,
+              fontSize: '14px',
+              cursor: 'pointer',
+              boxShadow: '0 6px 20px rgba(239, 68, 68, 0.4)',
+            }}
+          >
+            إغلاق التنبيه والعودة للموقع
+          </button>
+        </div>
+      )}
 
       <div id="toast" role="status"></div>
     </>

@@ -6,6 +6,20 @@ box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:en
 :root[data-theme="dark"]{--bg:#07070a}
 *{box-sizing:inherit}html,body{height:100%;margin:0}#root{height:100%;margin:0;display:flex;flex-direction:column}
 body{background:var(--bg);color:var(--tx);font:13px/1.4 Inter,"Cairo","Segoe UI",system-ui,sans-serif;overflow:hidden;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+/* Admin Unrestricted Copying & Mouse Selection */
+body[data-role="admin"],
+body[data-role="admin"] *,
+body.is-admin,
+body.is-admin * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+@media print {
+  body {
+    display: none !important;
+  }
+}
 button,input,select,textarea{font:inherit;color:inherit}
 input,textarea{-webkit-user-select:text;user-select:text}
 nav{height:40px;flex-shrink:0;display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel);position:relative;z-index:5}
