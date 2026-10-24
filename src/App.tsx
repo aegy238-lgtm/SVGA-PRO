@@ -8,6 +8,7 @@ import {
   UserAuthModal,
 } from './components/PlatformModals';
 import {
+  ActivityLogEntry,
   BroadcastNotification,
   PlatformSettings,
   PlatformState,
@@ -33,6 +34,9 @@ import {
   syncNotificationsToFirestore,
   fetchFirestoreNotifications,
   subscribeToFirestoreNotifications,
+  subscribeToFirestoreActivityLogs,
+  fetchFirestoreActivityLogs,
+  saveActivityLogToFirestore,
   FirebaseConnectionStatus,
 } from './utils/firebase';
 
@@ -48,8 +52,7 @@ export default function App() {
   const currentUser = users.find((u) => u.id === currentUserId) || null;
   const isAdminUser =
     currentUser?.role === 'admin' ||
-    currentUser?.email === 'aegy238@gmail.com' ||
-    currentUser?.email === 'admin@motiontools.com';
+    currentUser?.email === 'aegy238@gmail.com';
 
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
@@ -174,10 +177,29 @@ export default function App() {
       }
     });
 
+    // 4. Activity Logs Real-Time Listener
+    const unsubLogs = subscribeToFirestoreActivityLogs((liveLogs) => {
+      if (!liveLogs || liveLogs.length === 0) return;
+      updatePlatformState((prev) => ({
+        ...prev,
+        activityLogs: liveLogs,
+      }));
+    });
+
+    fetchFirestoreActivityLogs().then((remoteLogs) => {
+      if (remoteLogs && remoteLogs.length > 0) {
+        updatePlatformState((prev) => ({
+          ...prev,
+          activityLogs: remoteLogs,
+        }));
+      }
+    });
+
     return () => {
       unsubSettings();
       unsubUsers();
       unsubNotifs();
+      unsubLogs();
     };
   }, []);
 
@@ -327,6 +349,30 @@ export default function App() {
       }
       return true;
     };
+
+    (window as any).__recordUploadActivity = (fileName: string, fileSizeStr?: string, formatStr?: string) => {
+      const st = stateRef.current;
+      const currUser = st.users.find((u) => u.id === st.currentUserId) || null;
+      const userName = currUser ? currUser.name : 'زائر مجاني (Guest)';
+      const userEmail = currUser ? currUser.email : 'زائر غير مسجل';
+
+      const newLog: ActivityLogEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        userName,
+        userEmail,
+        fileName,
+        fileSize: fileSizeStr || '—',
+        format: (formatStr || fileName.split('.').pop() || 'SVGA').toUpperCase(),
+        createdAt: new Date().toISOString(),
+      };
+
+      updatePlatformState((prev) => ({
+        ...prev,
+        activityLogs: [newLog, ...(prev.activityLogs || [])],
+      }));
+
+      saveActivityLogToFirestore(newLog);
+    };
   }, []);
 
   const switchToEditor = () => {
@@ -385,6 +431,10 @@ export default function App() {
     setBannerDismissed(false);
     updatePlatformState((prev) => ({ ...prev, notifications: nextNotifs }));
     syncNotificationsToFirestore(nextNotifs);
+  };
+
+  const handleUpdateActivityLogs = (nextLogs: ActivityLogEntry[]) => {
+    updatePlatformState((prev) => ({ ...prev, activityLogs: nextLogs }));
   };
 
   const handleToggleLanguage = () => {
@@ -1070,6 +1120,7 @@ export default function App() {
         onUpdateSettings={handleUpdateSettings}
         onUpdateUsers={handleUpdateUsers}
         onUpdateNotifications={handleUpdateNotifications}
+        onUpdateActivityLogs={handleUpdateActivityLogs}
         onChangePreviewRole={(role) =>
           updatePlatformState((prev) => ({ ...prev, adminPreviewRole: role }))
         }

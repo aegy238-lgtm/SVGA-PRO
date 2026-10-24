@@ -12,7 +12,7 @@ import {
   enableIndexedDbPersistence,
 } from 'firebase/firestore';
 import { getAuth, Auth } from 'firebase/auth';
-import type { PlatformSettings, UserAccount, BroadcastNotification } from './platformStore';
+import type { PlatformSettings, UserAccount, BroadcastNotification, ActivityLogEntry } from './platformStore';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyBZHmXFQKWlD83ql-gCU9AOK5YYdnpF0C0",
@@ -541,5 +541,106 @@ export async function syncAllToFirebase(data: {
       success: false,
       message: `خطأ أثناء المزامنة: ${err?.message || 'تحقق من قواعد الأمان وقاعدة البيانات'}`,
     };
+  }
+}
+
+/**
+ * Save single ActivityLogEntry to Firestore
+ */
+export async function saveActivityLogToFirestore(log: ActivityLogEntry): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    await setDoc(doc(db, 'activity_logs', log.id), {
+      ...log,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    return true;
+  } catch (err) {
+    console.warn('Firestore saveActivityLog notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Delete single ActivityLogEntry from Firestore
+ */
+export async function deleteActivityLogFromFirestore(logId: string): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    await deleteDoc(doc(db, 'activity_logs', logId));
+    return true;
+  } catch (err) {
+    console.warn('Firestore deleteActivityLog notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Clear all ActivityLogs from Firestore
+ */
+export async function clearAllActivityLogsFromFirestore(logIds: string[]): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    for (const id of logIds) {
+      await deleteDoc(doc(db, 'activity_logs', id));
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firestore clearAllActivityLogs notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch all ActivityLogs from Firestore
+ */
+export async function fetchFirestoreActivityLogs(): Promise<ActivityLogEntry[]> {
+  try {
+    const db = getFirebaseDb();
+    const snap = await getDocs(collection(db, 'activity_logs'));
+    const list: ActivityLogEntry[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as ActivityLogEntry;
+      if (data && data.id && data.fileName) {
+        list.push(data);
+      }
+    });
+    return list;
+  } catch (err) {
+    console.warn('Firestore fetchActivityLogs notice:', err);
+    return [];
+  }
+}
+
+/**
+ * Real-time listener for Firestore activity_logs collection
+ */
+export function subscribeToFirestoreActivityLogs(
+  callback: (logs: ActivityLogEntry[]) => void
+): () => void {
+  try {
+    const db = getFirebaseDb();
+    const unsub = onSnapshot(
+      collection(db, 'activity_logs'),
+      (snapshot) => {
+        const list: ActivityLogEntry[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as ActivityLogEntry;
+          if (data && data.id && data.fileName) {
+            list.push(data);
+          }
+        });
+        if (list.length > 0) {
+          callback(list);
+        }
+      },
+      (err) => {
+        console.warn('Firestore activity_logs snapshot warning:', err);
+      }
+    );
+    return unsub;
+  } catch (e) {
+    console.warn('Could not initialize Firestore activity_logs listener:', e);
+    return () => {};
   }
 }

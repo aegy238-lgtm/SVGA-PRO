@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
+  ActivityLogEntry,
   ALL_SUPPORTED_FORMATS,
   BroadcastNotification,
   PlatformSettings,
@@ -16,6 +17,9 @@ import {
   fetchFirestoreUsers,
   saveUserToFirestore,
   deleteUserFromFirestore,
+  fetchFirestoreActivityLogs,
+  deleteActivityLogFromFirestore,
+  clearAllActivityLogsFromFirestore,
   FirebaseConnectionStatus,
 } from '../utils/firebase';
 
@@ -26,8 +30,9 @@ interface AdminDashboardModalProps {
   onUpdateSettings: (next: PlatformSettings) => void;
   onUpdateUsers: (next: UserAccount[]) => void;
   onUpdateNotifications: (next: BroadcastNotification[]) => void;
+  onUpdateActivityLogs?: (next: ActivityLogEntry[]) => void;
   onChangePreviewRole: (role: 'actual' | 'free_user' | 'pro_user') => void;
-  initialTab?: 'users' | 'pro' | 'branding' | 'notifications' | 'firebase';
+  initialTab?: 'users' | 'activity_logs' | 'pro' | 'branding' | 'notifications' | 'firebase';
 }
 
 export default function AdminDashboardModal({
@@ -37,10 +42,13 @@ export default function AdminDashboardModal({
   onUpdateSettings,
   onUpdateUsers,
   onUpdateNotifications,
+  onUpdateActivityLogs,
   onChangePreviewRole,
   initialTab = 'users',
 }: AdminDashboardModalProps) {
-  const [activeTab, setActiveTab] = useState<'users' | 'pro' | 'branding' | 'notifications' | 'firebase'>(initialTab);
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'activity_logs' | 'pro' | 'branding' | 'notifications' | 'firebase'
+  >(initialTab);
   const [fbStatus, setFbStatus] = useState<FirebaseConnectionStatus>({
     isConfigured: true,
     isConnected: false,
@@ -50,6 +58,9 @@ export default function AdminDashboardModal({
   const [fbSyncing, setFbSyncing] = useState(false);
   const [fbLog, setFbLog] = useState<string>('');
   const [userSearch, setUserSearch] = useState('');
+  const [userFilterRole, setUserFilterRole] = useState<'all' | 'admin' | 'pro' | 'free'>('all');
+  const [logSearch, setLogSearch] = useState('');
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
@@ -87,6 +98,13 @@ export default function AdminDashboardModal({
           users.forEach((u) => userMap.set(u.id, u));
           fetched.forEach((u) => userMap.set(u.id, u));
           onUpdateUsers(Array.from(userMap.values()));
+        }
+      }).catch(() => {});
+    }
+    if (open && activeTab === 'activity_logs') {
+      fetchFirestoreActivityLogs().then((fetched) => {
+        if (fetched && onUpdateActivityLogs) {
+          onUpdateActivityLogs(fetched);
         }
       }).catch(() => {});
     }
@@ -155,7 +173,7 @@ export default function AdminDashboardModal({
     }
   };
 
-  const handleToggleUserPro = (userId: string) => {
+  const handleToggleUserPro = async (userId: string) => {
     let updatedUser: UserAccount | undefined;
     const next = users.map((u) => {
       if (u.id !== userId) return u;
@@ -169,17 +187,82 @@ export default function AdminDashboardModal({
     });
     onUpdateUsers(next);
     if (updatedUser) {
-      saveUserToFirestore(updatedUser);
+      await saveUserToFirestore(updatedUser);
+      showSavedFeedback(
+        updatedUser.isPro
+          ? `تم تفعيل باقة أدوات برو بنجاح للحساب (${updatedUser.name}) وحفظه في Firebase ⚡`
+          : `تم إزالة باقة برو من الحساب (${updatedUser.name}) وتحديث Firebase ❌`,
+        updatedUser.isPro ? 'Pro activated and saved to Firebase ⚡' : 'Pro removed and saved to Firebase ❌'
+      );
     }
-    showSavedFeedback('تم تحديث حالة اشتراك المستخدم بنجاح ✓', 'User Pro status updated ✓');
   };
 
-  const handleDeleteUser = (userId: string) => {
+  const handleDeleteUser = async (userId: string) => {
     const target = users.find((u) => u.id === userId);
     if (!target || target.role === 'admin') return;
+
+    const confirmMsg = isAr
+      ? `هل أنت متأكد من حذف حساب "${target.name}" (${target.email}) بشكل نهائي من قاعدة بيانات Firebase ومن الداشبورد؟`
+      : `Are you sure you want to permanently delete user "${target.name}" (${target.email}) from Firebase and dashboard?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
     onUpdateUsers(users.filter((u) => u.id !== userId));
-    deleteUserFromFirestore(userId);
-    showSavedFeedback('تم حذف الحساب بنجاح', 'User account removed');
+    const isDeletedInFs = await deleteUserFromFirestore(userId);
+
+    showSavedFeedback(
+      isDeletedInFs
+        ? `تم حذف الحساب "${target.name}" نهائياً من قاعدة البيانات والداشبورد ✓`
+        : `تم حذف الحساب "${target.name}" من القائمة وجاري المزامنة ✓`,
+      `User account "${target.name}" deleted permanently ✓`
+    );
+  };
+
+  const handleDeleteLogEntry = async (logId: string) => {
+    const nextLogs = (state.activityLogs || []).filter((l) => l.id !== logId);
+    if (onUpdateActivityLogs) {
+      onUpdateActivityLogs(nextLogs);
+    }
+    await deleteActivityLogFromFirestore(logId);
+    showSavedFeedback('تم حذف السجل بنجاح من قاعدة البيانات والداشبورد ✓', 'Log deleted from database & dashboard ✓');
+  };
+
+  const handleClearAllLogs = async () => {
+    const allLogs = state.activityLogs || [];
+    if (allLogs.length === 0) return;
+    if (
+      !window.confirm(
+        isAr
+          ? 'هل أنت متأكد من مسح جميع السجلات بشكل نهائي من قاعدة البيانات؟'
+          : 'Are you sure you want to delete all activity logs from the database?'
+      )
+    )
+      return;
+
+    const logIds = allLogs.map((l) => l.id);
+    if (onUpdateActivityLogs) {
+      onUpdateActivityLogs([]);
+    }
+    await clearAllActivityLogsFromFirestore(logIds);
+    showSavedFeedback('تم مسح جميع السجلات نهائياً من قاعدة البيانات ✓', 'All activity logs cleared from database ✓');
+  };
+
+  const handleRefreshLogsFromFirebase = async () => {
+    setIsRefreshingLogs(true);
+    try {
+      const fetched = await fetchFirestoreActivityLogs();
+      if (fetched && onUpdateActivityLogs) {
+        onUpdateActivityLogs(fetched);
+        showSavedFeedback(
+          `تم جلب السجلات وتحديثها من Firebase (${fetched.length} عنصر) ✓`,
+          `Activity logs refreshed from Firebase (${fetched.length} entries) ✓`
+        );
+      }
+    } catch {
+      showSavedFeedback('تعذر جلب السجلات من Firebase', 'Could not refresh activity logs');
+    } finally {
+      setIsRefreshingLogs(false);
+    }
   };
 
   const handleAddUser = (e: React.FormEvent) => {
@@ -288,6 +371,10 @@ export default function AdminDashboardModal({
   });
 
   const filteredUsers = sortedUsers.filter((u) => {
+    if (userFilterRole === 'admin' && u.role !== 'admin') return false;
+    if (userFilterRole === 'pro' && (!u.isPro || u.role === 'admin')) return false;
+    if (userFilterRole === 'free' && (u.isPro || u.role === 'admin')) return false;
+
     const q = userSearch.toLowerCase().trim();
     if (!q) return true;
     return (
@@ -296,6 +383,19 @@ export default function AdminDashboardModal({
       (u.phone || '').toLowerCase().includes(q)
     );
   });
+
+  const filteredLogs = [...(state.activityLogs || [])]
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+    .filter((log) => {
+      const q = logSearch.toLowerCase().trim();
+      if (!q) return true;
+      return (
+        log.fileName.toLowerCase().includes(q) ||
+        log.userName.toLowerCase().includes(q) ||
+        log.userEmail.toLowerCase().includes(q) ||
+        (log.format || '').toLowerCase().includes(q)
+      );
+    });
 
   const recentUsers = sortedUsers.filter((u) => u.role !== 'admin' && isRecentUser(u));
 
@@ -445,6 +545,7 @@ export default function AdminDashboardModal({
           {(
             [
               { id: 'users', label: t.dashTabUsers },
+              { id: 'activity_logs', label: isAr ? '📋 سجل النشاط والرفع' : '📋 Activity Logs' },
               { id: 'pro', label: t.dashTabProFormats },
               { id: 'branding', label: t.dashTabBranding },
               { id: 'notifications', label: t.dashTabNotifications },
@@ -740,7 +841,7 @@ export default function AdminDashboardModal({
                   background: '#14141f',
                   border: '1px solid #26263a',
                   borderRadius: '12px',
-                  padding: '14px',
+                  padding: '16px',
                 }}
               >
                 <div
@@ -749,14 +850,14 @@ export default function AdminDashboardModal({
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     gap: '12px',
-                    marginBottom: '12px',
+                    marginBottom: '14px',
                     flexWrap: 'wrap',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                    <b style={{ fontSize: '14px' }}>
+                    <b style={{ fontSize: '15px', color: '#fff' }}>
                       {isAr
-                        ? `جميع الحسابات المسجلة على الموقع (${filteredUsers.length})`
+                        ? `قائمة الحسابات المسجلة (${filteredUsers.length})`
                         : `Registered User Accounts (${filteredUsers.length})`}
                     </b>
                     <button
@@ -786,6 +887,37 @@ export default function AdminDashboardModal({
                       </span>
                     </button>
                   </div>
+
+                  {/* Filter Tabs by Account Type */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    {(
+                      [
+                        { id: 'all', label: isAr ? 'الكل' : 'All' },
+                        { id: 'admin', label: isAr ? '👑 المديرين' : '👑 Admins' },
+                        { id: 'pro', label: isAr ? '⚡ مشترك برو' : '⚡ Pro Users' },
+                        { id: 'free', label: isAr ? '👤 مجاني' : '👤 Free Users' },
+                      ] as const
+                    ).map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setUserFilterRole(f.id)}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          border: userFilterRole === f.id ? '1px solid #7c5cff' : '1px solid #28283d',
+                          background: userFilterRole === f.id ? 'rgba(124, 92, 255, 0.25)' : '#10101a',
+                          color: userFilterRole === f.id ? '#fff' : '#a0a0b8',
+                          fontSize: '11px',
+                          fontWeight: userFilterRole === f.id ? 700 : 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
                   <input
                     type="text"
                     placeholder={
@@ -795,7 +927,7 @@ export default function AdminDashboardModal({
                     }
                     value={userSearch}
                     onChange={(e) => setUserSearch(e.target.value)}
-                    style={{ maxWidth: '300px' }}
+                    style={{ maxWidth: '280px', fontSize: '12px', padding: '6px 10px' }}
                   />
                 </div>
 
@@ -811,150 +943,431 @@ export default function AdminDashboardModal({
                     <thead>
                       <tr style={{ borderBottom: '1px solid #26263a', color: '#9494aa' }}>
                         <th style={{ padding: '10px 8px' }}>{isAr ? 'المستخدم' : 'User'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'نوع الحساب / الرتبة' : 'Account Type'}</th>
                         <th style={{ padding: '10px 8px' }}>{isAr ? 'البريد الإلكتروني' : 'Email'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'الواتساب / الهاتف' : 'Phone'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'الهاتف / واتساب' : 'Phone'}</th>
                         <th style={{ padding: '10px 8px' }}>{isAr ? 'تاريخ التسجيل' : 'Created'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'حالة الاشتراك' : 'Subscription'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'تفعيل / إجراءات' : 'Actions'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'تفعيل برو / إجراءات' : 'Actions'}</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredUsers.map((u) => {
-                        const isRecent = isRecentUser(u) && u.role !== 'admin';
-                        return (
-                        <tr
-                          key={u.id}
-                          style={{
-                            borderBottom: '1px solid #1d1d2b',
-                            background: isRecent ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
-                          }}
-                        >
-                          <td style={{ padding: '10px 8px', fontWeight: 600, color: '#fff' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span>{u.name}</span>
-                              {isRecent && (
+                      {filteredUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} style={{ padding: '24px', textAlign: 'center', color: '#8e8ea6' }}>
+                            {isAr ? 'لا يوجد حسابات مطابقة للبحث أو التصفية.' : 'No users match your criteria.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredUsers.map((u) => {
+                          const isRecent = isRecentUser(u) && u.role !== 'admin';
+                          const isAdminRole = u.role === 'admin' || u.email === 'aegy238@gmail.com';
+
+                          return (
+                            <tr
+                              key={u.id}
+                              style={{
+                                borderBottom: '1px solid #1d1d2b',
+                                background: isRecent ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
+                              }}
+                            >
+                              <td style={{ padding: '10px 8px', fontWeight: 600, color: '#fff' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <div
+                                    style={{
+                                      width: '28px',
+                                      height: '28px',
+                                      borderRadius: '50%',
+                                      background: isAdminRole
+                                        ? 'linear-gradient(135deg, #6366f1, #a855f7)'
+                                        : u.isPro
+                                          ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                                          : '#222234',
+                                      display: 'grid',
+                                      placeItems: 'center',
+                                      fontSize: '13px',
+                                      color: '#fff',
+                                      fontWeight: 800,
+                                    }}
+                                  >
+                                    {isAdminRole ? '👑' : u.isPro ? '⚡' : '👤'}
+                                  </div>
+                                  <div>
+                                    <div style={{ color: '#fff', fontWeight: 700 }}>{u.name}</div>
+                                    {isRecent && (
+                                      <span
+                                        style={{
+                                          background: '#10b981',
+                                          color: '#022c22',
+                                          padding: '1px 6px',
+                                          borderRadius: '4px',
+                                          fontSize: '10px',
+                                          fontWeight: 800,
+                                          display: 'inline-block',
+                                          marginTop: '2px',
+                                        }}
+                                      >
+                                        🌟 {isAr ? 'حساب جديد' : 'NEW'}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td style={{ padding: '10px 8px' }}>
+                                {isAdminRole ? (
+                                  <span
+                                    style={{
+                                      background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25))',
+                                      border: '1px solid #818cf8',
+                                      color: '#c7d2fe',
+                                      padding: '3px 10px',
+                                      borderRadius: '99px',
+                                      fontWeight: 800,
+                                      fontSize: '11px',
+                                      display: 'inline-block',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    👑 {isAr ? 'مدير الموقع (Admin)' : 'Admin Account'}
+                                  </span>
+                                ) : u.isPro ? (
+                                  <span
+                                    style={{
+                                      background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.22))',
+                                      border: '1px solid #f59e0b',
+                                      color: '#fef08a',
+                                      padding: '3px 10px',
+                                      borderRadius: '99px',
+                                      fontWeight: 800,
+                                      fontSize: '11px',
+                                      display: 'inline-block',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    ⚡ {isAr ? 'مشترك باقة برو (PRO)' : 'Active PRO User'}
+                                  </span>
+                                ) : (
+                                  <span
+                                    style={{
+                                      background: 'rgba(100, 116, 139, 0.2)',
+                                      border: '1px solid #475569',
+                                      color: '#cbd5e1',
+                                      padding: '3px 10px',
+                                      borderRadius: '99px',
+                                      fontWeight: 600,
+                                      fontSize: '11px',
+                                      display: 'inline-block',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    👤 {isAr ? 'مستخدم مجاني (Free)' : 'Free User'}
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>{u.email}</td>
+                              <td style={{ padding: '10px 8px', color: '#94a3b8' }}>{u.phone || '—'}</td>
+                              <td style={{ padding: '10px 8px', color: '#94a3b8' }}>
+                                <div>{new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</div>
+                                <div style={{ fontSize: '10px', color: '#64748b' }}>
+                                  {new Date(u.createdAt).toLocaleTimeString(isAr ? 'ar-EG' : 'en-US', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </div>
+                              </td>
+                              <td style={{ padding: '10px 8px' }}>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleUserPro(u.id)}
+                                    style={{
+                                      padding: '6px 12px',
+                                      borderRadius: '8px',
+                                      border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
+                                      background: u.isPro
+                                        ? 'rgba(239, 68, 68, 0.15)'
+                                        : 'linear-gradient(135deg, #10b981, #059669)',
+                                      color: u.isPro ? '#fca5a5' : '#fff',
+                                      fontWeight: 800,
+                                      cursor: 'pointer',
+                                      fontSize: '11px',
+                                      whiteSpace: 'nowrap',
+                                      boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
+                                    }}
+                                  >
+                                    {u.isPro
+                                      ? isAr
+                                        ? '❌ إزالة أدوات برو'
+                                        : '❌ Remove Pro'
+                                      : isAr
+                                        ? '⚡ تفعيل باقة برو تلقائياً'
+                                        : '⚡ Activate Pro'}
+                                  </button>
+                                  {!isAdminRole && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUser(u.id)}
+                                      style={{
+                                        padding: '6px 10px',
+                                        borderRadius: '8px',
+                                        border: '1px solid #dc2626',
+                                        background: 'rgba(220, 38, 38, 0.18)',
+                                        color: '#f87171',
+                                        cursor: 'pointer',
+                                        fontSize: '11px',
+                                        fontWeight: 700,
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                      title={isAr ? 'حذف الحساب بشكل نهائي من قاعدة البيانات والموقع' : 'Delete user permanently from database & dashboard'}
+                                    >
+                                      🗑️ {isAr ? 'حذف نهائي' : 'Delete'}
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: ACTIVITY LOGS */}
+          {activeTab === 'activity_logs' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              {/* Summary Cards */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: '12px',
+                }}
+              >
+                <div
+                  style={{
+                    background: '#151520',
+                    border: '1px solid #252538',
+                    borderRadius: '10px',
+                    padding: '14px',
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#8e8ea6' }}>
+                    {isAr ? 'إجمالي الملفات المرفوعة والمحولة' : 'Total Uploaded & Converted Files'}
+                  </div>
+                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#c4b5fd' }}>
+                    {(state.activityLogs || []).length}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: '#151520',
+                    border: '1px solid #252538',
+                    borderRadius: '10px',
+                    padding: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#8e8ea6' }}>
+                      {isAr ? 'مزامنة السجل مع Firebase' : 'Firebase Sync Status'}
+                    </div>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#34d399', marginTop: '4px' }}>
+                      {isAr ? 'متصل ومزامن مباشرة' : 'Live Synced'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRefreshLogsFromFirebase}
+                    disabled={isRefreshingLogs}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(59, 130, 246, 0.4)',
+                      background: 'rgba(59, 130, 246, 0.15)',
+                      color: '#93c5fd',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔄 {isRefreshingLogs ? (isAr ? 'جاري التحديث...' : 'Loading...') : isAr ? 'تحديث' : 'Refresh'}
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.08)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '10px',
+                    padding: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#fca5a5' }}>
+                      {isAr ? 'حذف كافة السجلات' : 'Clear All Logs'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '2px' }}>
+                      {isAr ? 'يحذف السجل كاملاً من قاعدة البيانات' : 'Permanently deletes all logs from Firebase'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClearAllLogs}
+                    disabled={(state.activityLogs || []).length === 0}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #ef4444',
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      color: '#fca5a5',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      opacity: (state.activityLogs || []).length === 0 ? 0.5 : 1,
+                    }}
+                  >
+                    🗑️ {isAr ? 'مسح كل السجل' : 'Clear All'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Logs Table */}
+              <div
+                style={{
+                  background: '#14141f',
+                  border: '1px solid #26263a',
+                  borderRadius: '12px',
+                  padding: '16px',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px',
+                    marginBottom: '14px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: '15px', color: '#fff' }}>
+                      {isAr ? 'سجل عمليات الرفع والمعاينة' : 'Activity & Upload Logs'}
+                    </b>
+                    <span style={{ fontSize: '12px', color: '#9494aa' }}>
+                      ({filteredLogs.length} {isAr ? 'عملية' : 'entries'})
+                    </span>
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder={
+                      isAr
+                        ? '🔍 ابحث باسم الملف أو اسم المستخدم أو البريد...'
+                        : '🔍 Search file name, user, or email...'
+                    }
+                    value={logSearch}
+                    onChange={(e) => setLogSearch(e.target.value)}
+                    style={{ maxWidth: '280px', fontSize: '12px', padding: '6px 10px' }}
+                  />
+                </div>
+
+                <div style={{ overflowX: 'auto' }}>
+                  <table
+                    style={{
+                      width: '100%',
+                      borderCollapse: 'collapse',
+                      fontSize: '12px',
+                      textAlign: isAr ? 'right' : 'left',
+                    }}
+                  >
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #26263a', color: '#9494aa' }}>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'اسم الملف المرفوع' : 'File Name'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'اسم المستخدم والحساب' : 'User Account'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'الصيغة والحجم' : 'Format & Size'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'تاريخ وساعة الرفع' : 'Timestamp'}</th>
+                        <th style={{ padding: '10px 8px' }}>{isAr ? 'إجراء' : 'Action'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} style={{ padding: '24px', textAlign: 'center', color: '#8e8ea6' }}>
+                            {isAr ? 'لا يوجد عناصر في سجل النشاط حالياً.' : 'No activity log entries found.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredLogs.map((log) => (
+                          <tr key={log.id} style={{ borderBottom: '1px solid #1d1d2b' }}>
+                            <td style={{ padding: '10px 8px', fontWeight: 700, color: '#fff' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontSize: '16px' }}>📄</span>
+                                <span style={{ wordBreak: 'break-all' }}>{log.fileName}</span>
+                              </div>
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
+                              <div style={{ fontWeight: 700, color: '#c7d2fe' }}>{log.userName}</div>
+                              <div style={{ fontSize: '11px', color: '#94a3b8' }}>{log.userEmail}</div>
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                 <span
                                   style={{
-                                    background: '#10b981',
-                                    color: '#022c22',
-                                    padding: '1px 6px',
-                                    borderRadius: '4px',
-                                    fontSize: '10px',
+                                    background: 'rgba(124, 92, 255, 0.2)',
+                                    border: '1px solid #7c5cff',
+                                    color: '#c4b5fd',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
                                     fontWeight: 800,
+                                    fontSize: '11px',
                                   }}
                                 >
-                                  🌟 {isAr ? 'جديد' : 'NEW'}
+                                  {log.format}
                                 </span>
-                              )}
-                              {u.role === 'admin' && (
-                                <span
-                                  style={{
-                                    background: '#3b82f6',
-                                    color: '#fff',
-                                    padding: '1px 6px',
-                                    borderRadius: '4px',
-                                    fontSize: '10px',
-                                  }}
-                                >
-                                  {isAr ? 'مدير' : 'Admin'}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>{u.email}</td>
-                          <td style={{ padding: '10px 8px', color: '#94a3b8' }}>{u.phone || '—'}</td>
-                          <td style={{ padding: '10px 8px', color: '#94a3b8' }}>
-                            <div>{new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</div>
-                            <div style={{ fontSize: '10px', color: '#64748b' }}>
-                              {new Date(u.createdAt).toLocaleTimeString(isAr ? 'ar-EG' : 'en-US', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </div>
-                          </td>
-                          <td style={{ padding: '10px 8px' }}>
-                            {u.isPro ? (
-                              <span
-                                style={{
-                                  background: 'rgba(245, 158, 11, 0.18)',
-                                  border: '1px solid #f59e0b',
-                                  color: '#fde047',
-                                  padding: '3px 9px',
-                                  borderRadius: '99px',
-                                  fontWeight: 700,
-                                  fontSize: '11px',
-                                  display: 'inline-block',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {isAr ? '👑 مفعل (باقة برو)' : '👑 Active PRO'}
-                              </span>
-                            ) : (
-                              <span
-                                style={{
-                                  background: '#222230',
-                                  color: '#94a3b8',
-                                  padding: '3px 9px',
-                                  borderRadius: '99px',
-                                  fontSize: '11px',
-                                  display: 'inline-block',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {isAr ? 'مجاني (معاينة)' : 'Free User'}
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ padding: '10px 8px' }}>
-                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                <span style={{ color: '#94a3b8', fontSize: '11px' }}>{log.fileSize || '—'}</span>
+                              </div>
+                            </td>
+                            <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>
+                              <div>{new Date(log.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</div>
+                              <div style={{ fontSize: '10px', color: '#64748b' }}>
+                                {new Date(log.createdAt).toLocaleTimeString(isAr ? 'ar-EG' : 'en-US', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </div>
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
                               <button
                                 type="button"
-                                onClick={() => handleToggleUserPro(u.id)}
+                                onClick={() => handleDeleteLogEntry(log.id)}
                                 style={{
                                   padding: '5px 10px',
                                   borderRadius: '6px',
-                                  border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
-                                  background: u.isPro
-                                    ? 'rgba(239, 68, 68, 0.14)'
-                                    : 'rgba(16, 185, 129, 0.18)',
-                                  color: u.isPro ? '#fca5a5' : '#6ee7b7',
-                                  fontWeight: 700,
+                                  border: '1px solid #dc2626',
+                                  background: 'rgba(220, 38, 38, 0.18)',
+                                  color: '#f87171',
                                   cursor: 'pointer',
                                   fontSize: '11px',
-                                  whiteSpace: 'nowrap',
+                                  fontWeight: 700,
                                 }}
+                                title={isAr ? 'حذف من قاعدة البيانات والسجل' : 'Delete log entry'}
                               >
-                                {u.isPro
-                                  ? isAr
-                                    ? 'إلغاء باقة برو'
-                                    : 'Revoke Pro'
-                                  : isAr
-                                    ? '✅ تفعيل باقة برو'
-                                    : '✅ Activate Pro'}
+                                🗑️ {isAr ? 'حذف' : 'Delete'}
                               </button>
-                              {u.role !== 'admin' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteUser(u.id)}
-                                  style={{
-                                    padding: '5px 8px',
-                                    borderRadius: '6px',
-                                    border: '1px solid #3f3f52',
-                                    background: '#1d1d2b',
-                                    color: '#f87171',
-                                    cursor: 'pointer',
-                                    fontSize: '11px',
-                                  }}
-                                  title={isAr ? 'حذف الحساب' : 'Delete User'}
-                                >
-                                  🗑
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>

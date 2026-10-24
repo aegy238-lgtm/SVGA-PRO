@@ -63,12 +63,23 @@ export interface PlatformSettings {
   defaultLanguage: AppLanguage;
 }
 
+export interface ActivityLogEntry {
+  id: string;
+  userName: string;
+  userEmail: string;
+  fileName: string;
+  fileSize?: string;
+  format: string;
+  createdAt: string;
+}
+
 export interface PlatformState {
   settings: PlatformSettings;
   users: UserAccount[];
   currentUserId: string | null;
   notifications: BroadcastNotification[];
   readNotificationIds: string[];
+  activityLogs: ActivityLogEntry[];
   language: AppLanguage;
   adminPreviewRole: 'actual' | 'free_user' | 'pro_user';
 }
@@ -107,17 +118,6 @@ export const INITIAL_USERS: UserAccount[] = [
     proActivatedAt: '2026-10-20T10:00:00.000Z',
   },
   {
-    id: 'usr_admin_2',
-    name: 'المدير العام (Super Admin)',
-    email: 'admin@motiontools.com',
-    password: 'admin123456',
-    phone: '',
-    role: 'admin',
-    isPro: true,
-    createdAt: '2026-10-20T10:00:00.000Z',
-    proActivatedAt: '2026-10-20T10:00:00.000Z',
-  },
-  {
     id: 'usr_demo_free',
     name: 'مستخدم تجريبي (Free User)',
     email: 'user@example.com',
@@ -148,6 +148,27 @@ export const INITIAL_NOTIFICATIONS: BroadcastNotification[] = [
       'مرحباً بكم في التحديث الجديد! يمكنكم الآن رفع ومعاينة جميع ملفات الهدايا (SVGA, VAP, YYEVA) مجاناً، والاشتراك في باقة أدوات برو لتصدير وتحويل كافة الصيغ الاحترافية.',
     createdAt: '2026-10-24T11:00:00.000Z',
     important: true,
+  },
+];
+
+export const INITIAL_ACTIVITY_LOGS: ActivityLogEntry[] = [
+  {
+    id: 'log_1',
+    userName: 'مدير الموقع (Admin)',
+    userEmail: 'aegy238@gmail.com',
+    fileName: 'gift_animation_sample.svga',
+    fileSize: '1.4 MB',
+    format: 'SVGA',
+    createdAt: '2026-10-24T12:00:00.000Z',
+  },
+  {
+    id: 'log_2',
+    userName: 'مستخدم تجريبي (Free User)',
+    userEmail: 'user@example.com',
+    fileName: 'badge_effect.vap',
+    fileSize: '3.8 MB',
+    format: 'VAP',
+    createdAt: '2026-10-24T13:15:00.000Z',
   },
 ];
 
@@ -253,17 +274,24 @@ export function loadPlatformState(): PlatformState {
         currentUserId: null,
         notifications: [...INITIAL_NOTIFICATIONS],
         readNotificationIds: [],
+        activityLogs: [...INITIAL_ACTIVITY_LOGS],
         language: 'ar',
         adminPreviewRole: 'actual',
       };
     }
     const parsed = JSON.parse(raw);
+    const loadedUsers = Array.isArray(parsed.users) && parsed.users.length > 0 ? parsed.users : [...INITIAL_USERS];
+    // Filter out redundant admin accounts except the main admin
+    const cleanedUsers = loadedUsers.filter(
+      (u: UserAccount) => u.email.toLowerCase() !== 'admin@motiontools.com'
+    );
     return {
       settings: { ...DEFAULT_PLATFORM_SETTINGS, ...(parsed.settings || {}) },
-      users: Array.isArray(parsed.users) && parsed.users.length > 0 ? parsed.users : [...INITIAL_USERS],
+      users: cleanedUsers.length > 0 ? cleanedUsers : [...INITIAL_USERS],
       currentUserId: parsed.currentUserId !== undefined ? parsed.currentUserId : null,
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [...INITIAL_NOTIFICATIONS],
       readNotificationIds: Array.isArray(parsed.readNotificationIds) ? parsed.readNotificationIds : [],
+      activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [...INITIAL_ACTIVITY_LOGS],
       language: parsed.language === 'en' ? 'en' : 'ar',
       adminPreviewRole: parsed.adminPreviewRole || 'actual',
     };
@@ -274,6 +302,7 @@ export function loadPlatformState(): PlatformState {
       currentUserId: null,
       notifications: [...INITIAL_NOTIFICATIONS],
       readNotificationIds: [],
+      activityLogs: [...INITIAL_ACTIVITY_LOGS],
       language: 'ar',
       adminPreviewRole: 'actual',
     };

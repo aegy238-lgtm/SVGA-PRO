@@ -172,6 +172,9 @@ export function initMotionToolsFixed() {
     player = null;
     $('#assets').innerHTML = '';
     info({ Format: ext.toUpperCase(), 'File Size': kb(f.size), 'File Name': f.name });
+    if (typeof (window as any).__recordUploadActivity === 'function') {
+      (window as any).__recordUploadActivity(f.name, kb(f.size), ext.toUpperCase());
+    }
   };
 
   const defaultGiftBg = 'repeating-conic-gradient(#999 0 25%,#ccc 0 50%) 0 0/14px 14px';
