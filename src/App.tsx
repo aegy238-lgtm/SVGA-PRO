@@ -444,11 +444,7 @@ export default function App() {
             <span>{currentUser ? (currentUser.role === 'admin' ? '⚙️' : effectiveIsPro ? '👑' : '👤') : '🔑'}</span>
             <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {currentUser
-                ? currentUser.role === 'admin'
-                  ? isAr
-                    ? 'لوحة المدير'
-                    : 'Admin'
-                  : currentUser.email.split('@')[0]
+                ? currentUser.email.split('@')[0]
                 : isAr
                   ? 'تسجيل الدخول'
                   : 'Sign In'}

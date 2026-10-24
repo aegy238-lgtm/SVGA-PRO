@@ -14,12 +14,12 @@ import { getAuth, Auth } from 'firebase/auth';
 import type { PlatformSettings, UserAccount, BroadcastNotification } from './platformStore';
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyAVWL1Ba0RjwAv6aNKRIQDoSfhrTJE4amA",
-  authDomain: "bbbbbbbb-4e020.firebaseapp.com",
-  projectId: "bbbbbbbb-4e020",
-  storageBucket: "bbbbbbbb-4e020.firebasestorage.app",
-  messagingSenderId: "964224897996",
-  appId: "1:964224897996:web:7a7321877b3860c53e4369"
+  apiKey: "AIzaSyBZHmXFQKWlD83ql-gCU9AOK5YYdnpF0C0",
+  authDomain: "svga-pro.firebaseapp.com",
+  projectId: "svga-pro",
+  storageBucket: "svga-pro.firebasestorage.app",
+  messagingSenderId: "1054083855655",
+  appId: "1:1054083855655:web:ad5cb79f8d4ab30e426502"
 };
 
 export interface FirebaseConnectionStatus {
