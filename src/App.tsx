@@ -233,6 +233,15 @@ export default function App() {
     }
   }, [isSecurityEnforced]);
 
+  // Screen Shield Active Class on Body
+  useEffect(() => {
+    if (screenShieldActive && isSecurityEnforced) {
+      document.body.classList.add('screen-shield-active');
+    } else {
+      document.body.classList.remove('screen-shield-active');
+    }
+  }, [screenShieldActive, isSecurityEnforced]);
+
   // Programmatic Security, Anti-Inspection & Anti-Screenshot Protection
   useEffect(() => {
     if (!isSecurityEnforced) {
@@ -258,7 +267,7 @@ export default function App() {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Devtools shortcuts (F12, Ctrl+Shift+I/J/C, Ctrl+U)
+      // Devtools shortcuts (F12, Ctrl+Shift+I/J/C, Ctrl+U/S/P)
       if (
         e.key === 'F12' ||
         e.keyCode === 123 ||
@@ -271,12 +280,13 @@ export default function App() {
         return false;
       }
 
-      // PrintScreen & Screenshot / Recording shortcuts (Win+Shift+S, Cmd+Shift+3/4/5)
+      // PrintScreen & Screenshot / Recording shortcuts (Win+Shift+S, Win+Alt+R, Cmd+Shift+3/4/5)
       if (
         e.key === 'PrintScreen' ||
         e.code === 'PrintScreen' ||
         e.keyCode === 44 ||
-        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'S'].includes(e.key))
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'S', 'r', 'R'].includes(e.key)) ||
+        ((e.metaKey || e.altKey) && ['r', 'R'].includes(e.key) && e.shiftKey)
       ) {
         e.preventDefault();
         e.stopPropagation();
@@ -315,38 +325,74 @@ export default function App() {
       triggerShield();
     };
 
+    const handleVisibilityOrBlur = () => {
+      if (document.hidden || !document.hasFocus()) {
+        triggerShield();
+      }
+    };
+
+    // Heartbeat focus monitor to instantly trigger shield if Snipping tool or Game bar opens
+    const focusInterval = setInterval(() => {
+      if (isSecurityEnforced && (!document.hasFocus() || document.hidden)) {
+        triggerShield();
+      }
+    }, 600);
+
     window.addEventListener('contextmenu', handleContextMenu, { capture: true });
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('dragstart', handleDragStart, { capture: true });
     window.addEventListener('copy', handleCopy, { capture: true });
+    window.addEventListener('blur', handleVisibilityOrBlur, { capture: true });
+    document.addEventListener('visibilitychange', handleVisibilityOrBlur, { capture: true });
 
     return () => {
+      clearInterval(focusInterval);
       window.removeEventListener('contextmenu', handleContextMenu, { capture: true });
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
       window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('dragstart', handleDragStart, { capture: true });
       window.removeEventListener('copy', handleCopy, { capture: true });
+      window.removeEventListener('blur', handleVisibilityOrBlur, { capture: true });
+      document.removeEventListener('visibilitychange', handleVisibilityOrBlur, { capture: true });
     };
   }, [isSecurityEnforced]);
 
-  // Anti-Screen-Recording Interception (Media Capture API override)
+  // Anti-Screen-Recording Interception (Media Capture API & MediaRecorder override)
   useEffect(() => {
     if (!isSecurityEnforced) return;
 
+    // Overwrite getDisplayMedia
+    const originalGetDisplayMedia = navigator.mediaDevices?.getDisplayMedia?.bind(
+      navigator.mediaDevices
+    );
     if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-      const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(
-        navigator.mediaDevices
-      );
-      navigator.mediaDevices.getDisplayMedia = async (options) => {
+      navigator.mediaDevices.getDisplayMedia = async () => {
         setScreenShieldActive(true);
-        throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة لضمان حماية حقوق الملكية.');
-      };
-
-      return () => {
-        navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
+        throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة.');
       };
     }
+
+    // Overwrite MediaRecorder constructor
+    const OriginalMediaRecorder = window.MediaRecorder;
+    if (OriginalMediaRecorder) {
+      const CustomMediaRecorder = function (this: any, stream: MediaStream, options?: any) {
+        setScreenShieldActive(true);
+        throw new Error('🚫 تسجيل الشاشة والفيديو غير مسموح به في الموقع.');
+      } as any;
+
+      CustomMediaRecorder.isTypeSupported = (type: string) => false;
+      (window as any).MediaRecorder = CustomMediaRecorder;
+    }
+
+    return () => {
+      if (navigator.mediaDevices && originalGetDisplayMedia) {
+        navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
+      }
+      if (OriginalMediaRecorder) {
+        (window as any).MediaRecorder = OriginalMediaRecorder;
+      }
+    };
   }, [isSecurityEnforced]);
 
   useEffect(() => {

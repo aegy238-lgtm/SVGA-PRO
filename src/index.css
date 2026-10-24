@@ -19,10 +19,13 @@ body.screen-shield-active #root > nav,
 body.screen-shield-active #root > main,
 body.screen-shield-active #view,
 body.screen-shield-active canvas,
-body.screen-shield-active video {
-  filter: blur(60px) grayscale(100%) opacity(0) !important;
+body.screen-shield-active video,
+body.screen-shield-active svg,
+body.screen-shield-active img {
+  filter: blur(90px) grayscale(100%) opacity(0) !important;
   pointer-events: none !important;
   visibility: hidden !important;
+  user-select: none !important;
 }
 
 @media print {
