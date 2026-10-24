@@ -253,14 +253,39 @@ export function buildWhatsAppUrl(phone: string, message?: string): string {
 
 const STORAGE_KEY = 'motiontools_platform_state_v1';
 
+const DELETED_USERS_KEY = 'motiontools_deleted_user_ids_v1';
+
+export function getDeletedUserIds(): string[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(DELETED_USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addDeletedUserId(userId: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const ids = getDeletedUserIds();
+    if (!ids.includes(userId)) {
+      ids.push(userId);
+      window.localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(ids));
+    }
+  } catch {}
+}
+
 export function loadPlatformState(): PlatformState {
+  const deletedIds = getDeletedUserIds();
   if (typeof window === 'undefined' || !window.localStorage) {
     return {
       settings: { ...DEFAULT_PLATFORM_SETTINGS },
-      users: [...INITIAL_USERS],
+      users: INITIAL_USERS.filter((u) => !deletedIds.includes(u.id)),
       currentUserId: null,
       notifications: [...INITIAL_NOTIFICATIONS],
       readNotificationIds: [],
+      activityLogs: [...INITIAL_ACTIVITY_LOGS],
       language: 'ar',
       adminPreviewRole: 'actual',
     };
@@ -270,7 +295,7 @@ export function loadPlatformState(): PlatformState {
     if (!raw) {
       return {
         settings: { ...DEFAULT_PLATFORM_SETTINGS },
-        users: [...INITIAL_USERS],
+        users: INITIAL_USERS.filter((u) => !deletedIds.includes(u.id)),
         currentUserId: null,
         notifications: [...INITIAL_NOTIFICATIONS],
         readNotificationIds: [],
@@ -281,14 +306,19 @@ export function loadPlatformState(): PlatformState {
     }
     const parsed = JSON.parse(raw);
     const loadedUsers = Array.isArray(parsed.users) && parsed.users.length > 0 ? parsed.users : [...INITIAL_USERS];
-    // Filter out redundant admin accounts except the main admin
+    // Filter out redundant admin accounts except the main admin, and filter out deleted users
     const cleanedUsers = loadedUsers.filter(
-      (u: UserAccount) => u.email.toLowerCase() !== 'admin@motiontools.com'
+      (u: UserAccount) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
     );
+    const validCurrentUserId =
+      parsed.currentUserId && cleanedUsers.some((u) => u.id === parsed.currentUserId)
+        ? parsed.currentUserId
+        : null;
+
     return {
       settings: { ...DEFAULT_PLATFORM_SETTINGS, ...(parsed.settings || {}) },
-      users: cleanedUsers.length > 0 ? cleanedUsers : [...INITIAL_USERS],
-      currentUserId: parsed.currentUserId !== undefined ? parsed.currentUserId : null,
+      users: cleanedUsers.length > 0 ? cleanedUsers : INITIAL_USERS.filter((u) => !deletedIds.includes(u.id)),
+      currentUserId: validCurrentUserId,
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [...INITIAL_NOTIFICATIONS],
       readNotificationIds: Array.isArray(parsed.readNotificationIds) ? parsed.readNotificationIds : [],
       activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [...INITIAL_ACTIVITY_LOGS],
@@ -298,7 +328,7 @@ export function loadPlatformState(): PlatformState {
   } catch {
     return {
       settings: { ...DEFAULT_PLATFORM_SETTINGS },
-      users: [...INITIAL_USERS],
+      users: INITIAL_USERS.filter((u) => !deletedIds.includes(u.id)),
       currentUserId: null,
       notifications: [...INITIAL_NOTIFICATIONS],
       readNotificationIds: [],

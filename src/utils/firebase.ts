@@ -12,7 +12,13 @@ import {
   enableIndexedDbPersistence,
 } from 'firebase/firestore';
 import { getAuth, Auth } from 'firebase/auth';
-import type { PlatformSettings, UserAccount, BroadcastNotification, ActivityLogEntry } from './platformStore';
+import {
+  addDeletedUserId,
+  type PlatformSettings,
+  type UserAccount,
+  type BroadcastNotification,
+  type ActivityLogEntry,
+} from './platformStore';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyBZHmXFQKWlD83ql-gCU9AOK5YYdnpF0C0",
@@ -313,6 +319,7 @@ export async function saveUserToFirestore(user: UserAccount): Promise<boolean> {
  * Delete a user from Firestore
  */
 export async function deleteUserFromFirestore(userId: string): Promise<boolean> {
+  addDeletedUserId(userId);
   try {
     const db = getFirebaseDb();
     await deleteDoc(doc(db, 'users', userId));

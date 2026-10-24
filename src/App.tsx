@@ -18,6 +18,8 @@ import {
   checkConversionPermission,
   loadPlatformState,
   savePlatformState,
+  getDeletedUserIds,
+  addDeletedUserId,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -127,17 +129,20 @@ export default function App() {
 
     // 2. Users Real-Time Listener
     const unsubUsers = subscribeToFirestoreUsers((liveUsers) => {
-      if (!liveUsers || liveUsers.length === 0) return;
+      if (!liveUsers) return;
+      const deletedIds = getDeletedUserIds();
       updatePlatformState((prev) => {
-        const userMap = new Map<string, UserAccount>();
-        INITIAL_USERS.forEach((u) => userMap.set(u.id, u));
-        prev.users.forEach((u) => userMap.set(u.id, u));
-        liveUsers.forEach((u) => {
-          userMap.set(u.id, u);
-        });
+        const cleanLive = liveUsers.filter(
+          (u) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
+        );
+        let nextCurrentUserId = prev.currentUserId;
+        if (nextCurrentUserId && !cleanLive.some((u) => u.id === nextCurrentUserId)) {
+          nextCurrentUserId = null;
+        }
         return {
           ...prev,
-          users: Array.from(userMap.values()),
+          users: cleanLive.length > 0 ? cleanLive : prev.users.filter((u) => !deletedIds.includes(u.id)),
+          currentUserId: nextCurrentUserId,
         };
       });
     });
@@ -145,14 +150,19 @@ export default function App() {
     // Initial fetch of users from Firestore
     fetchFirestoreUsers().then((fetched) => {
       if (fetched && fetched.length > 0) {
+        const deletedIds = getDeletedUserIds();
         updatePlatformState((prev) => {
-          const userMap = new Map<string, UserAccount>();
-          INITIAL_USERS.forEach((u) => userMap.set(u.id, u));
-          prev.users.forEach((u) => userMap.set(u.id, u));
-          fetched.forEach((u) => userMap.set(u.id, u));
+          const cleanUsers = fetched.filter(
+            (u) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
+          );
+          let nextCurrentUserId = prev.currentUserId;
+          if (nextCurrentUserId && !cleanUsers.some((u) => u.id === nextCurrentUserId)) {
+            nextCurrentUserId = null;
+          }
           return {
             ...prev,
-            users: Array.from(userMap.values()),
+            users: cleanUsers.length > 0 ? cleanUsers : prev.users.filter((u) => !deletedIds.includes(u.id)),
+            currentUserId: nextCurrentUserId,
           };
         });
       }
@@ -324,6 +334,11 @@ export default function App() {
     initMotionToolsFixed();
     (window as any).__openInSvgaEditor = (file: File) => {
       setExternalSvgaFile(file);
+      if (file && typeof (window as any).__recordUploadActivity === 'function') {
+        const ext = file.name.split('.').pop()?.toUpperCase() || 'SVGA';
+        const sz = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+        (window as any).__recordUploadActivity(file.name, sz, ext);
+      }
       document.querySelectorAll('.view').forEach((el) => {
         el.classList.toggle('on', el.id === 'editor');
       });
@@ -795,6 +810,14 @@ export default function App() {
               id="file"
               hidden
               accept=".motiontools,.vap,.yyeva,.svga,.json,.lottie,.gif,.webp,.png,.apng,.jpg,.jpeg,.mp4,.mov,.webm,.pag,.svg,.zip"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f && typeof (window as any).__recordUploadActivity === 'function') {
+                  const ext = f.name.split('.').pop()?.toUpperCase() || 'SVGA';
+                  const sz = (f.size / (1024 * 1024)).toFixed(1) + ' MB';
+                  (window as any).__recordUploadActivity(f.name, sz, ext);
+                }
+              }}
             />
           </div>
         </section>
