@@ -12,6 +12,7 @@ import {
   PlatformSettings,
   PlatformState,
   UserAccount,
+  INITIAL_USERS,
   buildWhatsAppUrl,
   checkConversionPermission,
   loadPlatformState,
@@ -25,6 +26,9 @@ import {
   syncSettingsToFirestore,
   syncUsersToFirestore,
   syncNotificationsToFirestore,
+  saveUserToFirestore,
+  subscribeToFirestoreUsers,
+  fetchFirestoreUsers,
   FirebaseConnectionStatus,
 } from './utils/firebase';
 
@@ -73,6 +77,48 @@ export default function App() {
     // Automatic ping and live connection verification on boot
     testFirebaseConnection();
     return unsub;
+  }, []);
+
+  // Real-time synchronization of registered accounts with Firebase Firestore
+  useEffect(() => {
+    const unsubUsers = subscribeToFirestoreUsers((liveUsers) => {
+      if (!liveUsers || liveUsers.length === 0) return;
+      updatePlatformState((prev) => {
+        const userMap = new Map<string, UserAccount>();
+        // Always preserve system admin accounts
+        INITIAL_USERS.forEach((u) => userMap.set(u.id, u));
+        // Add existing state users
+        prev.users.forEach((u) => userMap.set(u.id, u));
+        // Merge in live Firestore users (keyed by id or email)
+        liveUsers.forEach((u) => {
+          userMap.set(u.id, u);
+        });
+        return {
+          ...prev,
+          users: Array.from(userMap.values()),
+        };
+      });
+    });
+
+    // Initial fetch from Firestore
+    fetchFirestoreUsers().then((fetched) => {
+      if (fetched && fetched.length > 0) {
+        updatePlatformState((prev) => {
+          const userMap = new Map<string, UserAccount>();
+          INITIAL_USERS.forEach((u) => userMap.set(u.id, u));
+          prev.users.forEach((u) => userMap.set(u.id, u));
+          fetched.forEach((u) => userMap.set(u.id, u));
+          return {
+            ...prev,
+            users: Array.from(userMap.values()),
+          };
+        });
+      }
+    });
+
+    return () => {
+      unsubUsers();
+    };
   }, []);
 
   // Programmatic Security & Anti-Inspection Protection
@@ -859,14 +905,16 @@ export default function App() {
             adminPreviewRole: 'actual',
           }))
         }
-        onRegisterUser={(newUser) =>
+        onRegisterUser={(newUser) => {
           updatePlatformState((prev) => ({
             ...prev,
-            users: [newUser, ...prev.users],
+            users: [newUser, ...prev.users.filter((u) => u.id !== newUser.id)],
             currentUserId: newUser.id,
             adminPreviewRole: 'actual',
-          }))
-        }
+          }));
+          // Immediately save to Firebase Firestore so it appears in Admin Dashboard
+          saveUserToFirestore(newUser);
+        }}
         onLogout={() =>
           updatePlatformState((prev) => ({
             ...prev,

@@ -13,6 +13,9 @@ import {
   testFirebaseConnection,
   syncAllToFirebase,
   subscribeToFirebaseStatus,
+  fetchFirestoreUsers,
+  saveUserToFirestore,
+  deleteUserFromFirestore,
   FirebaseConnectionStatus,
 } from '../utils/firebase';
 
@@ -77,7 +80,19 @@ export default function AdminDashboardModal({
     if (open && activeTab === 'firebase') {
       testFirebaseConnection();
     }
+    if (open && activeTab === 'users') {
+      fetchFirestoreUsers().then((fetched) => {
+        if (fetched && fetched.length > 0) {
+          const userMap = new Map<string, UserAccount>();
+          users.forEach((u) => userMap.set(u.id, u));
+          fetched.forEach((u) => userMap.set(u.id, u));
+          onUpdateUsers(Array.from(userMap.values()));
+        }
+      }).catch(() => {});
+    }
   }, [open, activeTab]);
+
+  const [isRefreshingUsers, setIsRefreshingUsers] = useState(false);
 
   if (!open) return null;
 
@@ -88,6 +103,32 @@ export default function AdminDashboardModal({
   const showSavedFeedback = (msgAr: string, msgEn: string) => {
     setSaveFeedback(isAr ? msgAr : msgEn);
     setTimeout(() => setSaveFeedback(''), 2500);
+  };
+
+  const handleRefreshUsersFromFirebase = async () => {
+    setIsRefreshingUsers(true);
+    try {
+      const fetched = await fetchFirestoreUsers();
+      if (fetched && fetched.length > 0) {
+        const userMap = new Map<string, UserAccount>();
+        users.forEach((u) => userMap.set(u.id, u));
+        fetched.forEach((u) => userMap.set(u.id, u));
+        onUpdateUsers(Array.from(userMap.values()));
+        showSavedFeedback(
+          `تم جلب وتحديث الحسابات من Firebase بنجاح (${fetched.length} مستخدم) ✓`,
+          `Users refreshed from Firebase (${fetched.length} users) ✓`
+        );
+      } else {
+        showSavedFeedback(
+          'قائمة الحسابات متزامنة تماماً مع Firebase ✓',
+          'Users list is up-to-date with Firebase ✓'
+        );
+      }
+    } catch {
+      showSavedFeedback('تعذر جلب البيانات من خادم Firebase', 'Could not refresh from Firebase');
+    } finally {
+      setIsRefreshingUsers(false);
+    }
   };
 
   const handleTestFirebase = async () => {
@@ -115,16 +156,21 @@ export default function AdminDashboardModal({
   };
 
   const handleToggleUserPro = (userId: string) => {
+    let updatedUser: UserAccount | undefined;
     const next = users.map((u) => {
       if (u.id !== userId) return u;
       const nextPro = !u.isPro;
-      return {
+      updatedUser = {
         ...u,
         isPro: nextPro,
         proActivatedAt: nextPro ? new Date().toISOString() : undefined,
       };
+      return updatedUser;
     });
     onUpdateUsers(next);
+    if (updatedUser) {
+      saveUserToFirestore(updatedUser);
+    }
     showSavedFeedback('تم تحديث حالة اشتراك المستخدم بنجاح ✓', 'User Pro status updated ✓');
   };
 
@@ -132,6 +178,7 @@ export default function AdminDashboardModal({
     const target = users.find((u) => u.id === userId);
     if (!target || target.role === 'admin') return;
     onUpdateUsers(users.filter((u) => u.id !== userId));
+    deleteUserFromFirestore(userId);
     showSavedFeedback('تم حذف الحساب بنجاح', 'User account removed');
   };
 
@@ -155,10 +202,11 @@ export default function AdminDashboardModal({
       proActivatedAt: newUserIsPro ? new Date().toISOString() : undefined,
     };
     onUpdateUsers([created, ...users]);
+    saveUserToFirestore(created);
     setNewUserName('');
     setNewUserEmail('');
     setNewUserPhone('');
-    showSavedFeedback('تم إنشاء الحساب وإضافته للقائمة بنجاح ✓', 'User account created ✓');
+    showSavedFeedback('تم إنشاء الحساب وحفظه في Firebase بنجاح ✓', 'User account created & saved to Firebase ✓');
   };
 
   const handleToggleFormatPro = (fmtKey: string) => {
@@ -226,7 +274,20 @@ export default function AdminDashboardModal({
     showSavedFeedback('تم حذف الإشعار', 'Notification deleted');
   };
 
-  const filteredUsers = users.filter((u) => {
+  const isRecentUser = (u: UserAccount) => {
+    if (!u.createdAt) return false;
+    const diffHours = (Date.now() - new Date(u.createdAt).getTime()) / (1000 * 60 * 60);
+    return diffHours < 48;
+  };
+
+  // Sort newest registrations first so new users always appear at the top!
+  const sortedUsers = [...users].sort((a, b) => {
+    const timeA = new Date(a.createdAt || 0).getTime();
+    const timeB = new Date(b.createdAt || 0).getTime();
+    return timeB - timeA;
+  });
+
+  const filteredUsers = sortedUsers.filter((u) => {
     const q = userSearch.toLowerCase().trim();
     if (!q) return true;
     return (
@@ -235,6 +296,8 @@ export default function AdminDashboardModal({
       (u.phone || '').toLowerCase().includes(q)
     );
   });
+
+  const recentUsers = sortedUsers.filter((u) => u.role !== 'admin' && isRecentUser(u));
 
   const proUsersCount = users.filter((u) => u.isPro).length;
   const freeUsersCount = users.filter((u) => !u.isPro).length;
@@ -438,6 +501,89 @@ export default function AdminDashboardModal({
           {/* TAB 1: USERS & ACCOUNTS */}
           {activeTab === 'users' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              {/* Recent Registrations Live Activity Card */}
+              {recentUsers.length > 0 && (
+                <div
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(59, 130, 246, 0.14) 100%)',
+                    border: '1px solid rgba(16, 185, 129, 0.5)',
+                    borderRadius: '12px',
+                    padding: '14px 18px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    boxShadow: '0 8px 24px rgba(16, 185, 129, 0.12)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ fontSize: '26px' }}>🔔</span>
+                    <div>
+                      <div
+                        style={{
+                          fontWeight: 800,
+                          fontSize: '14px',
+                          color: '#6ee7b7',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}
+                      >
+                        <span>
+                          {isAr
+                            ? `تم تسجيل مستخدم جديد مؤخراً (${recentUsers.length} حساب جديد)!`
+                            : `New User Registered Recently (${recentUsers.length} new account${recentUsers.length > 1 ? 's' : ''})!`}
+                        </span>
+                        <span
+                          style={{
+                            background: '#10b981',
+                            color: '#022c22',
+                            padding: '2px 8px',
+                            borderRadius: '99px',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          {isAr ? 'حساب جديد' : 'NEW'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#cbd5e1', marginTop: '3px' }}>
+                        {isAr
+                          ? `أحدث تسجيل: ${recentUsers[0].email} — ${new Date(recentUsers[0].createdAt).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' })}`
+                          : `Latest: ${recentUsers[0].email} — ${new Date(recentUsers[0].createdAt).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })}`}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleUserPro(recentUsers[0].id)}
+                      style={{
+                        padding: '7px 14px',
+                        borderRadius: '8px',
+                        background: recentUsers[0].isPro
+                          ? 'rgba(239, 68, 68, 0.2)'
+                          : 'linear-gradient(135deg, #f59e0b, #d97706)',
+                        border: '1px solid rgba(245, 158, 11, 0.6)',
+                        color: '#fff',
+                        fontWeight: 800,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {recentUsers[0].isPro
+                        ? isAr
+                          ? 'إلغاء برو لأحدث مستخدم'
+                          : 'Revoke Pro'
+                        : isAr
+                          ? '👑 تفعيل باقة برو للمستخدم الجديد فوراً'
+                          : '👑 Activate Pro for New User'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Summary Cards */}
               <div
                 style={{
@@ -607,11 +753,39 @@ export default function AdminDashboardModal({
                     flexWrap: 'wrap',
                   }}
                 >
-                  <b style={{ fontSize: '14px' }}>
-                    {isAr
-                      ? `جميع الحسابات المسجلة على الموقع (${filteredUsers.length})`
-                      : `Registered User Accounts (${filteredUsers.length})`}
-                  </b>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <b style={{ fontSize: '14px' }}>
+                      {isAr
+                        ? `جميع الحسابات المسجلة على الموقع (${filteredUsers.length})`
+                        : `Registered User Accounts (${filteredUsers.length})`}
+                    </b>
+                    <button
+                      type="button"
+                      onClick={handleRefreshUsersFromFirebase}
+                      disabled={isRefreshingUsers}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        background: 'rgba(59, 130, 246, 0.15)',
+                        border: '1px solid rgba(59, 130, 246, 0.4)',
+                        color: '#93c5fd',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                      }}
+                      title={isAr ? 'تحديث ومزامنة الحسابات مباشرة من Firebase' : 'Refresh users directly from Firebase'}
+                    >
+                      <span>🔄</span>
+                      <span>
+                        {isRefreshingUsers
+                          ? (isAr ? 'جاري التحديث...' : 'Refreshing...')
+                          : (isAr ? 'تحديث من Firebase' : 'Sync Firebase')}
+                      </span>
+                    </button>
+                  </div>
                   <input
                     type="text"
                     placeholder={
@@ -645,29 +819,58 @@ export default function AdminDashboardModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredUsers.map((u) => (
-                        <tr key={u.id} style={{ borderBottom: '1px solid #1d1d2b' }}>
+                      {filteredUsers.map((u) => {
+                        const isRecent = isRecentUser(u) && u.role !== 'admin';
+                        return (
+                        <tr
+                          key={u.id}
+                          style={{
+                            borderBottom: '1px solid #1d1d2b',
+                            background: isRecent ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
+                          }}
+                        >
                           <td style={{ padding: '10px 8px', fontWeight: 600, color: '#fff' }}>
-                            {u.name}
-                            {u.role === 'admin' && (
-                              <span
-                                style={{
-                                  marginInlineStart: '6px',
-                                  background: '#3b82f6',
-                                  color: '#fff',
-                                  padding: '1px 6px',
-                                  borderRadius: '4px',
-                                  fontSize: '10px',
-                                }}
-                              >
-                                {isAr ? 'مدير' : 'Admin'}
-                              </span>
-                            )}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{u.name}</span>
+                              {isRecent && (
+                                <span
+                                  style={{
+                                    background: '#10b981',
+                                    color: '#022c22',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '10px',
+                                    fontWeight: 800,
+                                  }}
+                                >
+                                  🌟 {isAr ? 'جديد' : 'NEW'}
+                                </span>
+                              )}
+                              {u.role === 'admin' && (
+                                <span
+                                  style={{
+                                    background: '#3b82f6',
+                                    color: '#fff',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '10px',
+                                  }}
+                                >
+                                  {isAr ? 'مدير' : 'Admin'}
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>{u.email}</td>
                           <td style={{ padding: '10px 8px', color: '#94a3b8' }}>{u.phone || '—'}</td>
                           <td style={{ padding: '10px 8px', color: '#94a3b8' }}>
-                            {new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}
+                            <div>{new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</div>
+                            <div style={{ fontSize: '10px', color: '#64748b' }}>
+                              {new Date(u.createdAt).toLocaleTimeString(isAr ? 'ar-EG' : 'en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </div>
                           </td>
                           <td style={{ padding: '10px 8px' }}>
                             {u.isPro ? (
@@ -750,7 +953,8 @@ export default function AdminDashboardModal({
                             </div>
                           </td>
                         </tr>
-                      ))}
+                      );
+                    })}
                     </tbody>
                   </table>
                 </div>

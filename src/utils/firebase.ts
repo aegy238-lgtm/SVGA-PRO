@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   onSnapshot,
   collection,
   getDocs,
@@ -220,6 +221,113 @@ export async function syncSettingsToFirestore(settings: PlatformSettings): Promi
   } catch (err) {
     console.warn('Firestore syncSettings notice:', err);
     return false;
+  }
+}
+
+/**
+ * Save single user account directly to Firestore (and attempt Firebase Auth registration)
+ */
+export async function saveUserToFirestore(user: UserAccount): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    const uRef = doc(db, 'users', user.id);
+    await setDoc(
+      uRef,
+      {
+        ...user,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+
+    // Also attempt registering the account in Firebase Auth Identity Toolkit in background
+    if (user.email && user.password) {
+      try {
+        fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: user.email,
+              password: user.password,
+              returnSecureToken: true,
+            }),
+          }
+        ).catch(() => {});
+      } catch {}
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Firestore saveUser notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Delete a user from Firestore
+ */
+export async function deleteUserFromFirestore(userId: string): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    await deleteDoc(doc(db, 'users', userId));
+    return true;
+  } catch (err) {
+    console.warn('Firestore deleteUser notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch all users from Firestore
+ */
+export async function fetchFirestoreUsers(): Promise<UserAccount[]> {
+  try {
+    const db = getFirebaseDb();
+    const snap = await getDocs(collection(db, 'users'));
+    const list: UserAccount[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as UserAccount;
+      if (data && data.id && data.email) {
+        list.push(data);
+      }
+    });
+    return list;
+  } catch (err) {
+    console.warn('Firestore fetchUsers notice:', err);
+    return [];
+  }
+}
+
+/**
+ * Real-time listener for Firestore users collection
+ */
+export function subscribeToFirestoreUsers(callback: (users: UserAccount[]) => void): () => void {
+  try {
+    const db = getFirebaseDb();
+    const unsub = onSnapshot(
+      collection(db, 'users'),
+      (snapshot) => {
+        const list: UserAccount[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as UserAccount;
+          if (data && data.id && data.email) {
+            list.push(data);
+          }
+        });
+        if (list.length > 0) {
+          callback(list);
+        }
+      },
+      (err) => {
+        console.warn('Firestore users snapshot warning:', err);
+      }
+    );
+    return unsub;
+  } catch (e) {
+    console.warn('Could not initialize Firestore users listener:', e);
+    return () => {};
   }
 }
 
