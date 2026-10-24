@@ -15,9 +15,20 @@ body.is-admin * {
   user-select: text !important;
   -webkit-touch-callout: default !important;
 }
+body.screen-shield-active #root > nav,
+body.screen-shield-active #root > main,
+body.screen-shield-active #view,
+body.screen-shield-active canvas,
+body.screen-shield-active video {
+  filter: blur(60px) grayscale(100%) opacity(0) !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+}
+
 @media print {
-  body {
+  html, body, #root {
     display: none !important;
+    visibility: hidden !important;
   }
 }
 button,input,select,textarea{font:inherit;color:inherit}

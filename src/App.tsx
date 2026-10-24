@@ -1195,7 +1195,7 @@ export default function App() {
       />
 
       {/* Screen Security & Anti-Recording Shield Overlay */}
-      {screenShieldActive && !isAdminUser && (
+      {screenShieldActive && (
         <div
           id="screenSecurityShield"
           role="alertdialog"
@@ -1204,7 +1204,7 @@ export default function App() {
             position: 'fixed',
             inset: 0,
             zIndex: 999999,
-            background: '#040407',
+            background: 'rgba(4, 4, 8, 0.96)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -1212,44 +1212,46 @@ export default function App() {
             padding: '24px',
             textAlign: 'center',
             color: '#fff',
-            backdropFilter: 'blur(20px)',
+            backdropFilter: 'blur(30px)',
           }}
         >
           <div
             style={{
-              width: '84px',
-              height: '84px',
+              width: '88px',
+              height: '88px',
               borderRadius: '50%',
-              background: 'rgba(239, 68, 68, 0.15)',
+              background: 'rgba(239, 68, 68, 0.18)',
               border: '2px solid #ef4444',
               display: 'grid',
               placeItems: 'center',
-              fontSize: '38px',
+              fontSize: '40px',
               marginBottom: '20px',
-              boxShadow: '0 0 50px rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 0 60px rgba(239, 68, 68, 0.5)',
+              animation: 'pulse 2s infinite',
             }}
           >
             🚫
           </div>
-          <h2 style={{ fontSize: '22px', fontWeight: 800, color: '#fca5a5', margin: '0 0 10px' }}>
-            تنبيه أمني: محاولة تصوير / تسجيل الشاشة!
+          <h2 style={{ fontSize: '24px', fontWeight: 800, color: '#fca5a5', margin: '0 0 12px' }}>
+            ⛔ عذراً: الموقع متوقف ومجمد مؤقتاً!
           </h2>
           <p
             style={{
-              maxWidth: '520px',
-              fontSize: '14px',
+              maxWidth: '560px',
+              fontSize: '15px',
               color: '#cbd5e1',
               lineHeight: 1.6,
-              margin: '0 0 24px',
+              margin: '0 0 28px',
+              fontWeight: 600,
             }}
           >
-            يمنع منعاً باتاً التقاط صور الشاشة (Screenshots) أو تسجيل مقاطع الفيديو لمحتوى المنصة لحماية حقوق الملكية والبيانات. تم إيقاف الرؤية لحماية محتوى الموقع.
+            عذراً، الموقع متوقف لحين ما تلغي تسجيل السكرين الفيديو أو أداة التقاط لقطة الشاشة (Screenshot). يرجى إغلاق أداة التصوير للاستمرار في استخدام المنصة.
           </p>
           <button
             type="button"
             onClick={() => setScreenShieldActive(false)}
             style={{
-              padding: '12px 28px',
+              padding: '12px 30px',
               borderRadius: '10px',
               background: 'linear-gradient(135deg, #ef4444, #dc2626)',
               border: 0,
@@ -1257,10 +1259,10 @@ export default function App() {
               fontWeight: 800,
               fontSize: '14px',
               cursor: 'pointer',
-              boxShadow: '0 6px 20px rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 6px 24px rgba(239, 68, 68, 0.45)',
             }}
           >
-            إغلاق التنبيه والعودة للموقع
+            🔄 إلغاء التصوير والعودة للموقع
           </button>
         </div>
       )}
