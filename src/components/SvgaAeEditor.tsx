@@ -3704,16 +3704,20 @@ export default function SvgaAeEditor({
                         }}
                       >
                         <div
+                          title="عرض الصورة بوضوح"
                           style={{
-                            width: '38px',
-                            height: '38px',
+                            width: '54px',
+                            height: '54px',
                             borderRadius: '6px',
                             background:
                               'repeating-conic-gradient(#22222c 0 25%, #17171f 0 50%) 0 0 / 10px 10px',
-                            display: 'grid',
-                            placeItems: 'center',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '3px',
                             overflow: 'hidden',
                             flexShrink: 0,
+                            border: '1px solid rgba(255,255,255,0.12)',
                           }}
                         >
                           {th && (

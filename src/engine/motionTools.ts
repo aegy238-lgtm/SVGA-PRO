@@ -1152,12 +1152,191 @@ export function initMotionToolsFixed() {
       dl(b, k + '.png');
     }
   }
-  $('#assets').addEventListener('click', (e) => {
-    const t = e.target.closest('.th');
-    if (!t) return;
-    if (e.target.closest('.ed')) openEdit(t.dataset.k);
-    else if (e.target.closest('.cp')) copyImg(t.dataset.k);
-  });
+  function openAssetPreviewModal(k: string) {
+    const url = A[k];
+    if (!url) return;
+
+    let modal = document.getElementById('assetPreviewModal');
+    if (modal) modal.remove();
+
+    modal = document.createElement('div');
+    modal.id = 'assetPreviewModal';
+    modal.style.cssText = `
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: rgba(4, 4, 10, 0.88);
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      color: #fff;
+    `;
+
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      const dimStr = `${img.naturalWidth} × ${img.naturalHeight} px`;
+      modal.innerHTML = `
+        <div style="
+          background: #12121a;
+          border: 1px solid rgba(124, 92, 255, 0.4);
+          box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+          border-radius: 14px;
+          max-width: 90vw;
+          max-height: 85vh;
+          width: 580px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        ">
+          <div style="
+            padding: 12px 18px;
+            border-bottom: 1px solid #1e1e2c;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #171722;
+          ">
+            <div>
+              <div style="font-weight: 700; font-size: 14px; color: #f0f0f8;">🖼️ ${k}</div>
+              <div style="font-size: 11px; color: #a0a0b5; margin-top: 2px;">الأبعاد الحقيقية: ${dimStr}</div>
+            </div>
+            <button id="closePvModalBtn" style="
+              background: #242436;
+              border: 0;
+              color: #fff;
+              width: 28px;
+              height: 28px;
+              border-radius: 50%;
+              cursor: pointer;
+              font-size: 16px;
+              font-weight: 700;
+            ">✕</button>
+          </div>
+          <div style="
+            flex: 1;
+            min-height: 220px;
+            max-height: 60vh;
+            overflow: auto;
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            background: repeating-conic-gradient(#1f1f2e 0 25%, #14141e 0 50%) 0 0 / 16px 16px;
+          ">
+            <img src="${url}" alt="${k}" style="max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 4px 20px rgba(0,0,0,0.5));" />
+          </div>
+          <div style="
+            padding: 12px 18px;
+            border-top: 1px solid #1e1e2c;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            background: #171722;
+          ">
+            <a href="${url}" download="${k}.png" style="
+              padding: 8px 16px;
+              border-radius: 8px;
+              background: #7c5cff;
+              color: #fff;
+              text-decoration: none;
+              font-weight: 700;
+              font-size: 12px;
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+            ">⬇️ تحميل الصورة</a>
+            <button id="pvCopyBtn" style="
+              padding: 8px 16px;
+              border-radius: 8px;
+              background: #272738;
+              border: 1px solid #3a3a52;
+              color: #fff;
+              font-weight: 700;
+              font-size: 12px;
+              cursor: pointer;
+            ">📋 نسخ</button>
+            <button id="pvEditBtn" style="
+              padding: 8px 16px;
+              border-radius: 8px;
+              background: #272738;
+              border: 1px solid #3a3a52;
+              color: #fff;
+              font-weight: 700;
+              font-size: 12px;
+              cursor: pointer;
+            ">✎ تعديل</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+      });
+      document.getElementById('closePvModalBtn')?.addEventListener('click', () => {
+        modal.remove();
+      });
+      document.getElementById('pvCopyBtn')?.addEventListener('click', () => {
+        copyImg(k);
+      });
+      document.getElementById('pvEditBtn')?.addEventListener('click', () => {
+        modal.remove();
+        openEdit(k);
+      });
+    };
+  }
+
+  const assetsEl = $('#assets');
+  if (assetsEl) {
+    assetsEl.addEventListener('click', (e: any) => {
+      const t = e.target.closest('.th');
+      if (!t) return;
+      const k = t.dataset.k;
+      if (e.target.closest('.ed')) {
+        openEdit(k);
+      } else if (e.target.closest('.cp')) {
+        copyImg(k);
+      } else {
+        openAssetPreviewModal(k);
+      }
+    });
+  }
+
+  function renderAssetCards(filterQuery = '') {
+    const assetsContainer = $('#assets');
+    if (!assetsContainer) return;
+    const q = filterQuery.trim().toLowerCase();
+    const keys = Object.keys(A).filter((k) => !q || k.toLowerCase().includes(q));
+
+    if (keys.length === 0) {
+      assetsContainer.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--mu);font-size:11px">لا توجد صور مطابقة</div>`;
+      return;
+    }
+
+    assetsContainer.innerHTML = keys
+      .map((k) => {
+        const src = A[k];
+        return `<div class="th" title="${k}" data-k="${k}">
+          <div class="th-img-wrap">
+            <img src="${src}" alt="${k}" loading="lazy" />
+          </div>
+          <div class="th-info">
+            <span class="th-name" title="${k}">${k}</span>
+            <span class="ac">
+              <button class="ed" title="تعديل الصورة" aria-label="Edit ${k}">✎</button>
+              <button class="cp" title="نسخ الصورة" aria-label="Copy ${k}">⧉</button>
+              <button class="pv" title="تكبير ومعاينة" aria-label="Preview ${k}">🔍</button>
+            </span>
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
   function buildAssets() {
     for (const k in A) delete A[k];
     const im = (window.VI && player && window.VI.images) || {};
@@ -1165,12 +1344,15 @@ export function initMotionToolsFixed() {
       const s = im[k];
       A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
     }
-    $('#assets').innerHTML = Object.keys(A)
-      .map(
-        (k) =>
-          `<div class='th' title='${k}' data-k='${k}'><img src='${A[k]}' alt='${k}'><span class='ac'><button class='ed' title='Edit image' aria-label='Edit ${k}'>✎</button><button class='cp' title='Copy image' aria-label='Copy ${k}'>⧉</button></span></div>`
-      )
-      .join('');
+    const qVal = ($('#q') as HTMLInputElement)?.value || '';
+    renderAssetCards(qVal);
+  }
+
+  const qInput = $('#q') as HTMLInputElement | null;
+  if (qInput) {
+    qInput.oninput = (e: any) => {
+      renderAssetCards(e.target.value);
+    };
   }
   function prep(f) {
     cur = f;

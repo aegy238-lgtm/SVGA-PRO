@@ -919,8 +919,48 @@ export default function App() {
                   {t.openSvgaEditor}
                 </button>
               </div>
-              <input className="search" id="q" type="text" placeholder={t.searchImagesPlaceholder} />
-              <div className="grid" id="assets"></div>
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                <input
+                  className="search"
+                  id="q"
+                  type="text"
+                  placeholder={t.searchImagesPlaceholder}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="button"
+                  id="toggleAssetsColsBtn"
+                  className="pill"
+                  title="تغيير أسلوب العرض (عرض ممتد كامل / شبكة)"
+                  onClick={(e) => {
+                    const assetsEl = document.getElementById('assets');
+                    if (!assetsEl) return;
+                    if (assetsEl.classList.contains('cols-2')) {
+                      assetsEl.classList.remove('cols-2');
+                      assetsEl.classList.add('cols-1');
+                      (e.currentTarget as HTMLElement).textContent = '📱 شبكة';
+                    } else if (assetsEl.classList.contains('cols-1')) {
+                      assetsEl.classList.remove('cols-1');
+                      assetsEl.classList.add('cols-3');
+                      (e.currentTarget as HTMLElement).textContent = '📐 مصغر';
+                    } else {
+                      assetsEl.classList.remove('cols-3');
+                      assetsEl.classList.add('cols-2');
+                      (e.currentTarget as HTMLElement).textContent = '↕️ عرض كامل';
+                    }
+                  }}
+                  style={{
+                    padding: '3px 8px',
+                    fontSize: '11px',
+                    whiteSpace: 'nowrap',
+                    background: '#191926',
+                    borderColor: '#2f2f45',
+                  }}
+                >
+                  ↕️ عرض كامل
+                </button>
+              </div>
+              <div className="grid cols-2" id="assets"></div>
             </aside>
 
             <div className="stage" id="stage">
