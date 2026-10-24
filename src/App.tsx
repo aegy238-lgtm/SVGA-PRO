@@ -24,11 +24,15 @@ import {
   testFirebaseConnection,
   subscribeToFirebaseStatus,
   syncSettingsToFirestore,
+  fetchFirestoreSettings,
+  subscribeToFirestoreSettings,
   syncUsersToFirestore,
-  syncNotificationsToFirestore,
   saveUserToFirestore,
   subscribeToFirestoreUsers,
   fetchFirestoreUsers,
+  syncNotificationsToFirestore,
+  fetchFirestoreNotifications,
+  subscribeToFirestoreNotifications,
   FirebaseConnectionStatus,
 } from './utils/firebase';
 
@@ -79,17 +83,43 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Real-time synchronization of registered accounts with Firebase Firestore
+  // Full real-time synchronization with Firebase Firestore (Settings, Users, Notifications)
   useEffect(() => {
+    // 1. Settings Real-Time Listener (Logo, Site Name, Pro Pricing, Formats, WhatsApp)
+    const unsubSettings = subscribeToFirestoreSettings((liveSettings) => {
+      if (!liveSettings || !liveSettings.siteName) return;
+      updatePlatformState((prev) => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          ...liveSettings,
+        },
+      }));
+    });
+
+    // Initial fetch of settings from Firestore
+    fetchFirestoreSettings().then((remoteSettings) => {
+      if (remoteSettings && remoteSettings.siteName) {
+        updatePlatformState((prev) => ({
+          ...prev,
+          settings: {
+            ...prev.settings,
+            ...remoteSettings,
+          },
+        }));
+      } else {
+        // Bootstrap initial platform settings to Firestore
+        syncSettingsToFirestore(stateRef.current.settings);
+      }
+    });
+
+    // 2. Users Real-Time Listener
     const unsubUsers = subscribeToFirestoreUsers((liveUsers) => {
       if (!liveUsers || liveUsers.length === 0) return;
       updatePlatformState((prev) => {
         const userMap = new Map<string, UserAccount>();
-        // Always preserve system admin accounts
         INITIAL_USERS.forEach((u) => userMap.set(u.id, u));
-        // Add existing state users
         prev.users.forEach((u) => userMap.set(u.id, u));
-        // Merge in live Firestore users (keyed by id or email)
         liveUsers.forEach((u) => {
           userMap.set(u.id, u);
         });
@@ -100,7 +130,7 @@ export default function App() {
       });
     });
 
-    // Initial fetch from Firestore
+    // Initial fetch of users from Firestore
     fetchFirestoreUsers().then((fetched) => {
       if (fetched && fetched.length > 0) {
         updatePlatformState((prev) => {
@@ -116,8 +146,29 @@ export default function App() {
       }
     });
 
+    // 3. Notifications Real-Time Listener
+    const unsubNotifs = subscribeToFirestoreNotifications((liveNotifs) => {
+      if (!liveNotifs || liveNotifs.length === 0) return;
+      updatePlatformState((prev) => ({
+        ...prev,
+        notifications: liveNotifs,
+      }));
+    });
+
+    // Initial fetch of notifications from Firestore
+    fetchFirestoreNotifications().then((remoteNotifs) => {
+      if (remoteNotifs && remoteNotifs.length > 0) {
+        updatePlatformState((prev) => ({
+          ...prev,
+          notifications: remoteNotifs,
+        }));
+      }
+    });
+
     return () => {
+      unsubSettings();
       unsubUsers();
+      unsubNotifs();
     };
   }, []);
 

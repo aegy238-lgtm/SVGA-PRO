@@ -6,6 +6,7 @@ import {
   buildWhatsAppUrl,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
+import { fetchFirestoreUsers } from '../utils/firebase';
 
 interface ProSubscriptionModalProps {
   open: boolean;
@@ -288,7 +289,7 @@ export function UserAuthModal({
   const t = getTranslation(state.language);
   const currentUser = state.users.find((u) => u.id === state.currentUserId) || null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     const emailClean = email.trim().toLowerCase();
@@ -304,9 +305,22 @@ export function UserAuthModal({
     }
 
     if (mode === 'login') {
-      const found = state.users.find(
+      let found = state.users.find(
         (u) => u.email.toLowerCase() === emailClean
       );
+
+      // If not in local state, query Firestore directly for cross-device / fresh sessions
+      if (!found) {
+        try {
+          const remoteUsers = await fetchFirestoreUsers();
+          const remoteFound = remoteUsers.find((u) => u.email.toLowerCase() === emailClean);
+          if (remoteFound) {
+            onRegisterUser(remoteFound);
+            found = remoteFound;
+          }
+        } catch {}
+      }
+
       if (!found) {
         setErrorMsg(
           isAr
@@ -345,9 +359,15 @@ export function UserAuthModal({
         return;
       }
 
-      const existing = state.users.find(
+      let existing = state.users.find(
         (u) => u.email.toLowerCase() === emailClean
       );
+      if (!existing) {
+        try {
+          const remoteUsers = await fetchFirestoreUsers();
+          existing = remoteUsers.find((u) => u.email.toLowerCase() === emailClean);
+        } catch {}
+      }
       if (existing) {
         setErrorMsg(
           isAr

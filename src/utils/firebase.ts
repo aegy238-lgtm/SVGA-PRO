@@ -225,6 +225,50 @@ export async function syncSettingsToFirestore(settings: PlatformSettings): Promi
 }
 
 /**
+ * Fetch platform settings from Firestore
+ */
+export async function fetchFirestoreSettings(): Promise<PlatformSettings | null> {
+  try {
+    const db = getFirebaseDb();
+    const snap = await getDoc(doc(db, 'platform_settings', 'config'));
+    if (snap.exists()) {
+      return snap.data() as PlatformSettings;
+    }
+    return null;
+  } catch (err) {
+    console.warn('Firestore fetchSettings notice:', err);
+    return null;
+  }
+}
+
+/**
+ * Real-time listener for Firestore platform settings
+ */
+export function subscribeToFirestoreSettings(callback: (settings: PlatformSettings) => void): () => void {
+  try {
+    const db = getFirebaseDb();
+    const unsub = onSnapshot(
+      doc(db, 'platform_settings', 'config'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as PlatformSettings;
+          if (data && data.siteName) {
+            callback(data);
+          }
+        }
+      },
+      (err) => {
+        console.warn('Firestore settings snapshot notice:', err);
+      }
+    );
+    return unsub;
+  } catch (e) {
+    console.warn('Could not initialize Firestore settings listener:', e);
+    return () => {};
+  }
+}
+
+/**
  * Save single user account directly to Firestore (and attempt Firebase Auth registration)
  */
 export async function saveUserToFirestore(user: UserAccount): Promise<boolean> {
@@ -344,6 +388,91 @@ export async function syncUsersToFirestore(users: UserAccount[]): Promise<boolea
     return true;
   } catch (err) {
     console.warn('Firestore syncUsers notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch broadcast notifications from Firestore
+ */
+export async function fetchFirestoreNotifications(): Promise<BroadcastNotification[]> {
+  try {
+    const db = getFirebaseDb();
+    const snap = await getDocs(collection(db, 'broadcast_notifications'));
+    const list: BroadcastNotification[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as BroadcastNotification;
+      if (data && data.id && data.title) {
+        list.push(data);
+      }
+    });
+    return list;
+  } catch (err) {
+    console.warn('Firestore fetchNotifications notice:', err);
+    return [];
+  }
+}
+
+/**
+ * Real-time listener for Firestore broadcast notifications
+ */
+export function subscribeToFirestoreNotifications(
+  callback: (notifs: BroadcastNotification[]) => void
+): () => void {
+  try {
+    const db = getFirebaseDb();
+    const unsub = onSnapshot(
+      collection(db, 'broadcast_notifications'),
+      (snapshot) => {
+        const list: BroadcastNotification[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as BroadcastNotification;
+          if (data && data.id && data.title) {
+            list.push(data);
+          }
+        });
+        if (list.length > 0) {
+          callback(list);
+        }
+      },
+      (err) => {
+        console.warn('Firestore notifications snapshot warning:', err);
+      }
+    );
+    return unsub;
+  } catch (e) {
+    console.warn('Could not initialize Firestore notifications listener:', e);
+    return () => {};
+  }
+}
+
+/**
+ * Save single notification to Firestore
+ */
+export async function saveNotificationToFirestore(notif: BroadcastNotification): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    await setDoc(doc(db, 'broadcast_notifications', notif.id), {
+      ...notif,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    return true;
+  } catch (err) {
+    console.warn('Firestore saveNotification notice:', err);
+    return false;
+  }
+}
+
+/**
+ * Delete single notification from Firestore
+ */
+export async function deleteNotificationFromFirestore(notifId: string): Promise<boolean> {
+  try {
+    const db = getFirebaseDb();
+    await deleteDoc(doc(db, 'broadcast_notifications', notifId));
+    return true;
+  } catch (err) {
+    console.warn('Firestore deleteNotification notice:', err);
     return false;
   }
 }
