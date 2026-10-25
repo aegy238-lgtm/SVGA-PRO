@@ -311,7 +311,7 @@ export function loadPlatformState(): PlatformState {
       (u: UserAccount) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
     );
     const validCurrentUserId =
-      parsed.currentUserId && cleanedUsers.some((u) => u.id === parsed.currentUserId)
+      parsed.currentUserId && cleanedUsers.some((u: UserAccount) => u.id === parsed.currentUserId)
         ? parsed.currentUserId
         : null;
 

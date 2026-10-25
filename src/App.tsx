@@ -589,6 +589,20 @@ export default function App() {
           >
             {t.navSvgaEditor}
           </a>
+          <a
+            data-v="gifts"
+            id="giftsStudioNavBtn"
+            style={{
+              padding: '3px 9px',
+              borderRadius: '6px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            <span>🎁</span>
+            <span>{t.navGiftsStudio}</span>
+          </a>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -963,8 +977,8 @@ export default function App() {
               <div className="grid cols-2" id="assets"></div>
             </aside>
 
-            <div className="stage" id="stage">
-              <div id="view">{t.dropToPreview}</div>
+            <div className="stage" id="stage" style={{ position: 'relative' }}>
+              <div id="view" data-placeholder={t.dropToPreview}></div>
               <div className="bar">
                 <button className="pill" id="pp" style={{ padding: '3px 10px' }}>
                   {t.pause}
@@ -977,6 +991,27 @@ export default function App() {
               <div className="pill" style={{ cursor: 'default' }} id="again">
                 {t.dropAgain}
               </div>
+              {watermarkText && (
+                <div
+                  id="stageWatermark"
+                  style={{
+                    position: 'absolute',
+                    right: '18px',
+                    bottom: '52px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    background: 'rgba(0,0,0,0.55)',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    color: '#fff',
+                    fontWeight: 700,
+                    fontSize: '12px',
+                    pointerEvents: 'none',
+                    zIndex: 20,
+                  }}
+                >
+                  {watermarkText}
+                </div>
+              )}
             </div>
 
             <div className="zoom-bar" id="zoomBar">
@@ -1070,9 +1105,7 @@ export default function App() {
 
             <aside className="side r">
               <h4>{t.animationInfo}</h4>
-              <div className="info" id="info">
-                <span>{t.noFileLoaded}</span>
-              </div>
+              <div className="info" id="info" data-empty-text={t.noFileLoaded}></div>
               <h4>{t.animationEdit}</h4>
               <div className="row">
                 <label>{t.resize}</label>
@@ -1185,6 +1218,21 @@ export default function App() {
               if ((window as any).MotionTools?.load) {
                 (window as any).MotionTools.load(file);
               }
+            }}
+          />
+        </section>
+
+        <section className="view" id="gifts" style={{ height: '100%', overflow: 'hidden' }}>
+          <iframe
+            src="/gifts-studio.html"
+            id="giftsStudioFrame"
+            title="استوديو الهدايا"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              display: 'block',
+              background: '#0b0e1a',
             }}
           />
         </section>

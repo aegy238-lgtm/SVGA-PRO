@@ -144,16 +144,40 @@ export function initMotionToolsFixed() {
   dr.onclick = () => fi.click();
   fi.onchange = () => fi.files[0] && load(fi.files[0]);
   ['dragover', 'dragenter'].forEach((n) =>
-    document.addEventListener(n, (e) => {
+    document.addEventListener(n, (e: any) => {
+      // Do not hijack drag/drop when on the Gifts Studio or Editor tab or dropping onto them
+      if (
+        document.getElementById('gifts')?.classList.contains('on') ||
+        document.getElementById('editor')?.classList.contains('on') ||
+        location.hash === '#gifts' ||
+        location.hash === '#editor' ||
+        e.target?.closest?.('#gifts') ||
+        e.target?.closest?.('#editor') ||
+        e.defaultPrevented
+      ) {
+        return;
+      }
       e.preventDefault();
-      dr.classList.add('over');
+      dr?.classList.add('over');
     })
   );
   ['dragleave', 'drop'].forEach((n) =>
-    document.addEventListener(n, (e) => {
+    document.addEventListener(n, (e: any) => {
+      // Do not hijack drag/drop when on the Gifts Studio or Editor tab or dropping onto them
+      if (
+        document.getElementById('gifts')?.classList.contains('on') ||
+        document.getElementById('editor')?.classList.contains('on') ||
+        location.hash === '#gifts' ||
+        location.hash === '#editor' ||
+        e.target?.closest?.('#gifts') ||
+        e.target?.closest?.('#editor') ||
+        e.defaultPrevented
+      ) {
+        return;
+      }
       e.preventDefault();
-      dr.classList.remove('over');
-      if (n === 'drop' && e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+      dr?.classList.remove('over');
+      if (n === 'drop' && e.dataTransfer?.files?.[0]) load(e.dataTransfer.files[0]);
     })
   );
   function info(o) {
@@ -347,7 +371,7 @@ export function initMotionToolsFixed() {
     $$('#assets div').forEach((d) => (d.style.display = d.title.includes(e.target.value) ? '' : 'none'));
 
   const h = location.hash.slice(1);
-  if (['home', 'convert', 'editor'].includes(h)) show(h);
+  if (['home', 'convert', 'editor', 'gifts'].includes(h)) show(h);
 
   /* Block 3: Core conversion & playback */
   let S = null,
