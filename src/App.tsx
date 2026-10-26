@@ -277,7 +277,7 @@ export default function App() {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Devtools shortcuts (F12, Ctrl+Shift+I/J/C, Ctrl+U/S/P)
+      // Block DevTools & Save/Source shortcuts silently without showing screen-recording lock
       if (
         e.key === 'F12' ||
         e.keyCode === 123 ||
@@ -286,17 +286,18 @@ export default function App() {
       ) {
         e.preventDefault();
         e.stopPropagation();
-        triggerShield();
         return false;
       }
 
-      // PrintScreen & Screenshot / Recording shortcuts (Win+Shift+S, Win+Alt+R, Cmd+Shift+3/4/5)
+      // PrintScreen & Screen Recording / Screenshot shortcuts (Win+Shift+S/R, Win+Alt+R, Win+G, Cmd+Shift+3/4/5)
+      const k = e.key.toLowerCase();
       if (
         e.key === 'PrintScreen' ||
         e.code === 'PrintScreen' ||
         e.keyCode === 44 ||
-        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'S', 'r', 'R'].includes(e.key)) ||
-        ((e.metaKey || e.altKey) && ['r', 'R'].includes(e.key) && e.shiftKey)
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'r'].includes(k)) ||
+        (e.metaKey && e.altKey && k === 'r') ||
+        (e.metaKey && k === 'g')
       ) {
         e.preventDefault();
         e.stopPropagation();
@@ -332,47 +333,28 @@ export default function App() {
         return;
       }
       e.preventDefault();
-      triggerShield();
     };
-
-    const handleVisibilityOrBlur = () => {
-      if (document.hidden || !document.hasFocus()) {
-        triggerShield();
-      }
-    };
-
-    // Heartbeat focus monitor to instantly trigger shield if Snipping tool or Game bar opens
-    const focusInterval = setInterval(() => {
-      if (isSecurityEnforced && (!document.hasFocus() || document.hidden)) {
-        triggerShield();
-      }
-    }, 600);
 
     window.addEventListener('contextmenu', handleContextMenu, { capture: true });
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('dragstart', handleDragStart, { capture: true });
     window.addEventListener('copy', handleCopy, { capture: true });
-    window.addEventListener('blur', handleVisibilityOrBlur, { capture: true });
-    document.addEventListener('visibilitychange', handleVisibilityOrBlur, { capture: true });
 
     return () => {
-      clearInterval(focusInterval);
       window.removeEventListener('contextmenu', handleContextMenu, { capture: true });
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
       window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('dragstart', handleDragStart, { capture: true });
       window.removeEventListener('copy', handleCopy, { capture: true });
-      window.removeEventListener('blur', handleVisibilityOrBlur, { capture: true });
-      document.removeEventListener('visibilitychange', handleVisibilityOrBlur, { capture: true });
     };
   }, [isSecurityEnforced]);
 
-  // Anti-Screen-Recording Interception (Media Capture API & MediaRecorder override)
+  // Anti-Screen-Recording Interception (Display Media Capture API, Desktop Capture & Screen Recorder Streams)
   useEffect(() => {
     if (!isSecurityEnforced) return;
 
-    // Overwrite getDisplayMedia
+    // 1. Intercept getDisplayMedia (Browser/Extension Screen & Tab Recording)
     const originalGetDisplayMedia = navigator.mediaDevices?.getDisplayMedia?.bind(
       navigator.mediaDevices
     );
@@ -383,21 +365,69 @@ export default function App() {
       };
     }
 
-    // Overwrite MediaRecorder constructor
+    // 2. Intercept getUserMedia when used for desktop/tab/window screen capture by recording extensions
+    const originalGetUserMedia = navigator.mediaDevices?.getUserMedia?.bind(
+      navigator.mediaDevices
+    );
+    if (navigator.mediaDevices && originalGetUserMedia) {
+      navigator.mediaDevices.getUserMedia = async (constraints?: MediaStreamConstraints) => {
+        const v = constraints?.video as any;
+        const isScreenCapture =
+          v &&
+          (v.displaySurface ||
+            v.chromeMediaSource === 'desktop' ||
+            v.chromeMediaSource === 'screen' ||
+            v.chromeMediaSource === 'tab' ||
+            v.mandatory?.chromeMediaSource === 'desktop' ||
+            v.mandatory?.chromeMediaSource === 'screen' ||
+            v.mandatory?.chromeMediaSource === 'tab' ||
+            v.mediaSource === 'screen' ||
+            v.mediaSource === 'window' ||
+            v.mediaSource === 'tab');
+        if (isScreenCapture) {
+          setScreenShieldActive(true);
+          throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة.');
+        }
+        return originalGetUserMedia(constraints);
+      };
+    }
+
+    // 3. Intercept MediaRecorder only when recording a display/screen/tab capture stream
     const OriginalMediaRecorder = window.MediaRecorder;
     if (OriginalMediaRecorder) {
       const CustomMediaRecorder = function (this: any, stream: MediaStream, options?: any) {
-        setScreenShieldActive(true);
-        throw new Error('🚫 تسجيل الشاشة والفيديو غير مسموح به في الموقع.');
+        const tracks = stream?.getTracks?.() || [];
+        const isDisplayStream = tracks.some((t) => {
+          const s = (t.getSettings?.() || {}) as any;
+          const label = (t.label || '').toLowerCase();
+          return (
+            !!s.displaySurface ||
+            !!s.logicalSurface ||
+            label.includes('screen') ||
+            label.includes('window') ||
+            label.includes('tab') ||
+            label.includes('display')
+          );
+        });
+        if (isDisplayStream) {
+          setScreenShieldActive(true);
+          throw new Error('🚫 تسجيل الشاشة والفيديو غير مسموح به في الموقع.');
+        }
+        return new OriginalMediaRecorder(stream, options);
       } as any;
 
-      CustomMediaRecorder.isTypeSupported = (type: string) => false;
+      CustomMediaRecorder.isTypeSupported = OriginalMediaRecorder.isTypeSupported.bind(
+        OriginalMediaRecorder
+      );
       (window as any).MediaRecorder = CustomMediaRecorder;
     }
 
     return () => {
       if (navigator.mediaDevices && originalGetDisplayMedia) {
         navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia;
+      }
+      if (navigator.mediaDevices && originalGetUserMedia) {
+        navigator.mediaDevices.getUserMedia = originalGetUserMedia;
       }
       if (OriginalMediaRecorder) {
         (window as any).MediaRecorder = OriginalMediaRecorder;
