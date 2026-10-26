@@ -217,7 +217,7 @@ export function initMotionToolsFixed() {
       if (isImage) {
         v.style.backgroundColor = '#0c0d14';
         v.style.backgroundImage = `url("${val}")`;
-        v.style.backgroundSize = 'contain';
+        v.style.backgroundSize = '100% 100%';
         v.style.backgroundPosition = 'center';
         v.style.backgroundRepeat = 'no-repeat';
       } else {
@@ -230,6 +230,27 @@ export function initMotionToolsFixed() {
     }
     const stage = document.getElementById('stage') as HTMLElement | null;
     if (stage) stage.style.background = '';
+
+    // Sync #dots UI indicators
+    const clearBtnEl = document.getElementById('clearBgImgBtn');
+    const bgBtnEl = document.getElementById('bgImgBtn');
+    if (isImage) {
+      $$('#dots b').forEach((el) => el.classList.remove('active'));
+      if (bgBtnEl) bgBtnEl.classList.add('active');
+      if (clearBtnEl) clearBtnEl.style.display = 'inline-flex';
+    } else {
+      if (bgBtnEl) bgBtnEl.classList.remove('active');
+      if (clearBtnEl) clearBtnEl.style.display = 'none';
+      const targetKey = val === 'chk' ? 'chk' : val.toLowerCase();
+      $$('#dots b').forEach((el) => {
+        const dBg = ((el as HTMLElement).dataset.bg || '').toLowerCase();
+        el.classList.toggle('active', dBg === targetKey);
+      });
+    }
+
+    try {
+      window.dispatchEvent(new CustomEvent('giftbgchange', { detail: curGiftBg }));
+    } catch (_) {}
   }
 
   function updateZoomLabel() {
@@ -287,6 +308,9 @@ export function initMotionToolsFixed() {
       v.style.width = `${boxPx}px`;
       v.style.height = `${boxPx}px`;
     }
+    if (typeof (window as any).__reapplyStageEdgeFeather === 'function') {
+      (window as any).__reapplyStageEdgeFeather();
+    }
   }
 
   (window as any).__applyGiftBg = applyGiftBg;
@@ -295,7 +319,6 @@ export function initMotionToolsFixed() {
 
   // Initialize default background to gray/white checkerboard automatically
   applyGiftBg('chk');
-  $$('#dots b').forEach((el) => el.classList.toggle('active', (el as HTMLElement).dataset.bg === 'chk'));
 
   const zoomInBtn = document.getElementById('zoomInBtn');
   const zoomOutBtn = document.getElementById('zoomOutBtn');
@@ -322,16 +345,19 @@ export function initMotionToolsFixed() {
 
   $$('#dots b').forEach((b) => {
     b.onclick = () => {
-      $$('#dots b').forEach((el) => el.classList.remove('active'));
-      b.classList.add('active');
       const bg = (b as HTMLElement).dataset.bg || (b as HTMLElement).style.background;
-      applyGiftBg(bg);
-      const clearBtn = document.getElementById('clearBgImgBtn');
-      if (clearBtn) clearBtn.style.display = 'none';
-      const bgBtn = document.getElementById('bgImgBtn');
-      if (bgBtn) bgBtn.classList.remove('active');
+      applyGiftBg(bg, false);
     };
   });
+
+  const bgCustomColor = document.getElementById('bgCustomColorInput') as HTMLInputElement | null;
+  if (bgCustomColor) {
+    bgCustomColor.oninput = (e: any) => {
+      if (e.target?.value) {
+        applyGiftBg(e.target.value, false);
+      }
+    };
+  }
 
   const bgBtn = document.getElementById('bgImgBtn');
   const bgInput = document.getElementById('bgImgInput') as HTMLInputElement | null;
@@ -346,9 +372,6 @@ export function initMotionToolsFixed() {
       reader.onload = (ev) => {
         if (ev.target?.result) {
           applyGiftBg(ev.target.result as string, true);
-          $$('#dots b').forEach((el) => el.classList.remove('active'));
-          bgBtn.classList.add('active');
-          if (clearBtn) clearBtn.style.display = 'inline-flex';
         }
       };
       reader.readAsDataURL(file);
@@ -359,11 +382,7 @@ export function initMotionToolsFixed() {
   if (clearBtn) {
     clearBtn.onclick = (e) => {
       e.stopPropagation();
-      applyGiftBg('chk');
-      bgBtn?.classList.remove('active');
-      clearBtn.style.display = 'none';
-      const chkDot = document.querySelector('#dots b[data-bg="chk"]');
-      if (chkDot) chkDot.classList.add('active');
+      applyGiftBg('chk', false);
     };
   }
   $('#again').onclick = () => fi.click();
@@ -1391,6 +1410,7 @@ export function initMotionToolsFixed() {
     v.classList.add('loaded');
     const curB = (window as any).__getGiftBg?.();
     if (curB) (window as any).__applyGiftBg?.(curB.val, curB.type === 'image');
+    (window as any).__reapplyStageEdgeFeather?.();
     $('#assets').innerHTML = '';
     $('#pp').textContent = 'Pause';
     return v;
@@ -2614,7 +2634,12 @@ export function initMotionToolsFixed() {
       const F = $('#fmt').value,
         ext = cur ? cur.name.split('.').pop().toLowerCase() : '',
         L = (+$('#qual').value || 100) < 100;
-      if (cur && ext === 'svga' && (F === 'orig' || F === 'svga')) {
+      if (
+        cur &&
+        ext === 'svga' &&
+        (F === 'orig' || F === 'svga') &&
+        !(window as any).__edgeFeather?.enabled
+      ) {
         const ed = Object.keys(window.EDIT).length;
         if (!ed && !AU.dirty && !L) return dl(cur, cur.name);
         const b = $('#start');
@@ -3364,6 +3389,12 @@ export function initMotionToolsFixed() {
       x.translate(-g.w / 2, -g.h / 2);
       draw(x, g.w, g.h);
       x.restore();
+      if (
+        (window as any).__edgeFeather?.enabled &&
+        typeof (window as any).__applyEdgeFeatherToContext === 'function'
+      ) {
+        (window as any).__applyEdgeFeatherToContext(x, W, H);
+      }
     }
     function exportOptions() {
       const W = Number($('#w').value),
@@ -3635,7 +3666,8 @@ export function initMotionToolsFixed() {
           m &&
           $('#fit').value === 'stretch' &&
           +$('#scale').value === 100 &&
-          $('#mirror').value === 'none'
+          $('#mirror').value === 'none' &&
+          !(window as any).__edgeFeather?.enabled
         );
       const out = await encodeMP4({
         ...o,
@@ -3782,35 +3814,64 @@ export function initMotionToolsFixed() {
         disabled = controls.map((e) => e.disabled);
       controls.forEach((e) => (e.disabled = true));
       try {
-        const F = $('#fmt').value,
-          o = exportOptions();
-        if (F === 'vap' || F === 'yyeva') await exportVY(F);
-        else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
-        else if (F === 'orig' && source.meta) {
-          const unchanged =
-            o.W === S.w &&
-            o.H === S.h &&
-            Math.abs(o.fps - S.fps) < 0.001 &&
-            o.q === 1 &&
-            !window.AU.dirty &&
-            !$('#trim').checked &&
-            $('#mirror').value === 'none' &&
-            +$('#scale').value === 100 &&
-            $('#fit').value === 'stretch';
-          if (unchanged) await dl(cur, cur.name);
-          else await exportVY(source.meta.kind.toLowerCase());
-        } else {
-          const oldN = S.n,
-            oldSet = S.set;
-          try {
-            if ($('#trim').checked) {
-              S.n = Math.max(1, Math.round((o.end - o.start) * S.fps));
-              S.set = (i) => oldSet(Math.min(oldN - 1, i + Math.floor(o.start * S.fps)));
+        const origF = $('#fmt').value;
+        let F = origF;
+        const o = exportOptions();
+        const featherOn = !!(window as any).__edgeFeather?.enabled;
+        if (F === 'orig' && featherOn && !source.meta && cur) {
+          const ext = cur.name.split('.').pop()?.toLowerCase() || 'svga';
+          const extMap: Record<string, string> = {
+            svga: 'svga',
+            gif: 'gif',
+            webp: 'webp',
+            apng: 'apng',
+            png: 'apng',
+            mp4: 'mp4',
+            mov: 'mov',
+            webm: 'webm',
+            json: 'lottie',
+            lottie: 'dotlottie',
+            zip: 'zip',
+          };
+          if (extMap[ext]) {
+            F = extMap[ext];
+            $('#fmt').value = F;
+          }
+        }
+        try {
+          if (F === 'vap' || F === 'yyeva') await exportVY(F);
+          else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
+          else if (F === 'orig' && source.meta) {
+            const unchanged =
+              o.W === S.w &&
+              o.H === S.h &&
+              Math.abs(o.fps - S.fps) < 0.001 &&
+              o.q === 1 &&
+              !window.AU.dirty &&
+              !$('#trim').checked &&
+              $('#mirror').value === 'none' &&
+              +$('#scale').value === 100 &&
+              $('#fit').value === 'stretch' &&
+              !featherOn;
+            if (unchanged) await dl(cur, cur.name);
+            else await exportVY(source.meta.kind.toLowerCase());
+          } else {
+            const oldN = S.n,
+              oldSet = S.set;
+            try {
+              if ($('#trim').checked) {
+                S.n = Math.max(1, Math.round((o.end - o.start) * S.fps));
+                S.set = (i) => oldSet(Math.min(oldN - 1, i + Math.floor(o.start * S.fps)));
+              }
+              await previousStart();
+            } finally {
+              S.n = oldN;
+              S.set = oldSet;
             }
-            await previousStart();
-          } finally {
-            S.n = oldN;
-            S.set = oldSet;
+          }
+        } finally {
+          if ($('#fmt').value !== origF) {
+            $('#fmt').value = origF;
           }
         }
       } catch (e) {

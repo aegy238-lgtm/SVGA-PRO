@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { initMotionToolsFixed } from './engine/motionTools';
 import SvgaAeEditor from './components/SvgaAeEditor';
 import AdminDashboardModal from './components/AdminDashboardModal';
+import EdgeFeatherModal from './components/EdgeFeatherModal';
+import {
+  EdgeFeatherConfig,
+  INITIAL_EDGE_FEATHER,
+  applyEdgeFeatherToContext,
+  applyEdgeFeatherToStageView,
+} from './utils/edgeFeather';
 import {
   NotificationsPopover,
   ProSubscriptionModal,
@@ -45,7 +52,10 @@ import {
 export default function App() {
   const [aeModalOpen, setAeModalOpen] = useState(false);
   const [externalSvgaFile, setExternalSvgaFile] = useState<File | null>(null);
-  const [edgeFeatherPx, setEdgeFeatherPx] = useState(0);
+  const [edgeFeather, setEdgeFeather] = useState<EdgeFeatherConfig>(INITIAL_EDGE_FEATHER);
+  const [edgeFeatherModalOpen, setEdgeFeatherModalOpen] = useState(false);
+  const edgeFeatherRef = useRef<EdgeFeatherConfig>(edgeFeather);
+  edgeFeatherRef.current = edgeFeather;
   const [watermarkText, setWatermarkText] = useState('');
 
   const [platformState, setPlatformState] = useState<PlatformState>(() => loadPlatformState());
@@ -464,17 +474,26 @@ export default function App() {
     });
   };
 
-  const handleToggleEdgeFeather = () => {
-    const next = edgeFeatherPx === 0 ? 12 : edgeFeatherPx === 12 ? 24 : 0;
-    setEdgeFeatherPx(next);
-    const viewEl = document.getElementById('view');
-    if (viewEl) {
-      viewEl.style.maskImage =
-        next > 0
-          ? `radial-gradient(circle, rgba(0,0,0,1) ${100 - next * 1.5}%, rgba(0,0,0,0) 100%)`
-          : '';
-    }
+  const handleApplyEdgeFeather = (nextCfg: EdgeFeatherConfig) => {
+    setEdgeFeather(nextCfg);
+    edgeFeatherRef.current = nextCfg;
+    (window as any).__edgeFeather = nextCfg;
+    applyEdgeFeatherToStageView(nextCfg);
   };
+
+  useEffect(() => {
+    (window as any).__edgeFeather = edgeFeatherRef.current;
+    (window as any).__applyEdgeFeatherToContext = (
+      ctx: CanvasRenderingContext2D,
+      W: number,
+      H: number
+    ) => {
+      applyEdgeFeatherToContext(ctx, W, H, edgeFeatherRef.current);
+    };
+    (window as any).__reapplyStageEdgeFeather = () => {
+      applyEdgeFeatherToStageView(edgeFeatherRef.current);
+    };
+  }, []);
 
   const handleToggleWatermark = () => {
     const brandName = platformState.settings.siteName || 'MotionTools';
@@ -911,10 +930,64 @@ export default function App() {
               <h4>{t.edgeFeather}</h4>
               <div
                 className="box"
-                onClick={handleToggleEdgeFeather}
-                style={{ cursor: 'pointer' }}
+                id="edgeFeatherBox"
+                onClick={() => setEdgeFeatherModalOpen(true)}
+                style={{
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '7px',
+                  borderColor: edgeFeather.enabled ? '#10b981' : undefined,
+                  background: edgeFeather.enabled ? 'rgba(16, 185, 129, 0.1)' : undefined,
+                }}
               >
-                {edgeFeatherPx > 0 ? t.edgeFeatherActive(edgeFeatherPx) : t.addEdgeFeather}
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={edgeFeather.enabled ? '#34d399' : '#9a7cff'}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ flexShrink: 0 }}
+                >
+                  <path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z" />
+                  <line x1="16" y1="8" x2="2" y2="22" />
+                  <line x1="17.5" y1="15" x2="9" y2="15" />
+                </svg>
+                <span>
+                  {edgeFeather.enabled
+                    ? t.edgeFeatherActive(edgeFeather.featherRadius)
+                    : t.addEdgeFeather}
+                </span>
+                {edgeFeather.enabled && (
+                  <button
+                    type="button"
+                    title={isAr ? 'إلغاء تدرج الحواف' : 'Remove edge feather'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleApplyEdgeFeather({
+                        ...edgeFeather,
+                        enabled: false,
+                      });
+                    }}
+                    style={{
+                      marginInlineStart: '4px',
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.45)',
+                      color: '#fca5a5',
+                      borderRadius: '4px',
+                      padding: '0px 5px',
+                      fontSize: '12px',
+                      lineHeight: '16px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
               <h4>{t.imageAssets}</h4>
               <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
@@ -1095,6 +1168,39 @@ export default function App() {
               <b data-bg="#00ff00" style={{ background: '#00ff00' }} title="Green screen (#00ff00)"></b>
               <b data-bg="#7c3aed" style={{ background: '#7c3aed' }} title="Purple background (#7c3aed)"></b>
               <b data-bg="#3b82f6" style={{ background: '#3b82f6' }} title="Blue background (#3b82f6)"></b>
+              <label
+                title={isAr ? 'اختر لون خلفية مخصص' : 'Choose custom background color'}
+                style={{
+                  width: '15px',
+                  height: '15px',
+                  borderRadius: '50%',
+                  background:
+                    'conic-gradient(#ef4444, #f59e0b, #10b981, #3b82f6, #8b5cf6, #ec4899, #ef4444)',
+                  border: '1px solid rgba(255,255,255,0.45)',
+                  cursor: 'pointer',
+                  display: 'inline-block',
+                  position: 'relative',
+                  overflow: 'hidden',
+                  flexShrink: 0,
+                }}
+              >
+                <input
+                  type="color"
+                  id="bgCustomColorInput"
+                  defaultValue="#ff0055"
+                  aria-label="Custom background color"
+                  style={{
+                    opacity: 0,
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    cursor: 'pointer',
+                    border: 0,
+                    padding: 0,
+                  }}
+                />
+              </label>
               <b
                 data-bg="chk"
                 className="active"
@@ -1237,6 +1343,15 @@ export default function App() {
           />
         </section>
       </main>
+
+      {/* Edge Feather Modal */}
+      <EdgeFeatherModal
+        open={edgeFeatherModalOpen}
+        config={edgeFeather}
+        isAr={isAr}
+        onClose={() => setEdgeFeatherModalOpen(false)}
+        onApply={handleApplyEdgeFeather}
+      />
 
       {/* Notifications Bell Popover */}
       <NotificationsPopover
