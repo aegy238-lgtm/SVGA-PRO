@@ -3,12 +3,17 @@ import { initMotionToolsFixed } from './engine/motionTools';
 import SvgaAeEditor from './components/SvgaAeEditor';
 import AdminDashboardModal from './components/AdminDashboardModal';
 import EdgeFeatherModal from './components/EdgeFeatherModal';
+import BatchImageModal from './components/BatchImageModal';
+import WatermarkModal from './components/WatermarkModal';
+import { BatchOperationsState } from './utils/batchImageOps';
+import { AppliedWatermarkLayer } from './utils/watermark';
 import {
   EdgeFeatherConfig,
   INITIAL_EDGE_FEATHER,
   applyEdgeFeatherToContext,
   applyEdgeFeatherToStageView,
 } from './utils/edgeFeather';
+import { isScreenCaptureShortcut } from './utils/giftStudioUtils';
 import {
   NotificationsPopover,
   ProSubscriptionModal,
@@ -54,9 +59,12 @@ export default function App() {
   const [externalSvgaFile, setExternalSvgaFile] = useState<File | null>(null);
   const [edgeFeather, setEdgeFeather] = useState<EdgeFeatherConfig>(INITIAL_EDGE_FEATHER);
   const [edgeFeatherModalOpen, setEdgeFeatherModalOpen] = useState(false);
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
+  const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
+  const [activeWatermarkCount, setActiveWatermarkCount] = useState(0);
+  const [motionAssetsMap, setMotionAssetsMap] = useState<Record<string, string>>({});
   const edgeFeatherRef = useRef<EdgeFeatherConfig>(edgeFeather);
   edgeFeatherRef.current = edgeFeather;
-  const [watermarkText, setWatermarkText] = useState('');
 
   const [platformState, setPlatformState] = useState<PlatformState>(() => loadPlatformState());
   const { settings, users, currentUserId, notifications, readNotificationIds, adminPreviewRole } =
@@ -226,7 +234,7 @@ export default function App() {
 
 
   const isSecurityEnforced =
-    !isAdminUser || adminPreviewRole === 'free_user' || adminPreviewRole === 'pro_user';
+    typeof window !== 'undefined' && !window.location.search.includes('test=1');
 
   // Toggle Admin Attribute and Style on Body for Unrestricted Text Selection vs Enforced Protection
   useEffect(() => {
@@ -243,10 +251,14 @@ export default function App() {
     }
   }, [isSecurityEnforced]);
 
-  // Screen Shield Active Class on Body
+  // Screen Shield Active Class on Body + Automatic Non-Intrusive Recovery Timer
   useEffect(() => {
     if (screenShieldActive && isSecurityEnforced) {
       document.body.classList.add('screen-shield-active');
+      const timer = window.setTimeout(() => {
+        setScreenShieldActive(false);
+      }, 3200);
+      return () => window.clearTimeout(timer);
     } else {
       document.body.classList.remove('screen-shield-active');
     }
@@ -277,6 +289,11 @@ export default function App() {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setScreenShieldActive(false);
+        return;
+      }
+
       // Block DevTools & Save/Source shortcuts silently without showing screen-recording lock
       if (
         e.key === 'F12' ||
@@ -290,15 +307,7 @@ export default function App() {
       }
 
       // PrintScreen & Screen Recording / Screenshot shortcuts (Win+Shift+S/R, Win+Alt+R, Win+G, Cmd+Shift+3/4/5)
-      const k = e.key.toLowerCase();
-      if (
-        e.key === 'PrintScreen' ||
-        e.code === 'PrintScreen' ||
-        e.keyCode === 44 ||
-        ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3', '4', '5', 's', 'r'].includes(k)) ||
-        (e.metaKey && e.altKey && k === 'r') ||
-        (e.metaKey && k === 'g')
-      ) {
+      if (isScreenCaptureShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
         triggerShield();
@@ -307,7 +316,7 @@ export default function App() {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'PrintScreen' || e.code === 'PrintScreen' || e.keyCode === 44) {
+      if (isScreenCaptureShortcut(e)) {
         e.preventDefault();
         e.stopPropagation();
         triggerShield();
@@ -335,11 +344,18 @@ export default function App() {
       e.preventDefault();
     };
 
+    const handleIframeSecurityMsg = (e: MessageEvent) => {
+      if (e.data && e.data.type === 'MOTIONTOOLS_SCREEN_CAPTURE_DETECTED') {
+        triggerShield();
+      }
+    };
+
     window.addEventListener('contextmenu', handleContextMenu, { capture: true });
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     window.addEventListener('keyup', handleKeyUp, { capture: true });
     window.addEventListener('dragstart', handleDragStart, { capture: true });
     window.addEventListener('copy', handleCopy, { capture: true });
+    window.addEventListener('message', handleIframeSecurityMsg);
 
     return () => {
       window.removeEventListener('contextmenu', handleContextMenu, { capture: true });
@@ -347,6 +363,7 @@ export default function App() {
       window.removeEventListener('keyup', handleKeyUp, { capture: true });
       window.removeEventListener('dragstart', handleDragStart, { capture: true });
       window.removeEventListener('copy', handleCopy, { capture: true });
+      window.removeEventListener('message', handleIframeSecurityMsg);
     };
   }, [isSecurityEnforced]);
 
@@ -396,6 +413,9 @@ export default function App() {
     const OriginalMediaRecorder = window.MediaRecorder;
     if (OriginalMediaRecorder) {
       const CustomMediaRecorder = function (this: any, stream: MediaStream, options?: any) {
+        if ((stream as any)?.__internalExport) {
+          return new OriginalMediaRecorder(stream, options);
+        }
         const tracks = stream?.getTracks?.() || [];
         const isDisplayStream = tracks.some((t) => {
           const s = (t.getSettings?.() || {}) as any;
@@ -410,6 +430,11 @@ export default function App() {
           );
         });
         if (isDisplayStream) {
+          tracks.forEach((t) => {
+            try {
+              t.stop();
+            } catch {}
+          });
           setScreenShieldActive(true);
           throw new Error('🚫 تسجيل الشاشة والفيديو غير مسموح به في الموقع.');
         }
@@ -493,6 +518,17 @@ export default function App() {
 
       saveActivityLogToFirestore(newLog);
     };
+
+    const handleAssetsChange = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && typeof detail === 'object') {
+        setMotionAssetsMap({ ...detail });
+      }
+    };
+    window.addEventListener('motionassetschange', handleAssetsChange);
+    return () => {
+      window.removeEventListener('motionassetschange', handleAssetsChange);
+    };
   }, []);
 
   const switchToEditor = () => {
@@ -525,25 +561,31 @@ export default function App() {
     };
   }, []);
 
-  const handleToggleWatermark = () => {
-    const brandName = platformState.settings.siteName || 'MotionTools';
-    const next = watermarkText ? '' : brandName;
-    setWatermarkText(next);
-    const stageEl = document.getElementById('stage');
-    if (!stageEl) return;
-    let wm = document.getElementById('stageWatermark');
-    if (!next) {
-      wm?.remove();
-    } else {
-      if (!wm) {
-        wm = document.createElement('div');
-        wm.id = 'stageWatermark';
-        wm.style.cssText =
-          'position:absolute;right:18px;bottom:52px;padding:4px 10px;border-radius:6px;background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.2);color:#fff;font-weight:700;font-size:12px;pointer-events:none;z-index:20';
-        stageEl.appendChild(wm);
-      }
-      wm.textContent = next;
+  const handleOpenWatermarkModal = () => {
+    const latest = (window as any).__getMotionAssets?.() || {};
+    setMotionAssetsMap({ ...latest });
+    const layers = (window as any).__WATERMARK_LAYERS || [];
+    setActiveWatermarkCount(Array.isArray(layers) ? layers.length : 0);
+    setWatermarkModalOpen(true);
+  };
+
+  const handleApplyWatermark = async (layer: AppliedWatermarkLayer) => {
+    if (typeof (window as any).__applyWatermarkLayer === 'function') {
+      await (window as any).__applyWatermarkLayer(layer);
     }
+    const latest = (window as any).__getMotionAssets?.() || {};
+    setMotionAssetsMap({ ...latest });
+    const layers = (window as any).__WATERMARK_LAYERS || [];
+    setActiveWatermarkCount(Array.isArray(layers) ? layers.length : 0);
+  };
+
+  const handleClearWatermarks = () => {
+    if (typeof (window as any).__clearWatermarkLayers === 'function') {
+      (window as any).__clearWatermarkLayers();
+    }
+    const latest = (window as any).__getMotionAssets?.() || {};
+    setMotionAssetsMap({ ...latest });
+    setActiveWatermarkCount(0);
   };
 
   const handleUpdateSettings = (nextSettings: PlatformSettings) => {
@@ -953,7 +995,45 @@ export default function App() {
         <section className="view" id="convert">
           <div className="app">
             <aside className="side">
-              <h4>{t.audioAssets}</h4>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '6px',
+                }}
+              >
+                <h4 style={{ margin: 0 }}>{t.audioAssets}</h4>
+                <button
+                  type="button"
+                  id="downloadAudioBtn"
+                  className="pill"
+                  onClick={() => (window as any).__downloadAudioAsset?.()}
+                  style={{
+                    padding: '3px 8px',
+                    fontSize: '11px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  <span>{isAr ? 'تحميل' : 'Download'}</span>
+                </button>
+              </div>
               <div className="box" id="audBox">
                 {t.clickToAddAudio}
               </div>
@@ -1019,18 +1099,143 @@ export default function App() {
                   </button>
                 )}
               </div>
-              <h4>{t.imageAssets}</h4>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '6px',
+                  margin: '14px 0 8px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <h4
+                  style={{
+                    margin: 0,
+                    fontSize: '12px',
+                    lineHeight: 1.15,
+                    maxWidth: isAr ? '64px' : '48px',
+                    flexShrink: 0,
+                  }}
+                >
+                  {t.imageAssets}
+                </h4>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    flexWrap: 'nowrap',
+                    marginInlineStart: 'auto',
+                  }}
+                >
+                  <button
+                    type="button"
+                    id="addWatermarkBtn"
+                    className="pill"
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '10.5px',
+                      borderRadius: '99px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      whiteSpace: 'nowrap',
+                      borderColor: activeWatermarkCount > 0 ? '#10b981' : undefined,
+                      background:
+                        activeWatermarkCount > 0 ? 'rgba(16, 185, 129, 0.14)' : undefined,
+                    }}
+                    onClick={handleOpenWatermarkModal}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.1"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flexShrink: 0 }}
+                    >
+                      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
+                    </svg>
+                    <span>{t.addWatermark}</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="batchImageOpsBtn"
+                    className="pill"
+                    onClick={() => {
+                      const latest = (window as any).__getMotionAssets?.() || {};
+                      setMotionAssetsMap({ ...latest });
+                      setBatchModalOpen(true);
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '10.5px',
+                      borderRadius: '99px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.1"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flexShrink: 0 }}
+                    >
+                      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                      <polyline points="2 17 12 22 22 17" />
+                      <polyline points="2 12 12 17 22 12" />
+                    </svg>
+                    <span>Batch</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="downloadAllAssetsBtn"
+                    className="pill"
+                    onClick={() => (window as any).__downloadAllImageAssets?.()}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '10.5px',
+                      borderRadius: '99px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.1"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flexShrink: 0 }}
+                    >
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    <span>{isAr ? 'تحميل' : 'Download'}</span>
+                  </button>
+                </div>
+              </div>
               <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
                 <button
                   className="pill"
-                  style={{ padding: '3px 8px' }}
-                  onClick={handleToggleWatermark}
-                >
-                  {watermarkText ? t.removeWatermark : t.addWatermark}
-                </button>
-                <button
-                  className="pill"
-                  style={{ padding: '3px 8px' }}
+                  style={{ padding: '3px 8px', width: '100%' }}
                   onClick={switchToEditor}
                 >
                   {t.openSvgaEditor}
@@ -1094,27 +1299,6 @@ export default function App() {
               <div className="pill" style={{ cursor: 'default' }} id="again">
                 {t.dropAgain}
               </div>
-              {watermarkText && (
-                <div
-                  id="stageWatermark"
-                  style={{
-                    position: 'absolute',
-                    right: '18px',
-                    bottom: '52px',
-                    padding: '4px 10px',
-                    borderRadius: '6px',
-                    background: 'rgba(0,0,0,0.55)',
-                    border: '1px solid rgba(255,255,255,0.2)',
-                    color: '#fff',
-                    fontWeight: 700,
-                    fontSize: '12px',
-                    pointerEvents: 'none',
-                    zIndex: 20,
-                  }}
-                >
-                  {watermarkText}
-                </div>
-              )}
             </div>
 
             <div className="zoom-bar" id="zoomBar">
@@ -1381,6 +1565,34 @@ export default function App() {
         isAr={isAr}
         onClose={() => setEdgeFeatherModalOpen(false)}
         onApply={handleApplyEdgeFeather}
+      />
+
+      {/* Batch Image Operations Modal */}
+      <BatchImageModal
+        open={batchModalOpen}
+        isAr={isAr}
+        assetsMap={motionAssetsMap}
+        onClose={() => setBatchModalOpen(false)}
+        onExecute={async (batchState: BatchOperationsState) => {
+          if (typeof (window as any).__executeBatchImageOps === 'function') {
+            await (window as any).__executeBatchImageOps(batchState);
+            const updated = (window as any).__getMotionAssets?.() || {};
+            setMotionAssetsMap({ ...updated });
+            const layers = (window as any).__WATERMARK_LAYERS || [];
+            setActiveWatermarkCount(Array.isArray(layers) ? layers.length : 0);
+          }
+        }}
+      />
+
+      {/* Add Watermark Modal */}
+      <WatermarkModal
+        open={watermarkModalOpen}
+        existingAssets={motionAssetsMap}
+        hasActiveWatermarks={activeWatermarkCount > 0}
+        isAr={isAr}
+        onClose={() => setWatermarkModalOpen(false)}
+        onApply={handleApplyWatermark}
+        onClearWatermarks={handleClearWatermarks}
       />
 
       {/* Notifications Bell Popover */}

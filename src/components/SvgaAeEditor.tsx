@@ -34,7 +34,7 @@ import {
   Check,
   Scissors,
 } from 'lucide-react';
-import { parseMovie, SvgaMovie } from '../utils/codecs';
+import { parseMovie, SvgaMovie, SvgaSprite } from '../utils/codecs';
 import {
   LayerTransform,
   AnimatableProperty,
@@ -46,6 +46,7 @@ import {
   generateAfterEffectsJsxScript,
   computeSpriteFrameMatrix,
   computeAddedLayerFrameMatrix,
+  buildPivotTransformMatrix,
   interpolateLayerTransform,
   computeSpriteFrameSpan,
   resolveSpriteFrameAt,
@@ -293,6 +294,15 @@ export default function SvgaAeEditor({
   const [newTextSize, setNewTextSize] = useState<number>(36);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const activeHandlesRef = useRef<
+    Array<{
+      handle: 'tl' | 'tr' | 'br' | 'bl' | 'tm' | 'mr' | 'bm' | 'ml';
+      x: number;
+      y: number;
+      cursor: string;
+    }>
+  >([]);
+  const activeCenterRef = useRef<{ x: number; y: number } | null>(null);
   const rulerRef = useRef<HTMLDivElement | null>(null);
   const openSvgaInputRef = useRef<HTMLInputElement | null>(null);
   const addLayerInputRef = useRef<HTMLInputElement | null>(null);
@@ -844,6 +854,19 @@ export default function SvgaAeEditor({
     }
 
     // 5. Render editor selection bounding box overlay (not exported into SVGA)
+    if (!selectedBounds && selectedTarget === 'DOCUMENT') {
+      const docT = getEffectiveTransform('DOCUMENT', undefined, currentFrame);
+      const mat = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
+      selectedBounds = {
+        x: 0,
+        y: 0,
+        w: W,
+        h: H,
+        mat,
+        label: docName,
+      };
+    }
+
     if (selectedBounds) {
       const b = selectedBounds as {
         x: number;
@@ -854,14 +877,39 @@ export default function SvgaAeEditor({
         label: string;
       };
       const corners = [
-        { x: b.x, y: b.y },
-        { x: b.x + b.w, y: b.y },
-        { x: b.x + b.w, y: b.y + b.h },
-        { x: b.x, y: b.y + b.h },
+        { handle: 'tl' as const, x: b.x, y: b.y },
+        { handle: 'tr' as const, x: b.x + b.w, y: b.y },
+        { handle: 'br' as const, x: b.x + b.w, y: b.y + b.h },
+        { handle: 'bl' as const, x: b.x, y: b.y + b.h },
       ].map((pt) => ({
+        handle: pt.handle,
         x: b.mat[0] * pt.x + b.mat[2] * pt.y + b.mat[4],
         y: b.mat[1] * pt.x + b.mat[3] * pt.y + b.mat[5],
       }));
+
+      const midpoints = [
+        { handle: 'tm' as const, x: (corners[0].x + corners[1].x) / 2, y: (corners[0].y + corners[1].y) / 2 },
+        { handle: 'mr' as const, x: (corners[1].x + corners[2].x) / 2, y: (corners[1].y + corners[2].y) / 2 },
+        { handle: 'bm' as const, x: (corners[2].x + corners[3].x) / 2, y: (corners[2].y + corners[3].y) / 2 },
+        { handle: 'ml' as const, x: (corners[3].x + corners[0].x) / 2, y: (corners[3].y + corners[0].y) / 2 },
+      ];
+
+      const center = {
+        x: (corners[0].x + corners[2].x) / 2,
+        y: (corners[0].y + corners[2].y) / 2,
+      };
+
+      activeHandlesRef.current = [
+        { handle: 'tl', x: corners[0].x, y: corners[0].y, cursor: 'nwse-resize' },
+        { handle: 'tr', x: corners[1].x, y: corners[1].y, cursor: 'nesw-resize' },
+        { handle: 'br', x: corners[2].x, y: corners[2].y, cursor: 'nwse-resize' },
+        { handle: 'bl', x: corners[3].x, y: corners[3].y, cursor: 'nesw-resize' },
+        { handle: 'tm', x: midpoints[0].x, y: midpoints[0].y, cursor: 'ns-resize' },
+        { handle: 'mr', x: midpoints[1].x, y: midpoints[1].y, cursor: 'ew-resize' },
+        { handle: 'bm', x: midpoints[2].x, y: midpoints[2].y, cursor: 'ns-resize' },
+        { handle: 'ml', x: midpoints[3].x, y: midpoints[3].y, cursor: 'ew-resize' },
+      ];
+      activeCenterRef.current = center;
 
       ctx.save();
       ctx.strokeStyle = '#f59e0b';
@@ -874,14 +922,35 @@ export default function SvgaAeEditor({
       ctx.closePath();
       ctx.stroke();
 
+      // Shadow for interactive handles
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+
+      // Draw 4 corner handles (prominent white squares with gold border)
       for (const pt of corners) {
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 1.5;
-        ctx.fillRect(pt.x - 4, pt.y - 4, 8, 8);
-        ctx.strokeRect(pt.x - 4, pt.y - 4, 8, 8);
+        ctx.lineWidth = 2;
+        ctx.fillRect(pt.x - 5, pt.y - 5, 10, 10);
+        ctx.strokeRect(pt.x - 5, pt.y - 5, 10, 10);
       }
+
+      // Draw 4 edge midpoints
+      ctx.shadowBlur = 0;
+      for (const pt of midpoints) {
+        ctx.fillStyle = '#fef3c7';
+        ctx.strokeStyle = '#d97706';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(pt.x - 3.5, pt.y - 3.5, 7, 7);
+        ctx.strokeRect(pt.x - 3.5, pt.y - 3.5, 7, 7);
+      }
+
       ctx.restore();
+    } else {
+      activeHandlesRef.current = [];
+      activeCenterRef.current = null;
     }
 
     // 6. Render mouse-dragged Crop / Cut selection marquee overlay
@@ -1991,13 +2060,21 @@ export default function SvgaAeEditor({
   };
 
   const dragRef = useRef<{
-    mode: 'moveLayer' | 'panStage' | 'cropBox';
+    mode: 'moveLayer' | 'panStage' | 'cropBox' | 'scaleLayer';
+    handle?: 'tl' | 'tr' | 'br' | 'bl' | 'tm' | 'mr' | 'bm' | 'ml';
     targetId: string;
     assetKey: string | null;
     startX: number;
     startY: number;
     origX: number;
     origY: number;
+    origSx?: number;
+    origSy?: number;
+    centerCanvasX?: number;
+    centerCanvasY?: number;
+    initialDist?: number;
+    initialHandleX?: number;
+    initialHandleY?: number;
     canvasStartX?: number;
     canvasStartY?: number;
   } | null>(null);
@@ -2027,6 +2104,49 @@ export default function SvgaAeEditor({
       };
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
+    }
+
+    // 0. Handle hit-test: if clicking on a bounding box scale handle of the currently selected layer
+    if (activeTool === 'Move' && activeHandlesRef.current.length > 0) {
+      const cv = canvasRef.current;
+      if (cv) {
+        const rect = cv.getBoundingClientRect();
+        const scaleX = rect.width / Math.max(1, canvasW);
+        const scaleY = rect.height / Math.max(1, canvasH);
+        let hitHandle: (typeof activeHandlesRef.current)[0] | null = null;
+        for (const h of activeHandlesRef.current) {
+          const screenX = rect.left + h.x * scaleX;
+          const screenY = rect.top + h.y * scaleY;
+          if (Math.hypot(e.clientX - screenX, e.clientY - screenY) <= 12) {
+            hitHandle = h;
+            break;
+          }
+        }
+        if (hitHandle) {
+          const curT = getEffectiveTransform(selectedTarget, selectedAssetKey || undefined, currentFrame);
+          const center = activeCenterRef.current || { x: canvasW / 2, y: canvasH / 2 };
+          const initDist = Math.hypot(hitHandle.x - center.x, hitHandle.y - center.y);
+          dragRef.current = {
+            mode: 'scaleLayer',
+            handle: hitHandle.handle,
+            targetId: selectedTarget,
+            assetKey: selectedAssetKey,
+            startX: e.clientX,
+            startY: e.clientY,
+            origX: curT.x,
+            origY: curT.y,
+            origSx: curT.sx,
+            origSy: curT.sy,
+            centerCanvasX: center.x,
+            centerCanvasY: center.y,
+            initialDist: Math.max(4, initDist),
+            initialHandleX: hitHandle.x,
+            initialHandleY: hitHandle.y,
+          };
+          e.currentTarget.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
     }
 
     const pt = clientToCanvasCoords(e);
@@ -2105,13 +2225,36 @@ export default function SvgaAeEditor({
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragRef.current) return;
+    if (!dragRef.current) {
+      if (activeTool === 'Move' && activeHandlesRef.current.length > 0) {
+        const cv = canvasRef.current;
+        if (cv) {
+          const rect = cv.getBoundingClientRect();
+          const scaleX = rect.width / Math.max(1, canvasW);
+          const scaleY = rect.height / Math.max(1, canvasH);
+          const hoveredHandle = activeHandlesRef.current.find((h) => {
+            const screenX = rect.left + h.x * scaleX;
+            const screenY = rect.top + h.y * scaleY;
+            return Math.hypot(e.clientX - screenX, e.clientY - screenY) <= 12;
+          });
+          if (hoveredHandle) {
+            e.currentTarget.style.cursor = hoveredHandle.cursor;
+            return;
+          } else {
+            e.currentTarget.style.cursor = 'default';
+          }
+        }
+      }
+      return;
+    }
+
     if (dragRef.current.mode === 'panStage') {
       const dx = e.clientX - dragRef.current.startX;
       const dy = e.clientY - dragRef.current.startY;
       setPan({ x: dragRef.current.origX + dx, y: dragRef.current.origY + dy });
       return;
     }
+
     if (dragRef.current.mode === 'cropBox') {
       const pt = clientToCanvasCoords(e);
       const sx = dragRef.current.canvasStartX ?? pt.x;
@@ -2123,6 +2266,49 @@ export default function SvgaAeEditor({
       setCropRect({ x, y, w, h });
       return;
     }
+
+    if (dragRef.current.mode === 'scaleLayer') {
+      const pt = clientToCanvasCoords(e);
+      const {
+        centerCanvasX = canvasW / 2,
+        centerCanvasY = canvasH / 2,
+        initialDist = 50,
+        origSx = 100,
+        origSy = 100,
+        handle = 'br',
+        initialHandleX = centerCanvasX + 50,
+        initialHandleY = centerCanvasY + 50,
+      } = dragRef.current;
+
+      let newSx = origSx;
+      let newSy = origSy;
+
+      if (handle === 'tl' || handle === 'tr' || handle === 'br' || handle === 'bl') {
+        const curDist = Math.hypot(pt.x - centerCanvasX, pt.y - centerCanvasY);
+        const factor = curDist / Math.max(2, initialDist);
+        newSx = Math.max(5, Math.min(1000, Number((origSx * factor).toFixed(1))));
+        newSy = Math.max(5, Math.min(1000, Number((origSy * factor).toFixed(1))));
+      } else if (handle === 'mr' || handle === 'ml') {
+        const curDistX = Math.abs(pt.x - centerCanvasX);
+        const initDistX = Math.abs(initialHandleX - centerCanvasX);
+        const factorX = curDistX / Math.max(2, initDistX);
+        newSx = Math.max(5, Math.min(1000, Number((origSx * factorX).toFixed(1))));
+      } else if (handle === 'tm' || handle === 'bm') {
+        const curDistY = Math.abs(pt.y - centerCanvasY);
+        const initDistY = Math.abs(initialHandleY - centerCanvasY);
+        const factorY = curDistY / Math.max(2, initDistY);
+        newSy = Math.max(5, Math.min(1000, Number((origSy * factorY).toFixed(1))));
+      }
+
+      updateLayerTransformById(
+        dragRef.current.targetId,
+        dragRef.current.assetKey,
+        { sx: newSx, sy: newSy },
+        `Scaled ${dragRef.current.assetKey || dragRef.current.targetId}`
+      );
+      return;
+    }
+
     const rect = e.currentTarget.getBoundingClientRect();
     const scaleX = canvasW / Math.max(1, rect.width);
     const scaleY = canvasH / Math.max(1, rect.height);
@@ -2141,6 +2327,8 @@ export default function SvgaAeEditor({
       dragRef.current = null;
       if (mode === 'cropBox') {
         setLastAction('تم تحديد المنطقة بالماوس — اختر قص أو فصل أو مسح من الشريط العلوي');
+      } else if (mode === 'scaleLayer') {
+        setLastAction(`تم تعديل مقاس الطبقة (${movedTarget}) بنجاح`);
       } else {
         setLastAction(`Moved ${selectedAssetKey || movedTarget}`);
       }
@@ -2439,6 +2627,278 @@ export default function SvgaAeEditor({
   };
 
   /**
+   * Merges all decomposed SVGA sprite tracks, added image layers, and vector/text shapes
+   * into a single unified root layer / sprite across all animation frames.
+   * This allows the user to scale, move, and transform the entire artwork as one single unit on stage.
+   */
+  const handleMergeAllLayers = async () => {
+    const totalCount = movie.sp.length + addedLayers.length + shapes.length;
+    if (totalCount === 0) {
+      setLastAction('لا توجد طبقات لدمجها');
+      return;
+    }
+    if (movie.sp.length <= 1 && addedLayers.length === 0 && shapes.length === 0) {
+      setLastAction('الطبقات مدمجة بالفعل في طبقة واحدة');
+      return;
+    }
+
+    setLastAction('جاري دمج جميع الطبقات في لير واحد...');
+    try {
+      const W = canvasW;
+      const H = canvasH;
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = W;
+      offCanvas.height = H;
+      const offCtx = offCanvas.getContext('2d');
+      if (!offCtx) return;
+
+      const frameBlobs: Blob[] = [];
+
+      for (let fIdx = 0; fIdx < totalFrames; fIdx++) {
+        offCtx.clearRect(0, 0, W, H);
+        const fDocT = getEffectiveTransform('DOCUMENT', undefined, fIdx);
+        const fDocAlpha = hiddenLayerIds.has('DOCUMENT')
+          ? 0
+          : Math.max(0, Math.min(1, fDocT.opacity / 100));
+
+        // 1. Render original decomposed SVGA sprites in stacking order
+        movie.sp.forEach((s, idx) => {
+          if (deletedSpriteIndices.has(idx)) return;
+          const spriteId = `sprite_${idx}`;
+          if (hiddenLayerIds.has(spriteId)) return;
+
+          const resolved = resolveSpriteFrameAt(s, fIdx, totalFrames, spriteFrameRanges[idx]);
+          const f = resolved.frameObj;
+          if (!f || !resolved.visible) return;
+          const bm = s.key ? bitmaps[s.key] : undefined;
+          const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
+          if (f.a <= 0.001 && !hasShapes) return;
+
+          const lt = getEffectiveTransform(spriteId, s.key, fIdx);
+          const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
+          const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * fDocAlpha * layerAlpha));
+          if (finalAlpha <= 0.001) return;
+
+          const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
+          const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
+          const mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, fDocT);
+
+          offCtx.save();
+          offCtx.globalAlpha = finalAlpha;
+          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+
+          if (f.clipPath) {
+            try {
+              const clipP = new Path2D(f.clipPath);
+              offCtx.clip(clipP);
+            } catch {}
+          }
+
+          if (bm) {
+            offCtx.drawImage(bm, f.x || 0, f.y || 0, f.w || bm.width, f.h || bm.height);
+          }
+
+          if (hasShapes && f.shapesRaw) {
+            for (const rawSh of f.shapesRaw) {
+              const parsed = parseSvgaShapeEntity(rawSh);
+              if (parsed.pathD) {
+                try {
+                  const p = new Path2D(parsed.pathD);
+                  if (parsed.fill) {
+                    offCtx.fillStyle = parsed.fill;
+                    offCtx.fill(p);
+                  }
+                  if (parsed.stroke) {
+                    offCtx.strokeStyle = parsed.stroke;
+                    offCtx.lineWidth = parsed.strokeWidth || 1;
+                    offCtx.stroke(p);
+                  }
+                } catch {}
+              }
+            }
+          }
+          offCtx.restore();
+        });
+
+        // 2. Render added image layers
+        for (const al of addedLayers) {
+          if (hiddenLayerIds.has(al.id)) continue;
+          if (fIdx < al.inFrame || fIdx > al.outFrame) continue;
+          const lt = getEffectiveTransform(al.id, al.assetKey, fIdx);
+          const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * fDocAlpha));
+          if (finalAlpha <= 0.001) continue;
+
+          const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, fDocT);
+          offCtx.save();
+          offCtx.globalAlpha = finalAlpha;
+          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+          offCtx.drawImage(al.bitmap, 0, 0, al.width, al.height);
+          offCtx.restore();
+        }
+
+        // 3. Render vector / shape / text layers
+        for (const sh of shapes) {
+          if (hiddenLayerIds.has(sh.id)) continue;
+          if (fIdx < sh.inFrame || fIdx > sh.outFrame) continue;
+          const lt = getEffectiveTransform(sh.id, sh.assetKey, fIdx);
+          const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * fDocAlpha));
+          if (finalAlpha <= 0.001) continue;
+
+          const mat = computeAddedLayerFrameMatrix(sh.w, sh.h, W, H, lt, fDocT);
+          offCtx.save();
+          offCtx.globalAlpha = finalAlpha;
+          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+
+          const sw = Math.max(0, sh.strokeWidth ?? 2);
+          const pad = Math.ceil(sw / 2) + 2;
+          offCtx.fillStyle = sh.color + (sh.type === 'text' ? '' : '66');
+          offCtx.strokeStyle = sh.strokeColor || sh.color;
+          offCtx.lineWidth = sw;
+
+          if (sh.type === 'rectangle') {
+            offCtx.fillRect(pad, pad, Math.max(2, sh.w - pad * 2), Math.max(2, sh.h - pad * 2));
+            if (sw > 0) offCtx.strokeRect(pad, pad, Math.max(2, sh.w - pad * 2), Math.max(2, sh.h - pad * 2));
+          } else if (sh.type === 'ellipse') {
+            offCtx.beginPath();
+            offCtx.ellipse(sh.w / 2, sh.h / 2, Math.max(2, sh.w / 2 - pad), Math.max(2, sh.h / 2 - pad), 0, 0, Math.PI * 2);
+            offCtx.fill();
+            if (sw > 0) offCtx.stroke();
+          } else if (sh.type === 'polygon') {
+            offCtx.beginPath();
+            const cx = sh.w / 2;
+            const cy = sh.h / 2;
+            const r = Math.max(4, Math.min(sh.w, sh.h) / 2 - pad);
+            for (let i = 0; i < 6; i++) {
+              const ang = (i * Math.PI) / 3 - Math.PI / 2;
+              const px = cx + r * Math.cos(ang);
+              const py = cy + r * Math.sin(ang);
+              if (i === 0) offCtx.moveTo(px, py);
+              else offCtx.lineTo(px, py);
+            }
+            offCtx.closePath();
+            offCtx.fill();
+            if (sw > 0) offCtx.stroke();
+          } else if (sh.type === 'path' && sh.points && sh.points.length >= 2) {
+            offCtx.beginPath();
+            sh.points.forEach((pt, idx) => {
+              const lx = pt.x - sh.x;
+              const ly = pt.y - sh.y;
+              if (idx === 0) offCtx.moveTo(lx, ly);
+              else offCtx.lineTo(lx, ly);
+            });
+            if (sh.points.length >= 3) offCtx.closePath();
+            offCtx.fill();
+            if (sw > 0) offCtx.stroke();
+          } else if (sh.type === 'text') {
+            const fSize = sh.fontSize || 32;
+            offCtx.font = `bold ${fSize}px Inter, system-ui, sans-serif`;
+            offCtx.textAlign = 'center';
+            offCtx.textBaseline = 'middle';
+            if (sw > 0) {
+              offCtx.lineWidth = sw;
+              offCtx.strokeText(sh.text || sh.name, sh.w / 2, sh.h / 2);
+            }
+            offCtx.fillStyle = sh.color;
+            offCtx.fillText(sh.text || sh.name, sh.w / 2, sh.h / 2);
+          }
+          offCtx.restore();
+        }
+
+        const b: Blob = await new Promise((res) => offCanvas.toBlob((blob) => res(blob!), 'image/png'));
+        frameBlobs.push(b);
+      }
+
+      // Check if all rendered frame blobs are identical in size/content or single frame
+      const isAllStatic = frameBlobs.every((b) => b.size === frameBlobs[0].size);
+
+      const newIm: Record<string, Uint8Array> = {};
+      const newBitmaps: Record<string, ImageBitmap> = {};
+      const newThumbs: Record<string, { url: string; w: number; h: number }> = {};
+      let newSprites: SvgaSprite[] = [];
+
+      if (isAllStatic || totalFrames <= 1) {
+        const rootKey = 'img_merged_root';
+        const bytes = new Uint8Array(await frameBlobs[0].arrayBuffer());
+        const bm = await createImageBitmap(frameBlobs[0]);
+        const dataUrl = URL.createObjectURL(frameBlobs[0]);
+
+        newIm[rootKey] = bytes;
+        newBitmaps[rootKey] = bm;
+        newThumbs[rootKey] = { url: dataUrl, w: W, h: H };
+
+        newSprites = [
+          {
+            key: rootKey,
+            fr: Array.from({ length: totalFrames }, () => ({
+              a: 1,
+              x: 0,
+              y: 0,
+              w: W,
+              h: H,
+              t: [1, 0, 0, 1, 0, 0],
+            })),
+          },
+        ];
+      } else {
+        for (let i = 0; i < totalFrames; i++) {
+          const frameKey = `img_merged_f${i}`;
+          const bytes = new Uint8Array(await frameBlobs[i].arrayBuffer());
+          const bm = await createImageBitmap(frameBlobs[i]);
+          const dataUrl = URL.createObjectURL(frameBlobs[i]);
+
+          newIm[frameKey] = bytes;
+          newBitmaps[frameKey] = bm;
+          newThumbs[frameKey] = { url: dataUrl, w: W, h: H };
+
+          newSprites.push({
+            key: frameKey,
+            fr: Array.from({ length: totalFrames }, (_, k) => ({
+              a: k === i ? 1 : 0,
+              x: 0,
+              y: 0,
+              w: W,
+              h: H,
+              t: [1, 0, 0, 1, 0, 0],
+            })),
+          });
+        }
+      }
+
+      const audiosRaw = movie.audiosRaw;
+
+      // Push history before mutating so action is fully undoable
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers,
+        shapes,
+      });
+
+      setMovie((prev) => ({
+        ...prev,
+        im: newIm,
+        sp: newSprites,
+        audiosRaw,
+      }));
+      setBitmaps(newBitmaps);
+      setThumbs(newThumbs);
+      setAddedLayers([]);
+      setShapes([]);
+      setDeletedSpriteIndices(new Set());
+      setHiddenLayerIds(new Set());
+      setLayerTransforms({});
+      setLayerKeyframes({});
+      setDocTransform({ ...DEFAULT_TRANSFORM });
+      setSelectedTarget('sprite_0');
+      setSelectedAssetKey(newSprites[0]?.key || null);
+      setSpriteFrameRanges({});
+
+      setLastAction(`تم دمج جميع الطبقات (${totalCount}) في لير واحد بنجاح! يمكنك الآن تحريكها وتكبيرها بحرية.`);
+    } catch (err: any) {
+      console.error('Failed to merge layers:', err);
+      setLastAction('حدث خطأ أثناء دمج الطبقات');
+    }
+  };
+
+  /**
    * Builds a true Decomposed SVGA 2.0 binary Blob (never flattening/baking frames).
    * Preserves all individual assets in `movie.im`, all individual `SpriteEntity` tracks in `movie.sp`
    * with their updated 2D affine transforms, and exports all added image/shape/text layers as
@@ -2646,7 +3106,7 @@ export default function SvgaAeEditor({
         width: '100%',
         background: '#09090d',
         color: '#e8e8ee',
-        fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
+        fontFamily: 'Cairo, Inter, "Segoe UI", system-ui, -apple-system, sans-serif',
         fontSize: '12px',
         userSelect: 'none',
         overflow: 'hidden',
@@ -3187,32 +3647,61 @@ export default function SvgaAeEditor({
                       alignItems: 'center',
                       color: '#7e7e90',
                       fontSize: '11px',
+                      flexWrap: 'wrap',
+                      gap: '4px',
                     }}
                   >
                     <span>
                       {spriteLayers.length + addedLayers.length + shapes.length} decomposed layers
                     </span>
-                    {selectedTarget !== 'DOCUMENT' && (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                       <button
                         type="button"
-                        onClick={() => handleDeleteLayer(selectedTarget)}
-                        title="Delete selected layer"
+                        id="edMergeAllLayers"
+                        onClick={handleMergeAllLayers}
+                        title="دمج كل الطبقات (Sprites + Images + Shapes) في لير واحد مجمع لتسهيل تحريكه وتكبيره وتصغيره بالكامل"
                         style={{
-                          background: 'rgba(248,113,113,0.12)',
-                          border: '1px solid rgba(248,113,113,0.35)',
-                          color: '#f87171',
+                          background:
+                            'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(167, 139, 250, 0.18))',
+                          border: '1px solid rgba(139, 92, 246, 0.55)',
+                          color: '#ddd6fe',
                           borderRadius: '5px',
-                          padding: '2px 6px',
+                          padding: '2px 7px',
                           fontSize: '10px',
+                          fontWeight: 600,
                           cursor: 'pointer',
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '3px',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                          whiteSpace: 'nowrap',
                         }}
                       >
-                        <Trash2 size={10} /> Delete
+                        <Layers size={10} color="#a78bfa" />
+                        <span>دمج الطبقات كلها في لير واحد</span>
                       </button>
-                    )}
+                      {selectedTarget !== 'DOCUMENT' && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteLayer(selectedTarget)}
+                          title="Delete selected layer"
+                          style={{
+                            background: 'rgba(248,113,113,0.12)',
+                            border: '1px solid rgba(248,113,113,0.35)',
+                            color: '#f87171',
+                            borderRadius: '5px',
+                            padding: '2px 6px',
+                            fontSize: '10px',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                          }}
+                        >
+                          <Trash2 size={10} /> Delete
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 

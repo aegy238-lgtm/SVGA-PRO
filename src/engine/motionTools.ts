@@ -24,6 +24,13 @@ import {
   metaFromAnyObject,
   parseJsonSlice,
 } from '../utils/vapYyevaDetection';
+import { removeImageBackgroundData } from '../utils/batchImageOps';
+import { computeAffineMatrix2D, AppliedWatermarkLayer } from '../utils/watermark';
+import {
+  selectOptimalH264CodecCandidates,
+  buildAudioEncoderCandidates,
+  resampleChannelFloat32,
+} from '../utils/giftStudioUtils';
 
 let initialized = false;
 
@@ -505,7 +512,10 @@ export function initMotionToolsFixed() {
           n: vi.frames,
           set: async (i) => {
             player.stepToFrame(i, false);
-            await sleep(20);
+            try {
+              player._renderer?.drawFrame?.(i);
+            } catch (_) {}
+            await sleep(8);
           },
           draw: (c, W, H) => c.drawImage(d.querySelector('canvas'), 0, 0, W, H),
           stop: () => player.pauseAnimation(),
@@ -532,6 +542,7 @@ export function initMotionToolsFixed() {
         const data = JSON.parse(await f.text()),
           s = Math.min(2, 400 / Math.max(data.w, data.h)),
           d = document.createElement('div');
+        (window as any).__lottieData = data;
         d.style.cssText = `width:${data.w * s}px;height:${data.h * s}px`;
         v.appendChild(d);
         anim = lottie.loadAnimation({
@@ -1350,6 +1361,9 @@ export function initMotionToolsFixed() {
   }
 
   function renderAssetCards(filterQuery = '') {
+    try {
+      window.dispatchEvent(new CustomEvent('motionassetschange', { detail: { ...A } }));
+    } catch (_) {}
     const assetsContainer = $('#assets');
     if (!assetsContainer) return;
     const q = filterQuery.trim().toLowerCase();
@@ -1387,9 +1401,309 @@ export function initMotionToolsFixed() {
       const s = im[k];
       A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
     }
+    if (!Object.keys(A).length && (window as any).__lottieData?.assets) {
+      ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
+        if (asset && typeof asset.p === 'string' && /^data:image\/|^https?:|^blob:/.test(asset.p)) {
+          const key = String(asset.id || `img_${idx}`);
+          A[key] = asset.p;
+        }
+      });
+    }
     const qVal = ($('#q') as HTMLInputElement)?.value || '';
     renderAssetCards(qVal);
   }
+
+  (window as any).__getMotionAssets = () => ({ ...A });
+
+  (window as any).__downloadAllImageAssets = async () => {
+    const keys = Object.keys(A);
+    if (!keys.length) {
+      toast('No image assets available to download');
+      return;
+    }
+    try {
+      const z = new window.JSZip();
+      for (const k of keys) {
+        const url = A[k];
+        if (!url) continue;
+        const blob = await (await fetch(url)).blob();
+        const fileName = /\.(png|jpe?g|webp|gif)$/i.test(k) ? k : `${k}.png`;
+        z.file(fileName, blob);
+      }
+      const base = cur ? cur.name.replace(/\.[^.]+$/, '') : 'assets';
+      const zipBlob = await z.generateAsync({ type: 'blob' });
+      await dl(zipBlob, `${base}_images.zip`);
+    } catch (e: any) {
+      toast(e?.message || 'Could not download image assets');
+    }
+  };
+
+  (window as any).__downloadAudioAsset = async () => {
+    const a = window.finalAudio && window.finalAudio();
+    if (!a || !a.bytes) {
+      toast('No audio asset in this file');
+      return;
+    }
+    const base = cur ? cur.name.replace(/\.[^.]+$/, '') : 'audio';
+    const ext = a.isMp3 ? 'mp3' : 'wav';
+    await dl(new Blob([a.bytes], { type: a.isMp3 ? 'audio/mpeg' : 'audio/wav' }), `${base}.${ext}`);
+  };
+
+  (window as any).__executeBatchImageOps = async (batchState: any) => {
+    if (!batchState || !batchState.items) return;
+    const itemEntries = Object.values(batchState.items) as any[];
+    let opsApplied = 0;
+
+    for (const op of itemEntries) {
+      const key = op.key;
+      if (!A[key]) continue;
+
+      if (op.markedForDelete) {
+        const origIm = await imgOf(A[key]);
+        const W = Math.max(1, origIm?.naturalWidth || 1);
+        const H = Math.max(1, origIm?.naturalHeight || 1);
+        const c = mk(W, H);
+        const transparentUrl = c.toDataURL('image/png');
+        await applyEdit(transparentUrl, key);
+        if ((window as any).__lottieData?.assets) {
+          ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
+            const ak = String(asset?.id || `img_${idx}`);
+            if (ak === key) asset.p = transparentUrl;
+          });
+        }
+        delete A[key];
+        if (Array.isArray((window as any).__WATERMARK_LAYERS)) {
+          (window as any).__WATERMARK_LAYERS = (window as any).__WATERMARK_LAYERS.filter(
+            (w: any) => w.imageKey !== key
+          );
+          (window as any).__syncStageWatermarks?.();
+        }
+        opsApplied++;
+        continue;
+      }
+
+      let currentUrl = op.replacementDataUrl || A[key];
+      const needsPixelPass = !!op.replacementDataUrl || !!batchState.removeBackground;
+
+      if (needsPixelPass) {
+        const origIm = await imgOf(A[key]);
+        const newIm = await imgOf(currentUrl);
+        if (newIm) {
+          const W = Math.max(1, origIm?.naturalWidth || newIm.naturalWidth || 1);
+          const H = Math.max(1, origIm?.naturalHeight || newIm.naturalHeight || 1);
+          const c = mk(W, H);
+          const ctx = c.getContext('2d', { willReadFrequently: true });
+          ctx.clearRect(0, 0, W, H);
+          ctx.drawImage(newIm, 0, 0, W, H);
+
+          if (batchState.removeBackground) {
+            const imgData = ctx.getImageData(0, 0, W, H);
+            removeImageBackgroundData(imgData.data, W, H, 38);
+            ctx.putImageData(imgData, 0, 0);
+          }
+
+          currentUrl = c.toDataURL('image/png');
+          A[key] = currentUrl;
+          await applyEdit(currentUrl, key);
+          if ((window as any).__lottieData?.assets) {
+            ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
+              const ak = String(asset?.id || `img_${idx}`);
+              if (ak === key) asset.p = currentUrl;
+            });
+          }
+          opsApplied++;
+        }
+      }
+
+      const trimmedNewName = (op.newName || '').trim();
+      if (trimmedNewName && trimmedNewName !== key) {
+        const currentVal = A[key];
+        delete A[key];
+        A[trimmedNewName] = currentVal;
+
+        if (window.EDIT && window.EDIT[key]) {
+          window.EDIT[trimmedNewName] = window.EDIT[key];
+        }
+        if (window.SV) {
+          if (window.SV.bm && window.SV.bm[key]) {
+            window.SV.bm[trimmedNewName] = window.SV.bm[key];
+          }
+          if (window.SV.m && Array.isArray(window.SV.m.sp)) {
+            window.SV.m.sp.forEach((s: any) => {
+              if (s.key === key) s.key = trimmedNewName;
+            });
+          }
+        }
+        if (window.SVP && window.SVP._videoItem) {
+          const vi = window.SVP._videoItem;
+          if (vi.images && vi.images[key]) {
+            vi.images[trimmedNewName] = vi.images[key];
+          }
+          if (Array.isArray(vi.sprites)) {
+            vi.sprites.forEach((sp: any) => {
+              if (sp.imageKey === key) sp.imageKey = trimmedNewName;
+            });
+          }
+          try {
+            window.SVP.setImage(currentVal, trimmedNewName);
+          } catch (_) {}
+        }
+        if ((window as any).__lottieData) {
+          const ld = (window as any).__lottieData;
+          if (Array.isArray(ld.assets)) {
+            ld.assets.forEach((asset: any, idx: number) => {
+              const ak = String(asset?.id || `img_${idx}`);
+              if (ak === key) asset.id = trimmedNewName;
+            });
+          }
+          if (Array.isArray(ld.layers)) {
+            ld.layers.forEach((ly: any) => {
+              if (ly && ly.refId === key) ly.refId = trimmedNewName;
+            });
+          }
+        }
+        opsApplied++;
+      }
+    }
+
+    // Reload live Lottie canvas if active
+    if (anim && (window as any).__lottieData && typeof lottie !== 'undefined') {
+      try {
+        const v = $('#view');
+        const container = v?.querySelector('div');
+        if (container) {
+          anim.destroy();
+          container.innerHTML = '';
+          anim = lottie.loadAnimation({
+            container,
+            renderer: 'canvas',
+            loop: true,
+            autoplay: !(S && S.paused),
+            animationData: (window as any).__lottieData,
+          });
+          syncPreviewSize(S?.w, S?.h);
+        }
+      } catch (_) {}
+    }
+
+    const qVal = ($('#q') as HTMLInputElement)?.value || '';
+    renderAssetCards(qVal);
+
+    // Update Image Count badge in #info if present
+    const infoSpans = $$('#info span');
+    for (const sp of infoSpans) {
+      if (sp.textContent && sp.textContent.startsWith('Image Count:')) {
+        sp.textContent = `Image Count: ${Object.keys(A).length}`;
+      }
+    }
+
+    toast(`Batch executed (${opsApplied} asset updates applied)`);
+  };
+
+  function syncStageWatermarks() {
+    const v = document.getElementById('view');
+    if (!v) return;
+    let overlay = document.getElementById('stageWatermarkOverlay');
+    const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+    if (!layers.length) {
+      overlay?.remove();
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'stageWatermarkOverlay';
+      overlay.style.cssText =
+        'position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:15;';
+      v.style.position = 'relative';
+      v.appendChild(overlay);
+    } else if (overlay.parentElement !== v) {
+      v.style.position = 'relative';
+      v.appendChild(overlay);
+    }
+
+    const baseW = S?.w || layers[0]?.animWidth || 413;
+    const baseH = S?.h || layers[0]?.animHeight || 413;
+
+    overlay.innerHTML = layers
+      .map((ly) => {
+        const currentSrc = A[ly.imageKey] || ly.dataUrl;
+        const leftPct = (ly.x / Math.max(1, baseW)) * 100;
+        const topPct = (ly.y / Math.max(1, baseH)) * 100;
+        const wPct = ((ly.width * (ly.scale / 100)) / Math.max(1, baseW)) * 100;
+        const hPct = ((ly.height * (ly.scale / 100)) / Math.max(1, baseH)) * 100;
+        const op = Math.max(0, Math.min(1, ly.opacity / 100));
+        return `<img
+          src="${currentSrc}"
+          alt="${ly.imageKey}"
+          data-wm-key="${ly.imageKey}"
+          style="
+            position:absolute;
+            left:${leftPct}%;
+            top:${topPct}%;
+            width:${wPct}%;
+            height:${hPct}%;
+            transform:translate(-50%, -50%) rotate(${ly.rotation}deg);
+            transform-origin:center center;
+            opacity:${op};
+            object-fit:contain;
+            pointer-events:none;
+          "
+        />`;
+      })
+      .join('');
+  }
+
+  (window as any).__syncStageWatermarks = syncStageWatermarks;
+
+  (window as any).__applyWatermarkLayer = async (layer: AppliedWatermarkLayer) => {
+    if (!layer || !layer.imageKey || !layer.dataUrl) return;
+    const key = layer.imageKey;
+    A[key] = layer.dataUrl;
+    (window.EDIT = window.EDIT || {})[key] = layer.dataUrl;
+
+    const existingList: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+    const im = await imgOf(layer.dataUrl);
+    const bmp = im ? await createImageBitmap(im).catch(() => null) : null;
+    const enrichedLayer = { ...layer, _img: im, _bmp: bmp };
+    const idx = existingList.findIndex((w) => w.imageKey === key);
+    if (idx >= 0) {
+      existingList[idx] = enrichedLayer;
+    } else {
+      existingList.push(enrichedLayer);
+    }
+    (window as any).__WATERMARK_LAYERS = existingList;
+
+    if (window.SV && bmp) {
+      window.SV.bm[key] = bmp;
+    }
+
+    const qVal = ($('#q') as HTMLInputElement)?.value || '';
+    renderAssetCards(qVal);
+
+    const infoSpans = $$('#info span');
+    for (const sp of infoSpans) {
+      if (sp.textContent && sp.textContent.startsWith('Image Count:')) {
+        sp.textContent = `Image Count: ${Object.keys(A).length}`;
+      }
+    }
+
+    syncStageWatermarks();
+    toast(`Watermark "${key}" added as top layer`);
+  };
+
+  (window as any).__clearWatermarkLayers = () => {
+    const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+    for (const ly of layers) {
+      delete A[ly.imageKey];
+      if (window.EDIT) delete window.EDIT[ly.imageKey];
+      if (window.SV?.bm) delete window.SV.bm[ly.imageKey];
+    }
+    (window as any).__WATERMARK_LAYERS = [];
+    syncStageWatermarks();
+    const qVal = ($('#q') as HTMLInputElement)?.value || '';
+    renderAssetCards(qVal);
+    toast('Watermark removed');
+  };
 
   const qInput = $('#q') as HTMLInputElement | null;
   if (qInput) {
@@ -1403,6 +1717,8 @@ export function initMotionToolsFixed() {
     anim = null;
     player = null;
     window.VI = null;
+    (window as any).__lottieData = null;
+    (window as any).__WATERMARK_LAYERS = [];
     show('convert');
     const v = $('#view');
     v.innerHTML = '';
@@ -1422,6 +1738,7 @@ export function initMotionToolsFixed() {
     syncPreviewSize(S.w, S.h);
   }
   function lot(data, f, v, fmt) {
+    (window as any).__lottieData = data;
     const s = Math.min(2, 400 / Math.max(data.w, data.h)),
       d = document.createElement('div');
     d.style.cssText = 'width:' + data.w * s + 'px;height:' + data.h * s + 'px';
@@ -1455,6 +1772,7 @@ export function initMotionToolsFixed() {
       'File Name': f.name,
     });
     fin();
+    buildAssets();
   }
   async function openDot(f) {
     const v = prep(f);
@@ -1884,12 +2202,7 @@ export function initMotionToolsFixed() {
         'File Name': f.name,
       });
       fin();
-      $('#assets').innerHTML = Object.keys(A)
-        .map(
-          (k) =>
-            `<div class='th' title='${k}' data-k='${k}'><img src='${A[k]}' alt='${k}'><span class='ac'><button class='ed' title='Edit image' aria-label='Edit ${k}'>✎</button><button class='cp' title='Copy image' aria-label='Copy ${k}'>⧉</button></span></div>`
-        )
-        .join('');
+      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
       await svgaUpgrade(f, v, cv);
     } catch (e) {
       window.SV = null;
@@ -1969,7 +2282,8 @@ export function initMotionToolsFixed() {
     cv.style.background = 'transparent';
     const bgMeta = (window as any).__getGiftBg?.();
     if (bgMeta) (window as any).__applyGiftBg?.(bgMeta.val, bgMeta.type === 'image');
-    m.style.display = 'none';
+    m.style.cssText =
+      'position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
     $('#view').appendChild(cv);
     (function lp() {
       if (!document.body.contains(cv)) return;
@@ -2408,7 +2722,10 @@ export function initMotionToolsFixed() {
       Object.assign(S, {
         set: async (i) => {
           pl.stepToFrame(i, false);
-          await sleep(20);
+          try {
+            pl._renderer?.drawFrame?.(i);
+          } catch (_) {}
+          await sleep(8);
         },
         draw: (c, W, H) => c.drawImage(d.querySelector('canvas'), 0, 0, W, H),
         stop: () => pl.pauseAnimation(),
@@ -2447,6 +2764,7 @@ export function initMotionToolsFixed() {
         return Uint8Array.from(o);
       },
       pi = (f, v) => cat([pv(f << 3), pv(v)]),
+      pf = (f, v) => cat([pv((f << 3) | 5), new Uint8Array(new Float32Array([v]).buffer)]),
       pb = (f, d) => cat([pv((f << 3) | 2), pv(d.length), d]),
       ps2 = (f, s) => pb(f, new TextEncoder().encode(s));
     window.EDIT = window.EDIT || {};
@@ -2551,6 +2869,30 @@ export function initMotionToolsFixed() {
         const n = Math.max(1, Math.min(o.n || 1, Math.ceil(au.dur * (o.fps || 20)))),
           ae = cat([ps2(1, 'audio_0'), pi(2, 0), pi(3, n), pi(4, 0), pi(5, Math.round(au.dur * 1000))]);
         out.push(pb(5, ae), pb(3, cat([ps2(1, 'audio_0'), pb(2, au.set)])));
+      }
+      const wmLayers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+      if (wmLayers.length > 0) {
+        const totalFrames = Math.max(1, o.n || (S && S.n) || 1);
+        for (const wm of wmLayers) {
+          const url = A[wm.imageKey] || wm.dataUrl;
+          if (!url) continue;
+          const pngBytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          out.push(pb(3, cat([ps2(1, wm.imageKey), pb(2, pngBytes)])));
+          const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
+            wm.x,
+            wm.y,
+            wm.width,
+            wm.height,
+            wm.scale,
+            wm.rotation
+          );
+          const lay = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, wm.width), pf(4, wm.height)]));
+          const tr = pb(3, cat([pf(1, a), pf(2, b), pf(3, c), pf(4, d), pf(5, tx), pf(6, ty)]));
+          const frameBytes = pb(2, cat([pf(1, Math.max(0, Math.min(1, wm.opacity / 100))), lay, tr]));
+          const allFrames = [];
+          for (let fi = 0; fi < totalFrames; fi++) allFrames.push(frameBytes);
+          out.push(pb(4, cat([ps2(1, wm.imageKey), ...allFrames])));
+        }
       }
       return new Blob([await inf2(cat(out))], { type: 'application/octet-stream' });
     }
@@ -2853,14 +3195,31 @@ export function initMotionToolsFixed() {
       try {
         if (ext === 'svga') {
           const P = await svgaParts(f);
-          if (!P || !P.ents.length) return;
-          by = P.imgs[P.ents[0].key];
-          nm = P.ents[0].key;
+          if (!P) return;
+          if (P.ents && P.ents.length && P.imgs[P.ents[0].key]) {
+            by = P.imgs[P.ents[0].key];
+            nm = P.ents[0].key;
+          } else if (P.imgs) {
+            for (const [k, v] of Object.entries(P.imgs)) {
+              if (isMp3(v)) {
+                by = v;
+                nm = k;
+                break;
+              }
+            }
+          }
           keep = by && by.slice();
-        } else if (/^(mp4|mov|webm|vap|yyeva)$/.test(ext)) by = new Uint8Array(await f.arrayBuffer());
-        if (!by) return;
-        const buf = await actx().decodeAudioData(by.slice().buffer);
-        if (cur !== f) return;
+        } else if (/^(mp4|mov|webm|vap|yyeva)$/.test(ext)) {
+          by = f.__rawBytes ? f.__rawBytes.slice() : new Uint8Array(await f.arrayBuffer());
+          const fp = bidx(by, 'ftyp');
+          if (fp > 4 && fp < 65536) by = by.subarray(fp - 4);
+        }
+        if (!by || by.byteLength < 16) return;
+        const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        const decoderCtx = OAC ? new OAC(2, 48000, 48000) : actx();
+        const ab = by.buffer.slice(by.byteOffset, by.byteOffset + by.byteLength);
+        const buf = await decoderCtx.decodeAudioData(ab);
+        if (cur !== f || !buf || !buf.length) return;
         AU.cur = { name: nm, buf, bytes: keep, mp3: isMp3(keep) };
         setBox();
         window.PA && window.PA.restart();
@@ -2888,7 +3247,7 @@ export function initMotionToolsFixed() {
       on: false,
       t: 0,
       dur: 0,
-      muted: false,
+      muted: true,
       src: null,
       g: null,
       t0: 0,
@@ -2953,24 +3312,29 @@ export function initMotionToolsFixed() {
       requestAnimationFrame(pump);
     })();
     document.getElementById('aoe').addEventListener('click', () => setTimeout(() => PA.restart(), 0));
+    const sndBtn = $('#snd');
+    if (sndBtn) sndBtn.textContent = 'Muted';
     $('#snd').onclick = function () {
       if (!(window.finalAudio && window.finalAudio())) return toast('No audio in this file');
       PA.muted = !PA.muted;
       if (PA.g) PA.g.gain.value = PA.muted ? 0 : window.finalAudio().vol;
       this.textContent = PA.muted ? 'Muted' : 'Sound';
+      if (!PA.muted && (!PA.on || !PA.src)) PA.restart();
     };
     const _pp = $('#pp').onclick;
     $('#pp').onclick = function () {
       _pp.call(this);
       if (S && S.paused) PA.stop();
-      else PA.restart();
+      else if (!PA.muted) PA.restart();
     };
     const _lp = load;
     load = async function (f) {
       PA.stop();
       PA.t = 0;
+      PA.muted = true;
+      const sb = $('#snd');
+      if (sb) sb.textContent = 'Muted';
       await _lp(f);
-      PA.restart();
     };
     const prev2 = $('#start').onclick;
     $('#start').onclick = async () => {
@@ -3097,36 +3461,60 @@ export function initMotionToolsFixed() {
       );
     }
     async function seekVideo(m, t) {
-      t = Math.max(0, Math.min(t, m.duration - 0.0001));
-      if (Math.abs(m.currentTime - t) < 0.00001 && m.readyState >= 2) return;
+      const dur = Number.isFinite(m.duration) && m.duration > 0 ? m.duration : 0;
+      t = dur > 0.002 ? Math.max(0, Math.min(t, dur - 0.001)) : Math.max(0, t);
+      if (!m.seeking && Math.abs(m.currentTime - t) < 0.0005 && m.readyState >= 2) return;
       await new Promise((resolve, reject) => {
+        let settled = false;
         const clean = () => {
             clearTimeout(timer);
-            m.removeEventListener('seeked', done);
+            m.removeEventListener('seeked', checkReady);
+            m.removeEventListener('canplay', checkReady);
+            m.removeEventListener('loadeddata', checkReady);
             m.removeEventListener('error', fail);
           },
-          done = () => {
-            if (m.readyState >= 2) {
-              clean();
-              resolve();
-            }
+          finish = () => {
+            if (settled) return;
+            settled = true;
+            clean();
+            resolve();
+          },
+          checkReady = () => {
+            if (!m.seeking && m.readyState >= 2) finish();
           },
           fail = () => {
+            if (settled) return;
+            settled = true;
             clean();
             reject(Error('Video frame decode failed'));
           },
           timer = setTimeout(() => {
-            clean();
-            reject(Error('Video seek timed out'));
-          }, 10000);
-        m.addEventListener('seeked', done);
+            finish();
+          }, 5000);
+        m.addEventListener('seeked', checkReady);
+        m.addEventListener('canplay', checkReady);
+        m.addEventListener('loadeddata', checkReady);
         m.addEventListener('error', fail);
         try {
           m.currentTime = t;
+          if (!m.seeking && m.readyState >= 2 && Math.abs(m.currentTime - t) < 0.001) {
+            finish();
+          }
         } catch (e) {
           clean();
           reject(e);
         }
+      });
+      await new Promise((r) => {
+        let done = false;
+        const fin = () => {
+          if (!done) {
+            done = true;
+            r();
+          }
+        };
+        requestAnimationFrame(fin);
+        setTimeout(fin, 14);
       });
     }
     function ensureAlphaPreviewCanvas(source, m) {
@@ -3155,7 +3543,8 @@ export function initMotionToolsFixed() {
         cv.height = ch;
       }
       cv.style.display = '';
-      m.style.display = 'none';
+      m.style.cssText =
+        'position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
     }
     function applyVideoMetaAndLayout(source, m, f, meta) {
       if (!meta) {
@@ -3163,7 +3552,7 @@ export function initMotionToolsFixed() {
         source.w = m.videoWidth;
         source.h = m.videoHeight;
         if (source._alphaCanvas) source._alphaCanvas.style.display = 'none';
-        m.style.display = '';
+        m.style.cssText = '';
         info({
           Format: f.name.split('.').pop().toUpperCase(),
           Resolution: source.w + ' × ' + source.h,
@@ -3389,6 +3778,34 @@ export function initMotionToolsFixed() {
       x.translate(-g.w / 2, -g.h / 2);
       draw(x, g.w, g.h);
       x.restore();
+      const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
+      if (wmLayers.length > 0) {
+        const baseW = (S && S.w) || wmLayers[0]?.animWidth || W;
+        const baseH = (S && S.h) || wmLayers[0]?.animHeight || H;
+        for (const wm of wmLayers) {
+          const imSource = wm._bmp || wm._img;
+          if (!imSource) continue;
+          const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
+            wm.x * (W / Math.max(1, baseW)),
+            wm.y * (H / Math.max(1, baseH)),
+            wm.width * (W / Math.max(1, baseW)),
+            wm.height * (H / Math.max(1, baseH)),
+            wm.scale,
+            wm.rotation
+          );
+          x.save();
+          x.globalAlpha = Math.max(0, Math.min(1, wm.opacity / 100));
+          x.transform(a, b, c, d, tx, ty);
+          x.drawImage(
+            imSource,
+            0,
+            0,
+            wm.width * (W / Math.max(1, baseW)),
+            wm.height * (H / Math.max(1, baseH))
+          );
+          x.restore();
+        }
+      }
       if (
         (window as any).__edgeFeather?.enabled &&
         typeof (window as any).__applyEdgeFeatherToContext === 'function'
@@ -3426,15 +3843,15 @@ export function initMotionToolsFixed() {
     async function encodeMP4(o) {
       if (!window.VideoEncoder || !window.VideoFrame || !window.Mp4Muxer) return recordMP4(o);
       let config;
-      for (const codec of ['avc1.640034', 'avc1.640033', 'avc1.4D402A', 'avc1.42E02A']) {
+      const codecCandidates = selectOptimalH264CodecCandidates(o.VW, o.VH);
+      for (const codec of codecCandidates) {
         const c = {
           codec,
           width: o.VW,
           height: o.VH,
-          bitrate: Math.round(Math.min(80e6, Math.max(2e6, o.VW * o.VH * o.fps * 0.35)) * o.q),
+          bitrate: Math.round(Math.min(60e6, Math.max(2.5e6, o.VW * o.VH * o.fps * 0.28)) * o.q),
           framerate: o.fps,
           avc: { format: 'avc' },
-          latencyMode: 'quality',
         };
         try {
           if ((await VideoEncoder.isConfigSupported(c)).supported) {
@@ -3445,17 +3862,26 @@ export function initMotionToolsFixed() {
       }
       if (!config) return recordMP4(o);
       const audio = window.finalAudio && window.finalAudio();
-      let audioConfig;
-      if (audio) {
-        const c = {
-          codec: 'mp4a.40.2',
-          sampleRate: audio.buf.sampleRate,
-          numberOfChannels: Math.min(2, audio.buf.numberOfChannels),
-          bitrate: 192000,
-        };
-        if (window.AudioEncoder && window.AudioData && (await AudioEncoder.isConfigSupported(c)).supported)
-          audioConfig = c;
-        else return recordMP4(o);
+      let audioConfig = null;
+      if (audio && audio.buf && window.AudioEncoder && window.AudioData) {
+        const audioCandidates = buildAudioEncoderCandidates(
+          audio.buf.sampleRate,
+          audio.buf.numberOfChannels
+        );
+        for (const cand of audioCandidates) {
+          try {
+            const sup = await AudioEncoder.isConfigSupported({
+              codec: cand.codec,
+              sampleRate: cand.sampleRate,
+              numberOfChannels: cand.numberOfChannels,
+              bitrate: cand.bitrate,
+            });
+            if (sup && sup.supported) {
+              audioConfig = cand;
+              break;
+            }
+          } catch (_) {}
+        }
       }
       const target = new Mp4Muxer.ArrayBufferTarget(),
         mux = new Mp4Muxer.Muxer({
@@ -3465,7 +3891,7 @@ export function initMotionToolsFixed() {
           ...(audioConfig
             ? {
                 audio: {
-                  codec: 'aac',
+                  codec: audioConfig.muxCodec,
                   sampleRate: audioConfig.sampleRate,
                   numberOfChannels: audioConfig.numberOfChannels,
                 },
@@ -3493,31 +3919,38 @@ export function initMotionToolsFixed() {
           error: fail,
         });
         ve.configure(config);
-        const c = mk(o.VW, o.VH),
-          x = c.getContext('2d', { alpha: false });
+        const cvs = [mk(o.VW, o.VH), mk(o.VW, o.VH)],
+          ctxs = cvs.map((cv) => cv.getContext('2d', { alpha: false }));
+        const keyInterval = Math.max(1, Math.round(o.fps));
         for (let k = 0; k < o.nk; k++) {
           guard();
+          const bufIdx = k & 1;
+          const c = cvs[bufIdx];
+          const x = ctxs[bufIdx];
           await o.paint(x, k);
+          const tsUs = Math.round((k * 1e6) / o.fps);
+          const nextTsUs = Math.round(((k + 1) * 1e6) / o.fps);
           const f = new VideoFrame(c, {
-            timestamp: Math.round((k * 1e6) / o.fps),
-            duration: Math.round(((k + 1) * 1e6) / o.fps) - Math.round((k * 1e6) / o.fps),
+            timestamp: tsUs,
+            duration: Math.max(1, nextTsUs - tsUs),
           });
           try {
-            ve.encode(f, { keyFrame: k % Math.max(1, Math.round(o.fps * 2)) === 0 });
+            ve.encode(f, { keyFrame: k % keyInterval === 0 });
           } finally {
             f.close();
           }
           const deadline = performance.now() + 15000;
-          while (ve.encodeQueueSize > 8) {
+          while (ve.encodeQueueSize > 2) {
             guard();
             if (performance.now() > deadline) throw Error('Video encoder stalled');
-            await sleep(3);
+            await sleep(4);
           }
+          await sleep(0);
           if (k % 5 === 0) status('Encoding ' + Math.round(((k + 1) * 100) / o.nk) + '%');
         }
         await timed(ve.flush(), 30000, 'Video encoder');
         guard();
-        if (audioConfig) {
+        if (audioConfig && audio && audio.buf) {
           ae = new AudioEncoder({
             output: (chunk, meta) => {
               try {
@@ -3528,18 +3961,26 @@ export function initMotionToolsFixed() {
             },
             error: fail,
           });
-          ae.configure(audioConfig);
+          ae.configure({
+            codec: audioConfig.codec,
+            sampleRate: audioConfig.sampleRate,
+            numberOfChannels: audioConfig.numberOfChannels,
+            bitrate: audioConfig.bitrate,
+          });
           const sr = audioConfig.sampleRate,
             ch = audioConfig.numberOfChannels,
+            srcSr = audio.buf.sampleRate || sr,
             total = Math.round((o.nk / o.fps) * sr),
-            offset = Math.round(o.start * sr);
-          for (let off = 0; off < total; off += 1024) {
+            chunkLen = 960;
+          for (let off = 0; off < total; off += chunkLen) {
             guard();
-            const n = Math.min(1024, total - off),
-              data = new Float32Array(n * ch);
+            const n = Math.min(chunkLen, total - off),
+              data = new Float32Array(n * ch),
+              srcOff = (o.start + off / sr) * srcSr;
             for (let c = 0; c < ch; c++) {
-              const src = audio.buf.getChannelData(c);
-              for (let j = 0; j < n; j++) data[c * n + j] = (src[offset + off + j] || 0) * audio.vol;
+              const src = audio.buf.getChannelData(Math.min(c, audio.buf.numberOfChannels - 1));
+              const resampled = resampleChannelFloat32(src, srcSr, sr, n, audio.vol, srcOff);
+              data.set(resampled, c * n);
             }
             const f = new AudioData({
               format: 'f32-planar',

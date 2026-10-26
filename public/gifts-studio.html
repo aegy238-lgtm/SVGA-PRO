@@ -11,45 +11,82 @@
 :root{--bg:#0b0e1a;--sf:#141930;--tx:#eceefa;--mu:#8991b0;--bd:#252c4d;--ac:#8a70ff;--ac2:#b24cff;--er:#e0334f;--ok:#12a36a;--sh:0 8px 30px #0008;--bgv:#141a30;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 @media (prefers-color-scheme:light){:root[data-theme="light"]{--bg:#f4f5fb;--sf:#fff;--tx:#161a2e;--mu:#737a95;--bd:#e1e4f0;--ac:#6a4cff;--ac2:#b24cff;--er:#e0334f;--ok:#12a36a;--sh:0 8px 30px #1b1f4a14}}
 *{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
-body{margin:0;background:var(--bg);color:var(--tx);font:14px "Tajawal","Segoe UI",Tahoma,system-ui,sans-serif;min-height:100vh}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px "Tajawal","Segoe UI",Tahoma,system-ui,sans-serif;min-height:100vh;user-select:none;-webkit-user-select:none}
 button,select,input{font:inherit;color:inherit}
 button{border:0;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:9px 14px;cursor:pointer;display:inline-flex;gap:6px;align-items:center;transition:.15s}
 button:hover{border-color:var(--ac);transform:translateY(-1px)}button:disabled{opacity:.5;pointer-events:none}
 button.p{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;border:0;font-weight:600;box-shadow:0 6px 18px #6a4cff44}
+button.wm-on{border-color:#a855f7;background:linear-gradient(135deg,rgba(138,112,255,.22),rgba(178,76,255,.22));color:#f3e8ff;box-shadow:0 0 16px rgba(168,85,247,.32)}
 select{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:9px 10px}
 header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 18px;background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:blur(14px);border-bottom:1px solid var(--bd)}
 .brand{display:flex;gap:10px;align-items:center;margin-inline-end:auto}.lg{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--ac),var(--ac2));display:grid;place-items:center;font-size:20px;font-style:normal}
 .brand b{display:block;font-size:16px}.brand small{color:var(--mu)}
 .act{display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:relative}
-.pop{position:absolute;top:110%;inset-inline-start:0;z-index:30;width:270px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.pop.o{display:flex}
+.pop{position:absolute;top:110%;inset-inline-start:0;z-index:30;width:290px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.pop.o{display:flex}
+.wmpop{position:absolute;top:110%;inset-inline-start:90px;z-index:31;width:320px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.wmpop.o{display:flex}
 .sw{display:flex;flex-wrap:wrap;gap:8px}.sw i{width:34px;height:34px;border-radius:10px;cursor:pointer;border:2px solid var(--bd)}.sw i:hover{border-color:var(--ac)}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 18px;color:var(--mu)}
 .bar button{padding:6px 10px;font-size:13px}.bar .sp{margin-inline-end:auto}
-#drop{margin:18px;border:2px dashed var(--bd);border-radius:24px;padding:70px 20px;text-align:center;color:var(--mu);background:var(--sf);transition:.2s}#drop.o{border-color:var(--ac);background:#6a4cff12}
+#drop{margin:18px;border:2px dashed var(--bd);border-radius:24px;padding:70px 20px;text-align:center;color:var(--mu);background:var(--sf);transition:.2s;position:relative;overflow:hidden}#drop.o{border-color:var(--ac);background:#6a4cff12}
 #drop h2{color:var(--tx);margin:8px 0}#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--w,200px),1fr));gap:14px;padding:6px 18px 110px}
 .card{background:var(--sf);border:1px solid var(--bd);border-radius:18px;overflow:hidden;position:relative;box-shadow:var(--sh);cursor:grab;contain:layout style}.card.sel{outline:2px solid var(--ac)}.card.dg{opacity:.4}
-.st{aspect-ratio:1;background:var(--bgv);display:flex;align-items:center;justify-content:center;overflow:hidden}.st>div{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative}.st>div>*{max-width:100%;max-height:100%}
-.st canvas{max-width:100%!important;max-height:100%!important;width:100%!important;height:100%!important;object-fit:contain!important;transform:none!important;margin:0!important}
+.st{aspect-ratio:1;background:var(--bgv);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}.st>div{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative}.st>div>*{max-width:100%;max-height:100%}
+.st canvas:not(.wm-ov){max-width:100%!important;max-height:100%!important;width:100%!important;height:100%!important;object-fit:contain!important;transform:none!important;margin:0!important}
+.st canvas.wm-ov{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;pointer-events:none!important;z-index:3!important;object-fit:fill!important}
 .st .er{color:var(--er);padding:10px;text-align:center;font-size:12px}
-.tag{position:absolute;top:8px;inset-inline-start:8px;background:#000a;color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;z-index:2}
-.ck{position:absolute;top:8px;inset-inline-end:8px;width:20px;height:20px;accent-color:var(--ac);z-index:2}
+.tag{position:absolute;top:8px;inset-inline-start:8px;background:#000a;color:#fff;border-radius:8px;padding:2px 8px;font-size:11px;z-index:4}
+.ck{position:absolute;top:8px;inset-inline-end:8px;width:20px;height:20px;accent-color:var(--ac);z-index:4}
 .meta{padding:9px 12px 4px;font-size:13px}.meta b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta small{color:var(--mu)}
-.cb{display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 12px}.meta select{width:100%;margin-top:6px;padding:4px 8px;font-size:12px}.cb button{padding:4px 8px;border-radius:9px}
+.cb{display:flex;flex-wrap:nowrap;gap:4px;padding:4px 10px 12px;align-items:center}.meta select{width:100%;margin-top:6px;padding:4px 8px;font-size:12px}.cb button{padding:4px 7px;border-radius:9px;font-size:12px;flex-shrink:0}
 #dock{position:fixed;bottom:calc(14px + env(safe-area-inset-bottom,0px));inset-inline:14px;max-width:560px;margin-inline:auto;background:var(--sf);border:1px solid var(--bd);border-radius:18px;padding:12px 14px;box-shadow:var(--sh);display:none;z-index:25}
 #pw{height:8px;background:var(--bd);border-radius:6px;overflow:hidden;margin:8px 0}#pg{height:100%;width:0;background:linear-gradient(90deg,var(--ac),var(--ac2));transition:width .2s}
 .r{display:flex;gap:8px;align-items:center;flex-wrap:wrap}label{display:inline-flex;gap:6px;align-items:center}
+.wm-in{width:100%;background:#0b0e1a;border:1px solid var(--bd);border-radius:10px;padding:7px 10px;color:var(--tx);font-size:13px}
+.wm-pv{width:100%;height:110px;border-radius:12px;border:1px solid var(--bd);background:#0b0e1a;position:relative;overflow:hidden;display:grid;place-items:center}
+.wm-pv canvas{width:100%;height:100%;display:block}
+.wm-dot{width:8px;height:8px;border-radius:50%;background:#64748b;display:inline-block}
+button.wm-on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
 </style>
 </head>
 <body>
 <header>
  <div class="brand"><i class="lg">🎁</i><div><b>استوديو الهدايا</b><small>شغّل وصدّر كل صيغ الهدايا</small></div></div>
  <div class="act">
-  <button id="up">＋ رفع هدايا</button>
-  <button id="bgb">🖼 الخلفية</button><button id="pwb" title="اختر ملف libpag.wasm">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
+  <button id="up">+ رفع هدايا</button>
+  <button id="bgb">🖼 الخلفية</button>
+  <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> 💧 العلامة المائية</button>
+  <button id="pwb" title="اختر ملف libpag.wasm">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
   <div class="pop" id="pop">
    <div class="sw" id="sw"></div>
    <div class="r"><input type="color" id="c1" value="#141a30"><input type="color" id="c2" value="#4b2f8a"><select id="bm"><option value="color">لون</option><option value="grad">تدرّج</option><option value="img">صورة</option><option value="tr">شفافة</option></select></div>
    <div class="r"><button id="bi">رفع صورة خلفية</button><select id="bf"><option value="cover">تغطية</option><option value="contain">احتواء</option><option value="fill">تمديد</option></select></div>
+  </div>
+  <div class="wmpop" id="wmpop">
+   <div class="r" style="justify-content:space-between">
+    <b style="font-size:13px">💧 العلامة المائية الشبكية</b>
+    <label style="cursor:pointer;font-size:12px;font-weight:700;color:#c084fc"><input type="checkbox" id="wmen" style="accent-color:#a855f7"> تفعيل على الهدايا</label>
+   </div>
+   <div>
+    <small style="color:var(--mu);display:block;margin-bottom:4px">الاسم داخل المربعات والخطوط:</small>
+    <input type="text" id="wmtxt" class="wm-in" value="SVGA PRO Ahmed" placeholder="اكتب الاسم هنا...">
+   </div>
+   <div class="r" style="justify-content:space-between;flex-wrap:nowrap;gap:6px">
+    <label style="font-size:12px;flex:1;min-width:0">المربعات
+     <select id="wmcols" style="flex:1;min-width:0;padding:5px 6px;font-size:12px">
+      <option value="2">2×2 كبيرة</option>
+      <option value="3" selected>3×3 متوسطة</option>
+      <option value="4">4×4 كثيفة</option>
+      <option value="5">5×5 دقيقة</option>
+     </select>
+    </label>
+    <label style="font-size:12px;flex-shrink:0">اللون <input type="color" id="wmc1" value="#ffffff" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
+    <label style="font-size:12px;flex-shrink:0">الخط <input type="color" id="wmc2" value="#a855f7" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
+   </div>
+   <div class="r" style="justify-content:space-between">
+    <small style="color:var(--mu)">الشفافية: <b id="wmopv">38%</b></small>
+    <input type="range" id="wmop" min="10" max="90" value="38" style="flex:1;accent-color:#a855f7">
+   </div>
+   <div class="wm-pv" title="معاينة شكل العلامة المائية على حجم الهدية"><canvas id="wmpvc" width="280" height="110"></canvas></div>
   </div>
   <select id="mode"><option value="gi">🎁 هدية + 🖼 صورة</option><option value="pack">🎁 هدية + 🎬 فيديو + 🖼 صورة</option><option value="sep">🎬 فيديو فقط</option></select>
   <select id="q"><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option><option value="1440">1440p (2K)</option><option value="2160">2160p (4K)</option><option value="0">الحجم الأصلي</option></select>
@@ -60,15 +97,17 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;display:flex;
 <div class="bar" id="bar" style="display:none">
  <button id="all">تحديد الكل</button><button id="del">حذف المحدد</button><span id="cnt"></span>
  <span class="sp"></span>
- <button id="pa">▶ تشغيل الكل</button><button id="sa">⏸ إيقاف</button><button id="ra">↻ إعادة</button>
- <label><input type="checkbox" id="mu" checked> كتم</label>
+ <button id="pa">▶ تشغيل الكل</button><button id="sa">⏸ إيقاف</button><button id="ra">🔄 إعادة</button>
+ <button id="muBtn" class="pill" style="border:1px solid var(--ac);background:#20183b;color:#f3e8ff;display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 12px;border-radius:10px" title="كتم أو تشغيل صوت المعاينة">🔇 الصوت: مكتوم (اضغط للتشغيل)</button>
+ <input type="checkbox" id="mu" checked hidden>
  <label>الحجم <input type="range" id="zm" min="130" max="420" value="200"></label>
  <label>إطارات <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
  <label>مدة الثابتة <input type="number" id="sd" value="3" min="1" style="width:56px;border:1px solid var(--bd);border-radius:10px;padding:5px;background:var(--sf)"></label>
 </div>
-<div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · Lottie · MP4 · GIF · APNG · WebP · SVG</div><div style="font-size:12px;opacity:.7;margin-top:6px">لا يتم رفع الصور الثابتة (PNG / JPG)</div></div>
+<div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · Lottie · MP4 · GIF · APNG · WebP · SVG</div><div style="font-size:12px;opacity:.7;margin-top:6px">لا يتم رفع الصور الثابتة (PNG / JPG)</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
 <div id="grid"></div>
 <div id="dock"><div class="r"><b id="dt">…</b><span style="margin-inline-start:auto"></span><button id="cx">إلغاء</button><button class="p" id="sv" style="display:none">⬇ حفظ الملف</button></div><div id="pw"><div id="pg"></div></div><small id="ds" style="color:var(--mu)"></small></div>
+<script src="/mp4-muxer.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/svgaplayerweb/2.3.1/svga.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -78,9 +117,183 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const L=u=>new TextDecoder('latin1').decode(u),S=(u,a,b)=>L(u.subarray(a,b)),N=()=>{};
 const MIME={svg:'image/svg+xml',mp4:'video/mp4',vap:'video/mp4',gif:'image/gif',png:'image/png',apng:'image/png',webp:'image/webp',webpa:'image/webp',jpg:'image/jpeg'};
 const NAMES={svga:'SVGA',lottie:'Lottie',gif:'GIF',apng:'APNG',webpa:'WebP',webp:'WebP',png:'PNG',jpg:'JPG',svg:'SVG',mp4:'MP4',vap:'VAP',pag:'PAG'};
-let items=[],nid=1,muted=true,playing=true,players=new Map(),sig={stop:false},out=null,dl=null,dragId=0;
+let items=[],nid=1,muted=true,playing=true,isExporting=false,players=new Map(),sig={stop:false},out=null,dl=null,dragId=0;
 const bg={mode:'color',c1:'#141a30',c2:'#4b2f8a',img:null,url:'',fit:'cover'};
 const dur=it=>it.dur>0?it.dur:+$('#sd').value||3;
+
+/* إعدادات ورسم العلامة المائية الشبكية الكاملة (مربعات متصلة + خط احترافي + الاسم على حجم الهدية بالكامل) */
+const wm={
+ enabled:false,
+ text:'SVGA PRO Ahmed',
+ cols:3,
+ opacity:0.38,
+ color:'#ffffff',
+ accent:'#a855f7'
+};
+try{
+ const savedWm=JSON.parse(localStorage.getItem('gifts_studio_wm_v1')||'null');
+ if(savedWm&&typeof savedWm==='object'){
+  if(typeof savedWm.enabled==='boolean')wm.enabled=savedWm.enabled;
+  if(typeof savedWm.text==='string'&&savedWm.text.trim())wm.text=savedWm.text;
+  if(savedWm.cols)wm.cols=+savedWm.cols||3;
+  if(savedWm.opacity)wm.opacity=+savedWm.opacity||0.38;
+  if(savedWm.color)wm.color=savedWm.color;
+  if(savedWm.accent)wm.accent=savedWm.accent;
+ }
+}catch(e){}
+
+function saveWmState(){
+ try{localStorage.setItem('gifts_studio_wm_v1',JSON.stringify(wm))}catch(e){}
+}
+
+function drawWatermark(ctx,W,H,forceShow){
+ if((!wm.enabled&&!forceShow)||W<=4||H<=4)return;
+ const label=(wm.text||'').trim()||'SVGA PRO Ahmed';
+ const cols=Math.max(2,Math.min(8,Math.round(wm.cols||3)));
+ const cellW=W/cols;
+ const rows=Math.max(2,Math.round(H/cellW));
+ const cellH=H/rows;
+ const alpha=Math.max(0.08,Math.min(0.95,Number(wm.opacity)||0.38));
+ const lineScale=Math.max(1,Math.min(W,H)/360);
+ const diag=Math.hypot(cellW,cellH);
+ const fontSize=Math.max(10,Math.min(64,Math.round(Math.min(cellW*0.21,(diag*0.70)/Math.max(6,label.length*0.58)))));
+ const angleRad=-22*Math.PI/180;
+
+ ctx.save();
+ ctx.globalAlpha=alpha;
+
+ // 1) رسم شبكة المربعات المتصلة على كامل حجم الهدية
+ ctx.strokeStyle=wm.color||'#ffffff';
+ ctx.lineWidth=Math.max(1,1.15*lineScale);
+ for(let r=0;r<rows;r++){
+  for(let c=0;c<cols;c++){
+   const x=c*cellW,y=r*cellH;
+   ctx.strokeRect(x+0.5,y+0.5,cellW-1,cellH-1);
+   const cr=Math.min(cellW,cellH)*0.13;
+   ctx.beginPath();
+   ctx.moveTo(x+3,y+3+cr);ctx.lineTo(x+3,y+3);ctx.lineTo(x+3+cr,y+3);
+   ctx.moveTo(x+cellW-3-cr,y+cellH-3);ctx.lineTo(x+cellW-3,y+cellH-3);ctx.lineTo(x+cellW-3,y+cellH-3-cr);
+   ctx.stroke();
+  }
+ }
+
+ // 2) رسم الخط الاحترافي والاسم داخل كل مربع
+ for(let r=0;r<rows;r++){
+  for(let c=0;c<cols;c++){
+   const cx0=c*cellW+cellW/2,cy0=r*cellH+cellH/2;
+   ctx.save();
+   ctx.translate(cx0,cy0);
+
+   // خط قطري متقطع خفيف يصل زوايا المربع
+   ctx.save();
+   ctx.globalAlpha=alpha*0.45;
+   ctx.strokeStyle=wm.accent||'#a855f7';
+   ctx.lineWidth=Math.max(1,1*lineScale);
+   ctx.setLineDash([Math.max(4,5*lineScale),Math.max(3,4*lineScale)]);
+   ctx.beginPath();
+   ctx.moveTo(-cellW*0.44,cellH*0.44);
+   ctx.lineTo(cellW*0.44,-cellH*0.44);
+   ctx.stroke();
+   ctx.restore();
+
+   ctx.rotate(angleRad);
+   ctx.font=`800 ${fontSize}px "Tajawal","Segoe UI",system-ui,sans-serif`;
+   ctx.textAlign='center';
+   ctx.textBaseline='middle';
+
+   const lineHalfW=Math.min(cellW*0.42,Math.max(fontSize*2.1,cellW*0.35));
+   const lineY=fontSize*0.66;
+
+   // خط سفلي وعلوي احترافي يحيط بالاسم داخل المربع
+   ctx.beginPath();
+   ctx.strokeStyle=wm.accent||'#a855f7';
+   ctx.lineWidth=Math.max(1.2,1.5*lineScale);
+   ctx.moveTo(-lineHalfW,lineY);
+   ctx.lineTo(lineHalfW,lineY);
+   ctx.stroke();
+
+   ctx.beginPath();
+   ctx.strokeStyle=wm.color||'#ffffff';
+   ctx.lineWidth=Math.max(0.9,1.1*lineScale);
+   ctx.moveTo(-lineHalfW*0.72,-lineY);
+   ctx.lineTo(lineHalfW*0.72,-lineY);
+   ctx.stroke();
+
+   // هالة داكنة لضمان وضوح الاسم فوق كل ألوان الهدايا
+   ctx.lineJoin='round';
+   ctx.lineWidth=Math.max(2.2,fontSize*0.16);
+   ctx.strokeStyle='rgba(8,10,22,0.82)';
+   ctx.strokeText(label,0,0);
+
+   ctx.fillStyle=wm.color||'#ffffff';
+   ctx.fillText(label,0,0);
+   ctx.restore();
+  }
+ }
+ ctx.restore();
+}
+
+function updateCardWatermarkOverlay(cardEl){
+ if(!cardEl)return;
+ const st=cardEl.querySelector('.st');
+ if(!st)return;
+ let ov=st.querySelector('canvas.wm-ov');
+ if(!wm.enabled){
+  if(ov)ov.style.display='none';
+  return;
+ }
+ if(!ov){
+  ov=E('canvas','wm-ov');
+  st.append(ov);
+ }
+ ov.style.display='block';
+ const rect=st.getBoundingClientRect();
+ const w=Math.max(200,Math.round(rect.width||240));
+ const h=Math.max(200,Math.round(rect.height||240));
+ if(ov.width!==w||ov.height!==h){ov.width=w;ov.height=h}
+ const x=ov.getContext('2d');
+ x.clearRect(0,0,w,h);
+ drawWatermark(x,w,h,true);
+}
+
+function refreshAllWatermarks(){
+ $('#wmb').classList.toggle('wm-on',wm.enabled);
+ $('#wmen').checked=wm.enabled;
+ $('#wmtxt').value=wm.text;
+ $('#wmcols').value=String(wm.cols);
+ $('#wmop').value=String(Math.round(wm.opacity*100));
+ $('#wmopv').textContent=Math.round(wm.opacity*100)+'%';
+ $('#wmc1').value=wm.color;
+ $('#wmc2').value=wm.accent;
+
+ // تحديث المعاينة داخل نافذة العلامة المائية
+ const pvc=$('#wmpvc');
+ if(pvc){
+  const pvx=pvc.getContext('2d');
+  pvx.clearRect(0,0,pvc.width,pvc.height);
+  drawBg(pvx,pvc.width,pvc.height);
+  drawWatermark(pvx,pvc.width,pvc.height,true);
+ }
+
+ // تحديث منطقة السحب عند عدم وجود ملفات
+ const dropWm=$('#dropWm');
+ if(dropWm){
+  if(wm.enabled){
+   dropWm.style.display='block';
+   const r=$('#drop').getBoundingClientRect();
+   const dw=Math.max(320,Math.round(r.width||640)),dh=Math.max(180,Math.round(r.height||240));
+   dropWm.width=dw;dropWm.height=dh;
+   const dx=dropWm.getContext('2d');
+   dx.clearRect(0,0,dw,dh);
+   drawWatermark(dx,dw,dh,true);
+  }else{
+   dropWm.style.display='none';
+  }
+ }
+
+ document.querySelectorAll('.card').forEach(updateCardWatermarkOverlay);
+ saveWmState();
+}
 
 /* محرك WebGL المشترك لتسريع شفافية فيديوهات الهدايا (VAP / YYEVA / Alpha MP4) بدون أي لاج */
 let _gl=null;
@@ -138,11 +351,13 @@ const alphaTasks=new Set();
  const now=performance.now();
  alphaTasks.forEach(tk=>{
   if(!tk.cv.isConnected)return;
+  // أثناء التصدير نوقف استهلاك المعالج للبطاقات الخلفية لضمان تصدير الفيديوهات بأعلى جودة بدون أي تقطيع
+  if(isExporting&&!tk.hiRes)return;
   if(!tk.hiRes&&tk.it&&tk.it.vis===false&&tk.drawn)return;
   const v=tk.v;
   if(v.readyState>1){
    const vt=v.currentTime;
-   if(!tk.drawn||(Math.abs(vt-tk.lastT)>0.008&&(tk.hiRes||now-tk.lastNow>=28))){
+   if(!tk.drawn||(Math.abs(vt-tk.lastT)>0.004&&(tk.hiRes||now-tk.lastNow>=28))){
     tk.lastT=vt;tk.lastNow=now;tk.drawn=true;
     const [rx,ry,rw,rh]=tk.c,[ax,ay,aw,ah]=tk.a;
     drawAlphaFrame(v,rx,ry,rw,rh,ax,ay,aw,ah,tk.cx,tk.dw,tk.dh,tk.tmp);
@@ -201,13 +416,21 @@ async function analyze(it){
   if(f=='png'||f=='jpg'||f=='webp'){it.rej=1;return}
   if(f=='mp4'){const T=L(u.subarray(0,Math.min(u.length,2e6)))+(u.length>2e6?L(u.subarray(Math.max(2e6,u.length-2e6))):'');it.audio=T.includes('soun');it.vapi=vapInfo(T);it.yyi=yyevaInfo(T);it.yy=!!(it.yyi||T.includes('yyeffectmp4json')||T.includes('yyev'))}
   it.fmt=f;it.url=URL.createObjectURL(new Blob([u],{type:MIME[f]||''}));
-  if(f=='pag'){const PAG=await getPAG();const pf=await PAG.PAGFile.load(await it.file.arrayBuffer());if(!pf)throw Error('ملف PAG تالف');it.w=pf.width();it.h=pf.height();it.dur=pf.duration()/1e6}
-  else if(f=='lottie'){it.text=new TextDecoder().decode(u);const j=JSON.parse(it.text);it.w=j.w;it.h=j.h;it.dur=(j.op-j.ip)/j.fr}
-  else if(f=='svga'){if(!window.SVGA)throw Error('محرك SVGA لم يُحمَّل');const v=await new Promise((r,j)=>new SVGA.Parser().load(it.url,r,j));it.svgaItem=v;it.w=v.videoSize.width;it.h=v.videoSize.height;it.dur=v.frames/v.FPS;it.audio=!!(v.audios&&v.audios.length)}
+  if(f=='pag'){const PAG=await getPAG();const pf=await PAG.PAGFile.load(await it.file.arrayBuffer());if(!pf)throw Error('ملف PAG تالف');it.w=pf.width();it.h=pf.height();it.dur=pf.duration()/1e6;it.nativeFps=Math.round(pf.frameRate&&pf.frameRate()||30)||30}
+  else if(f=='lottie'){it.text=new TextDecoder().decode(u);const j=JSON.parse(it.text);it.w=j.w;it.h=j.h;it.nativeFps=Math.round(j.fr||30)||30;it.dur=(j.op-j.ip)/(j.fr||30)}
+  else if(f=='svga'){
+   if(!window.SVGA)throw Error('محرك SVGA لم يُحمَّل');
+   const v=await new Promise((r,j)=>new SVGA.Parser().load(it.url,r,j));
+   it.svgaItem=v;it.w=v.videoSize.width;it.h=v.videoSize.height;it.nativeFps=Math.round(v.FPS||20)||20;it.dur=v.frames/(v.FPS||20);
+   const abytes=await extractSvgaAudioBytes(it,u).catch(()=>null);
+   if(abytes&&abytes.byteLength>16)it._audioBytes=abytes;
+   it.audio=!!((v.audios&&v.audios.length)||it._audioBytes);
+  }
   else if(f=='mp4'){const v=E('video');v.muted=true;v.playsInline=true;v.preload=it.vapi||it.yyi?'metadata':'auto';v.src=it.url;await new Promise((r,j)=>{v.onloadedmetadata=()=>{if(it.vapi||it.yyi)r()};v.onloadeddata=r;v.onerror=()=>j(Error('فيديو غير قابل للتشغيل'));setTimeout(r,2500)});it.dur=v.duration||3;it.vw=v.videoWidth||512;it.vh=v.videoHeight||512;
-   if(it.vapi){it.rects={a:it.vapi.aFrame,c:it.vapi.rgbFrame};it.alpha='V';it.w=it.rects.c[2];it.h=it.rects.c[3];it.kind='VAP'}
-   else if(it.yyi){it.rects={a:it.yyi.aFrame,c:it.yyi.rgbFrame};it.alpha='V';it.w=it.rects.c[2];it.h=it.rects.c[3];it.kind='YYEVA'}
-   else{let l=await detectAlpha(v);if(!l&&it.yy)l='L';setAlpha(it,l||'N');it.kind=it.yy?'YYEVA':l?'MP4 ألفا':'MP4'}
+   if(v.mozHasAudio===true||Boolean(v.webkitAudioDecodedByteCount)||(v.audioTracks&&v.audioTracks.length>0))it.audio=true;
+   if(it.vapi){it.rects={a:it.vapi.aFrame,c:it.vapi.rgbFrame};it.alpha='V';it.w=it.rects.c[2];it.h=it.rects.c[3];it.nativeFps=Math.round(it.vapi.fps||30)||30;it.kind='VAP'}
+   else if(it.yyi){it.rects={a:it.yyi.aFrame,c:it.yyi.rgbFrame};it.alpha='V';it.w=it.rects.c[2];it.h=it.rects.c[3];it.nativeFps=Math.round(it.yyi.fps||30)||30;it.kind='YYEVA'}
+   else{let l=await detectAlpha(v);if(!l&&it.yy)l='L';setAlpha(it,l||'N');it.nativeFps=30;it.kind=it.yy?'YYEVA':l?'MP4 ألفا':'MP4'}
    v.pause();v.removeAttribute('src');v.load()}
   else{[it.w,it.h]=await imgDims(it.url);it.dur=f=='gif'?gifDur(u):f=='apng'?pngInfo(u).t:f=='webpa'?webpDur(u):0;if(f=='svg'&&/<animate|@keyframes/.test(new TextDecoder().decode(u)))it.dur=0}
  }catch(e){it.err=e.message||String(e)}
@@ -232,65 +455,219 @@ async function addFiles(fl){
 }
 function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2547;color:#fff;padding:10px 18px;border-radius:12px;z-index:99;border:1px solid #fff3';document.body.append(d);setTimeout(()=>d.remove(),4000)}
 
-/* المشغلات */
+/* المشغلات مع دعم الرسم الفوري والتدرج الدقيق للفريمات أثناء التصدير بجودة عالية */
 let _pag=null;
 function getPAG(){return _pag||(_pag=(async()=>{
  try{new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]))}catch(e){throw Error('WebAssembly محظور في بيئة العرض هذه ('+(e&&e.message||e)+') — تشغيل PAG يحتاج فتح النسخة المحلية gifts-studio-local.html على جهازك')}
  if(!window.libpag)await new Promise((r,j)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/libpag@4.5.52/lib/libpag.min.js';s.onload=r;s.onerror=()=>j(Error('تعذر تحميل مكتبة PAG'));document.head.append(s)});
  return await Promise.race([libpag.PAGInit(window.__pagWasm?{wasmBinary:window.__pagWasm}:{locateFile:f=>'https://cdn.jsdelivr.net/npm/libpag@4.5.52/lib/'+f}),new Promise((r,j)=>setTimeout(()=>j(Error('انتهت مهلة تحميل محرك PAG')),25000))])})().catch(e=>{_pag=null;const m=String(e&&e.message||e);throw Error(m.includes('محظور')?m:m+' — اضغط «⚙ محرك PAG» أعلى الصفحة واختر ملف libpag.wasm')}))}
+
+function waitCompositorTick(){
+ return new Promise(r=>{
+  let done=false;
+  const fin=()=>{if(!done){done=true;r()}};
+  if(typeof requestAnimationFrame==='function')requestAnimationFrame(fin);
+  setTimeout(fin,14);
+ });
+}
+
 async function mkPlayer(it,host,o){
  o=o||{};const loop=o.loop!==false,hiRes=!!o.hiRes,f=it.fmt;let P;
  if(['png','jpg','webp','gif','apng','webpa','svg'].includes(f)){
+  if(o.manual&&window.ImageDecoder&&['gif','apng','webpa'].includes(f)){
+   try{
+    const buf=await it.file.arrayBuffer();
+    const dec=new ImageDecoder({data:buf,type:MIME[f]||'image/gif'});
+    await dec.tracks.ready;
+    const fc=Math.max(1,dec.tracks.selectedTrack.frameCount||1);
+    const cv=E('canvas');cv.width=it.w||512;cv.height=it.h||512;
+    const cx=cv.getContext('2d');host.append(cv);
+    const durs=[];let totalDur=0;
+    for(let i=0;i<fc;i++){
+     const fr=await dec.decode({frameIndex:i});
+     const dSec=Math.max(0.02,(fr.image.duration||100000)/1e6);
+     durs.push(dSec);totalDur+=dSec;
+     if(i===0){cv.width=fr.image.displayWidth||cv.width;cv.height=fr.image.displayHeight||cv.height;cx.clearRect(0,0,cv.width,cv.height);cx.drawImage(fr.image,0,0)}
+     fr.image.close();
+    }
+    const stepTo=async(sec)=>{
+     let t=(sec%(totalDur||it.dur||1)),acc=0,idx=0;
+     for(let i=0;i<durs.length;i++){acc+=durs[i];if(t<=acc){idx=i;break}idx=i}
+     const fr=await dec.decode({frameIndex:idx});
+     cx.clearRect(0,0,cv.width,cv.height);
+     cx.drawImage(fr.image,0,0,cv.width,cv.height);
+     fr.image.close();
+    };
+    P={src:()=>cv,play:N,pause:N,restart:N,syncNow:N,waitReady:async()=>stepTo(0),stepTo,destroy(){try{dec.close()}catch(e){}cv.remove()}};
+    P.mute=N;return P;
+   }catch(e){}
+  }
   const im=new Image();im.src=it.url;await im.decode().catch(N);host.append(im);
-  P={src:()=>im,play:N,pause:N,restart(){im.src='';im.src=it.url},destroy(){im.remove()}}}
+  P={src:()=>im,play:N,pause:N,restart(){im.src='';im.src=it.url},syncNow:N,destroy(){im.remove()}}
+ }
  else if(f=='mp4'){
   const v=E('video');v.src=it.url;v.loop=loop;v.playsInline=true;v.preload='auto';v.muted=o.ac?false:muted;
   v.disablePictureInPicture=true;v.disableRemotePlayback=true;
   if(o.ac)o.ac.createMediaElementSource(v).connect(o.dest);
   const tryPlay=()=>{if(!v.paused)return;v.play().catch(()=>{v.muted=true;v.play().catch(N)})};
-  v.addEventListener('canplay',()=>{if(playing&&!it.userPaused&&!o.manual)tryPlay()});
+  v.addEventListener('canplay',()=>{if(playing&&!it.userPaused&&!o.manual&&!isExporting)tryPlay()});
   let src=v,cv,task=null;
   if(it.rects){
    const [rx,ry,rw,rh]=it.rects.c,[ax,ay,aw,ah]=it.rects.a;
    const sc=hiRes?1:Math.min(1,260/Math.max(rw,rh,1)),dw=Math.max(2,Math.round(rw*sc)),dh=Math.max(2,Math.round(rh*sc));
    cv=E('canvas');cv.width=dw;cv.height=dh;const cx=cv.getContext('2d',{willReadFrequently:!getAlphaGL()});
    const t=E('canvas');t.width=dw;t.height=dh;const tx=t.getContext('2d',{willReadFrequently:true});
+   // إبقاء عنصر الفيديو متصلاً بالـ DOM دائماً لمنع متصفح كروميوم من إيقاف فك تشفير الفريمات
+   v.style.cssText='position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
+   host.append(v);
    host.append(cv);src=cv;
    task={it,v,cv,cx,c:[rx,ry,rw,rh],a:[ax,ay,aw,ah],dw,dh,hiRes,lastT:-1,lastNow:0,drawn:false,tmp:{t,tx}};
-   alphaTasks.add(task);
+   if(!o.manual)alphaTasks.add(task);
   }else host.append(v);
-  P={v,src:()=>src,play(){tryPlay()},pause(){v.pause()},restart(){v.currentTime=0;if(task)task.drawn=false;tryPlay()},mute(m){if(!o.ac)v.muted=m},destroy(){if(task)alphaTasks.delete(task);v.pause();v.removeAttribute('src');v.load();v.remove();cv&&cv.remove()}}}
+  const syncNow=()=>{
+   if(task&&v.readyState>=2){
+    const [rx,ry,rw,rh]=task.c,[ax,ay,aw,ah]=task.a;
+    drawAlphaFrame(v,rx,ry,rw,rh,ax,ay,aw,ah,task.cx,task.dw,task.dh,task.tmp);
+    task.lastT=v.currentTime;task.drawn=true;
+   }
+  };
+  const seekAccurate=async(sec)=>{
+   const vDur=(v.duration&&isFinite(v.duration)&&v.duration>0)?v.duration:(it.dur||3);
+   const target=Math.max(0,Math.min(vDur-0.002,sec));
+   if(Math.abs(v.currentTime-target)>0.0008||v.seeking||v.readyState<2){
+    await new Promise(res=>{
+     let finished=false,timedOut=false;
+     const done=()=>{
+      if(finished)return;
+      if(v.seeking&&!timedOut)return;
+      finished=true;
+      clearTimeout(tm);
+      v.removeEventListener('seeked',onS);
+      v.removeEventListener('canplay',onS);
+      res();
+     };
+     const onS=()=>{if(!v.seeking&&v.readyState>=2)done()};
+     const tm=setTimeout(()=>{timedOut=true;done()},5000);
+     v.addEventListener('seeked',onS);
+     v.addEventListener('canplay',onS);
+     try{v.currentTime=target}catch(e){timedOut=true;done()}
+    });
+   }
+   await waitCompositorTick();
+   syncNow();
+  };
+  const waitReady=async()=>{
+   if(v.readyState<3){
+    await new Promise(res=>{
+     let d=false;
+     const done=()=>{if(d)return;d=true;v.removeEventListener('canplaythrough',done);v.removeEventListener('loadeddata',done);res()};
+     v.addEventListener('canplaythrough',done,{once:true});
+     v.addEventListener('loadeddata',done,{once:true});
+     setTimeout(done,2500);
+    });
+   }
+   if(o.manual){
+    v.pause();
+    await seekAccurate(0);
+   }else{
+    syncNow();
+   }
+  };
+  const stepTo=async(sec)=>{
+   await seekAccurate(sec);
+  };
+  P={v,src:()=>src,play(){tryPlay()},pause(){v.pause()},restart(){v.currentTime=0;if(task)task.drawn=false;tryPlay()},mute(m){if(!o.ac)v.muted=m},syncNow,waitReady,stepTo,destroy(){if(task)alphaTasks.delete(task);v.pause();v.removeAttribute('src');v.load();v.remove();cv&&cv.remove()}}
+ }
  else if(f=='lottie'){
-  const a=lottie.loadAnimation({container:host,renderer:'canvas',loop,autoplay:false,animationData:JSON.parse(it.text),rendererSettings:{clearCanvas:true,preserveAspectRatio:'xMidYMid meet'}});
-  await new Promise(r=>{a.addEventListener('DOMLoaded',r);setTimeout(r,1200)});
-  P={src:()=>host.querySelector('canvas'),play(){a.play()},pause(){a.pause()},restart(){a.goToAndPlay(0,true)},destroy(){a.destroy()}}}
+  const animData=JSON.parse(it.text);
+  const a=lottie.loadAnimation({container:host,renderer:'canvas',loop,autoplay:false,animationData:animData,rendererSettings:{clearCanvas:true,preserveAspectRatio:'xMidYMid meet'}});
+  const waitReady=async()=>{
+   await new Promise(r=>{if(a.isLoaded)return r();a.addEventListener('DOMLoaded',r,{once:true});a.addEventListener('data_ready',r,{once:true});setTimeout(r,1500)});
+   a.goToAndStop(animData.ip||0,true);
+  };
+  await waitReady();
+  const stepTo=async(sec)=>{
+   const totalDur=Math.max(0.05,it.dur||3);
+   const p=Math.max(0,Math.min(0.9999,sec/totalDur));
+   const frame=(animData.ip||0)+p*((animData.op||60)-(animData.ip||0));
+   a.goToAndStop(frame,true);
+  };
+  P={src:()=>host.querySelector('canvas'),play(){a.play()},pause(){a.pause()},restart(){a.goToAndPlay(0,true)},syncNow:N,waitReady,stepTo,destroy(){a.destroy()}}
+ }
  else if(f=='pag'){
   const PAG=await getPAG(),pf=await PAG.PAGFile.load(await it.file.arrayBuffer());if(!pf)throw Error('ملف PAG تالف');
   const cv=E('canvas');cv.width=pf.width();cv.height=pf.height();host.append(cv);
   const pv=await PAG.PAGView.init(pf,cv);if(!pv)throw Error('تعذر تشغيل ملف PAG');pv.setRepeatCount(loop?0:1);
-  P={src:()=>cv,play(){pv.play().catch(N)},pause(){pv.pause()},restart(){pv.setProgress(0);pv.play().catch(N)},destroy(){try{pv.destroy()}catch(e){}cv.remove()}}}
+  const stepTo=async(sec)=>{
+   const totalDur=Math.max(0.05,it.dur||3);
+   pv.setProgress(Math.max(0,Math.min(0.9999,sec/totalDur)));
+   await pv.flush();
+  };
+  const waitReady=async()=>{await stepTo(0)};
+  P={src:()=>cv,play(){pv.play().catch(N)},pause(){pv.pause()},restart(){pv.setProgress(0);pv.play().catch(N)},syncNow:N,waitReady,stepTo,destroy(){try{pv.destroy()}catch(e){}cv.remove()}}
+ }
  else if(f=='svga'){
   if(!window.SVGA)throw Error('محرك SVGA لم يُحمَّل');
   const pl=new SVGA.Player(host);pl.loops=loop?0:1;pl.clearsAfterStop=false;pl.setContentMode('AspectFit');
   const v=it.svgaItem||await new Promise((r,j)=>new SVGA.Parser().load(it.url,r,j));
-  it.svgaItem=v;if(!hiRes&&v.FPS>30)v.FPS=30;
+  it.svgaItem=v;
   pl.setVideoItem(v);host.style.position='relative';
-  P={pl,src:()=>host.querySelector('canvas'),play(){pl.startAnimation()},pause(){pl.pauseAnimation()},restart(){pl.startAnimation()},destroy(){try{pl.stopAnimation();pl.clear()}catch(e){}host.innerHTML=''}}}
+  const totalFrames=Math.max(1,v.frames||1);
+  let lastIdx=-1;
+  const waitReady=async()=>{
+   const t0=performance.now();
+   while(performance.now()-t0<4000){
+    const r=pl._renderer;
+    if(r&&r._prepared){
+     const cache=r._bitmapCache||{};
+     const imgs=Object.values(cache).filter(x=>x&&typeof x.decode==='function');
+     if(imgs.length)await Promise.all(imgs.map(im=>im.complete?Promise.resolve():im.decode().catch(N)));
+     break;
+    }
+    await new Promise(r=>setTimeout(r,14));
+   }
+   if(typeof pl.stepToFrame==='function'){
+    if(totalFrames>1)pl.stepToFrame(1,false);
+    pl.stepToFrame(0,false);
+   }
+   if(pl._renderer&&typeof pl._renderer.drawFrame==='function'){
+    try{pl._renderer.drawFrame(0)}catch(e){}
+   }
+   lastIdx=0;
+  };
+  const stepTo=async(sec)=>{
+   const totalDur=Math.max(0.05,it.dur||(totalFrames/(it.nativeFps||v.FPS||20))||3);
+   const idx=Math.min(totalFrames-1,Math.max(0,Math.floor(((sec+0.0001)/totalDur)*totalFrames)));
+   if(typeof pl.stepToFrame==='function'){
+    if(idx===0&&lastIdx===-1&&totalFrames>1)pl.stepToFrame(1,false);
+    pl.stepToFrame(idx,false);
+    lastIdx=idx;
+   }
+   if(pl._renderer&&typeof pl._renderer.drawFrame==='function'){
+    try{pl._renderer.drawFrame(idx)}catch(e){}
+   }
+  };
+  P={pl,src:()=>host.querySelector('canvas'),play(){pl.startAnimation()},pause(){pl.pauseAnimation()},restart(){pl.startAnimation()},syncNow:N,waitReady,stepTo,destroy(){try{pl.stopAnimation();pl.clear()}catch(e){}host.innerHTML=''}}
+ }
  else throw Error('لا يوجد محرك لهذه الصيغة');
  P.mute=P.mute||N;return P}
+
 async function ensure(id){
  const it=items.find(x=>x.id==id),c=document.querySelector('.card[data-id="'+id+'"]');if(!it||!c||it.err||!it.fmt)return;
  let P=players.get(id);if(P==1)return;if(P)return P;
- players.set(id,1);const st=c.querySelector('.st');st.innerHTML='';const h=E('div');st.append(h);
- try{P=await mkPlayer(it,h);if(!st.isConnected){P.destroy();players.delete(id);return}P.mute(muted);players.set(id,P);if(playing&&!it.userPaused)P.play();return P}
- catch(e){players.delete(id);st.innerHTML='<p class="er">'+esc(e.message||'تعذر التشغيل')+'</p>'}}
-function drop(id){const P=players.get(id);if(P&&P!=1)P.destroy();players.delete(id);const c=document.querySelector('.card[data-id="'+id+'"]');if(c)c.querySelector('.st').innerHTML=''}
-const io=new IntersectionObserver(es=>es.forEach(e=>{const id=+e.target.dataset.id,it=items.find(x=>x.id==id);if(it)it.vis=e.isIntersecting;if(e.isIntersecting)ensure(id)}),{rootMargin:'800px'});
+ players.set(id,1);const st=c.querySelector('.st');
+ // احتفظبطبقة العلامة المائية عند تهيئة المشغل
+ st.innerHTML='';const h=E('div');st.append(h);
+ updateCardWatermarkOverlay(c);
+ try{P=await mkPlayer(it,h);if(!st.isConnected){P.destroy();players.delete(id);return}const itMuted=it.muted!==undefined?it.muted:muted;P.mute(itMuted);players.set(id,P);if(playing&&!it.userPaused&&!isExporting)P.play();updateCardWatermarkOverlay(c);return P}
+ catch(e){players.delete(id);st.innerHTML='<p class="er">'+esc(e.message||'تعذر التشغيل')+'</p>';updateCardWatermarkOverlay(c)}}
+function drop(id){const P=players.get(id);if(P&&P!=1)P.destroy();players.delete(id);const c=document.querySelector('.card[data-id="'+id+'"]');if(c){c.querySelector('.st').innerHTML='';updateCardWatermarkOverlay(c)}}
+const io=new IntersectionObserver(es=>es.forEach(e=>{const id=+e.target.dataset.id,it=items.find(x=>x.id==id);if(it)it.vis=e.isIntersecting;if(e.isIntersecting&&!isExporting)ensure(id)}),{rootMargin:'800px'});
 const each=fn=>players.forEach(p=>p!=1&&fn(p));
 
-/* مراقب تلقائي لضمان استمرار تشغيل جميع الملفات المرفوعة معاً بدون توقف */
+/* مراقب تلقائي لضمان استمرار تشغيل جميع الملفات المرفوعة معاً بدون توقف (يتوقف مؤقتاً أثناء التصدير لمنع التقطيع) */
 setInterval(()=>{
- if(!playing)return;
+ if(!playing||isExporting)return;
  for(const it of items){
   if(it.err||!it.fmt||it.userPaused)continue;
   const P=players.get(it.id);
@@ -301,7 +678,9 @@ setInterval(()=>{
 
 /* الواجهة التفاعلية بدون إعادة بناء الشبكة أو إيقاف المشغلات */
 function cardInnerHtml(it){
- return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${it.dur?it.dur.toFixed(1)+'ث':'ثابتة'} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p">▶</button><button data-a="s">⏸</button><button data-a="r">↻</button><button data-a="df" title="تنزيل ملف الهدية">📁</button><button data-a="di" title="تنزيل صورة الهدية">🖼</button><button data-a="x" style="margin-inline-start:auto">✕</button></div>`;
+ const itMuted=it.muted!==undefined?it.muted:muted;
+ const soundBtn=it.audio?`<button data-a="m" title="${itMuted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية'}">${itMuted?'🔇':'🔊'}</button>`:'';
+ return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${it.dur?it.dur.toFixed(1)+'ث':'ثابتة'} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="تشغيل">▶</button><button data-a="s" title="إيقاف">⏸</button><button data-a="r" title="إعادة">🔄</button>${soundBtn}<button data-a="df" title="تنزيل ملف الهدية">📁</button><button data-a="di" title="تنزيل صورة الهدية">🖼</button><button data-a="x" title="حذف" style="margin-inline-start:auto">✖</button></div>`;
 }
 function updateBar(){
  $('#drop').style.display=items.length?'none':'block';
@@ -315,13 +694,26 @@ function appendCards(list){
   c.dataset.id=it.id;c.draggable=true;frag.append(c);
  }
  g.append(frag);
+ list.forEach(it=>{
+  const c=document.querySelector('.card[data-id="'+it.id+'"]');
+  if(c)updateCardWatermarkOverlay(c);
+ });
 }
 function updateCard(it){
  const c=document.querySelector('.card[data-id="'+it.id+'"]');if(!c)return;
  const tag=c.querySelector('.tag');if(tag)tag.textContent=it.kind||NAMES[it.fmt]||'؟';
  const meta=c.querySelector('.meta');if(meta)meta.innerHTML=`<b title="${esc(it.name)}">${esc(it.name)}</b><small>${it.dur?it.dur.toFixed(1)+'ث':'ثابتة'} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}`;
- if(it.err){const st=c.querySelector('.st');if(st)st.innerHTML='<p class="er">'+esc(it.err)+'</p>'}
- else if(it.fmt)io.observe(c);
+ if(it.audio&&!c.querySelector('button[data-a="m"]')){
+  const itMuted=it.muted!==undefined?it.muted:muted;
+  const mBtn=E('button','',itMuted?'🔇':'🔊');
+  mBtn.dataset.a='m';
+  mBtn.title=itMuted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية';
+  const rBtn=c.querySelector('button[data-a="r"]');
+  if(rBtn)rBtn.after(mBtn);
+  else c.querySelector('.cb')?.prepend(mBtn);
+ }
+ if(it.err){const st=c.querySelector('.st');if(st){st.innerHTML='<p class="er">'+esc(it.err)+'</p>';updateCardWatermarkOverlay(c)}}
+ else if(it.fmt){io.observe(c);updateCardWatermarkOverlay(c)}
  updateBar();
 }
 function removeCard(id){
@@ -341,12 +733,38 @@ function applyBg(){const b=bg;let v;
  if(b.mode=='tr')v='repeating-conic-gradient(#8886 0 25%,transparent 0 50%) 0 0/16px 16px';
  else if(b.mode=='grad')v=`linear-gradient(135deg,${b.c1},${b.c2})`;
  else if(b.mode=='img'&&b.url)v=`url(${b.url}) center/${b.fit=='fill'?'100% 100%':b.fit} no-repeat ${b.c1}`;else v=b.c1;
- document.documentElement.style.setProperty('--bgv',v)}
+ document.documentElement.style.setProperty('--bgv',v);
+ refreshAllWatermarks();
+}
 const PRE=[['color','#141a30'],['color','#000000'],['color','#ffffff'],['grad','#6a4cff','#b24cff'],['grad','#0ea5e9','#6366f1'],['grad','#f97316','#ec4899'],['grad','#10b981','#065f46'],['tr']];
 $('#sw').innerHTML=PRE.map((p,i)=>`<i data-i="${i}" style="background:${p[0]=='grad'?`linear-gradient(135deg,${p[1]},${p[2]})`:p[0]=='tr'?'repeating-conic-gradient(#8886 0 25%,transparent 0 50%) 0 0/10px 10px':p[1]}"></i>`).join('');
 $('#sw').onclick=e=>{const p=PRE[e.target.dataset.i];if(!p)return;bg.mode=p[0];if(p[1])bg.c1=p[1];if(p[2])bg.c2=p[2];$('#bm').value=bg.mode;$('#c1').value=bg.c1;$('#c2').value=bg.c2;applyBg()};
 ['bm','c1','c2','bf'].forEach(k=>$('#'+k).oninput=()=>{bg.mode=$('#bm').value;bg.c1=$('#c1').value;bg.c2=$('#c2').value;bg.fit=$('#bf').value;applyBg()});
-$('#bgb').onclick=e=>{e.stopPropagation();$('#pop').classList.toggle('o')};$('#pop').onclick=e=>e.stopPropagation();addEventListener('click',()=>$('#pop').classList.remove('o'));
+$('#bgb').onclick=e=>{e.stopPropagation();$('#wmpop').classList.remove('o');$('#pop').classList.toggle('o')};
+$('#pop').onclick=e=>e.stopPropagation();
+
+/* تفاعلات زر العلامة المائية في الأعلى */
+$('#wmb').onclick=e=>{
+ e.stopPropagation();
+ $('#pop').classList.remove('o');
+ const isOpen=$('#wmpop').classList.contains('o');
+ if(!isOpen&&!wm.enabled){
+  wm.enabled=true;
+  refreshAllWatermarks();
+ }
+ $('#wmpop').classList.toggle('o');
+};
+$('#wmpop').onclick=e=>e.stopPropagation();
+$('#wmen').onchange=e=>{wm.enabled=e.target.checked;refreshAllWatermarks()};
+$('#wmtxt').oninput=e=>{wm.text=e.target.value;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
+$('#wmcols').onchange=e=>{wm.cols=+e.target.value||3;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
+$('#wmop').oninput=e=>{wm.opacity=(+e.target.value||38)/100;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
+$('#wmc1').oninput=e=>{wm.color=e.target.value;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
+$('#wmc2').oninput=e=>{wm.accent=e.target.value;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
+
+addEventListener('click',()=>{$('#pop').classList.remove('o');$('#wmpop').classList.remove('o')});
+addEventListener('resize',()=>refreshAllWatermarks());
+
 $('#bi').onclick=()=>$('#bfi').click();
 $('#bfi').onchange=e=>{const f=e.target.files[0];if(!f)return;bg.url=URL.createObjectURL(f);const i=new Image();i.onload=()=>{bg.img=i;bg.mode='img';$('#bm').value='img';applyBg()};i.src=bg.url};
 $('#up').onclick=$('#drop').onclick=()=>$('#fi').click();$('#fi').onchange=e=>{addFiles(e.target.files);e.target.value=''};
@@ -361,18 +779,32 @@ g.onclick=e=>{const c=e.target.closest('.card');if(!c)return;const id=+c.dataset
  if(a=='p'){it.userPaused=false;ensure(id,true).then(P=>P&&P.play())}
  if(a=='s'){it.userPaused=true;const P=players.get(id);P&&P!=1&&P.pause()}
  if(a=='r'){it.userPaused=false;ensure(id,true).then(P=>P&&P.restart())}
+ if(a=='m'){
+  const curMuted=it.muted!==undefined?it.muted:muted;
+  it.muted=!curMuted;
+  const P=players.get(id);
+  if(P&&P!=1&&P.mute)P.mute(it.muted);
+  const mBtn=c.querySelector('button[data-a="m"]');
+  if(mBtn){
+   mBtn.textContent=it.muted?'🔇':'🔊';
+   mBtn.title=it.muted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية';
+  }
+ }
  if(a=='x')removeCard(id);
  if(a=='df'&&it.file)save(it.name,it.file);
  if(a=='di')snap(it)};
 async function snap(it){
  let P=players.get(it.id);if(!P||P==1)P=await ensure(it.id,true);
- if(!P){alert('تعذر التقاط الصورة');return}
- await new Promise(r=>setTimeout(r,300));
+ if(!P){toast('تعذر التقاط الصورة');return}
+ await new Promise(r=>setTimeout(r,220));
+ P.syncNow&&P.syncNow();
  const H0=+$('#q').value,h=Math.min(2160,Math.max(2,Math.round((H0||it.h||720)/2)*2)),w=Math.min(4096,Math.max(2,Math.round(h*((it.w/it.h)||1)/2)*2));
  const cv=E('canvas');cv.width=w;cv.height=h;const cx=cv.getContext('2d');
+ if(bg.mode!='tr')drawBg(cx,w,h);
  fit(cx,P.src(),w,h,it);
+ drawWatermark(cx,w,h,false);
  const b=await new Promise(r=>cv.toBlob(r,'image/png'));
- if(!b){alert('تعذر إنشاء الصورة');return}
+ if(!b){toast('تعذر إنشاء الصورة');return}
  save(it.name.replace(/\.[^.]+$/,'')+'.png',b)}
 g.onchange=e=>{const s=e.target;if(!s.dataset.al)return;const it=items.find(a=>a.id==+s.closest('.card').dataset.id);if(!it)return;setAlpha(it,s.value);it.kind=it.vapi?'VAP':it.yy?'YYEVA':s.value=='N'?'MP4':'MP4 ألفا';updateCard(it);drop(it.id);ensure(it.id,true)};
 g.ondragstart=e=>{const c=e.target.closest('.card');if(c){dragId=+c.dataset.id;c.classList.add('dg')}};
@@ -381,52 +813,584 @@ g.ondrop=e=>{const c=e.target.closest('.card');if(!c||!dragId)return;e.preventDe
 $('#pa').onclick=()=>{playing=true;items.forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.play())})};
 $('#sa').onclick=()=>{playing=false;each(p=>p.pause())};
 $('#ra').onclick=()=>{playing=true;items.forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.restart())})};
-$('#mu').onchange=e=>{muted=e.target.checked;each(p=>p.mute(muted))};
-$('#zm').oninput=e=>g.style.setProperty('--w',e.target.value+'px');
+function updateMuteUi(){
+ const mb=$('#muBtn');
+ if(mb){
+  mb.textContent=muted?'🔇 الصوت: مكتوم (اضغط للتشغيل)':'🔊 الصوت: يعمل (اضغط للكتم)';
+  mb.style.background=muted?'#20183b':'#164e32';
+  mb.style.borderColor=muted?'var(--ac)':'#22c55e';
+ }
+ if($('#mu'))$('#mu').checked=muted;
+}
+$('#muBtn').onclick=()=>{
+ muted=!muted;
+ items.forEach(it=>{delete it.muted});
+ each(p=>p.mute(muted));
+ updateMuteUi();
+ document.querySelectorAll('.card').forEach(c=>{
+  const mBtn=c.querySelector('button[data-a="m"]');
+  if(mBtn){
+   mBtn.textContent=muted?'🔇':'🔊';
+   mBtn.title=muted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية';
+  }
+ });
+};
+$('#mu').onchange=e=>{
+ muted=e.target.checked;
+ items.forEach(it=>{delete it.muted});
+ each(p=>p.mute(muted));
+ updateMuteUi();
+};
+updateMuteUi();
+$('#zm').oninput=e=>{g.style.setProperty('--w',e.target.value+'px');setTimeout(refreshAllWatermarks,30)};
 
-/* التسجيل والتصدير */
+/* التسجيل والتصدير الاحترافي فريم-بفريم بدون أي تقطيع أو تعليق حتى مع عدد كبير من الفيديوهات والجودة العالية */
 function drawBg(cx,W,H){
  if(bg.mode=='grad'){const k=cx.createLinearGradient(0,0,W,H);k.addColorStop(0,bg.c1);k.addColorStop(1,bg.c2);cx.fillStyle=k}else cx.fillStyle=bg.c1;cx.fillRect(0,0,W,H);
  if(bg.mode=='img'&&bg.img){const iw=bg.img.naturalWidth,ih=bg.img.naturalHeight;if(bg.fit=='fill')cx.drawImage(bg.img,0,0,W,H);else{const k=(bg.fit=='cover'?Math.max:Math.min)(W/iw,H/ih);cx.drawImage(bg.img,(W-iw*k)/2,(H-ih*k)/2,iw*k,ih*k)}}}
-function fit(cx,s,W,H,it){if(!s)return;try{const sw=s.videoWidth||s.naturalWidth||s.width||it.w||512,sh=s.videoHeight||s.naturalHeight||s.height||it.h||512,k=Math.min(W/sw,H/sh);cx.drawImage(s,(W-sw*k)/2,(H-sh*k)/2,sw*k,sh*k)}catch(e){}}
-function pickMime(a){const c=['video/mp4;codecs=avc1.42E01E'+(a?',mp4a.40.2':''),'video/mp4','video/webm;codecs=vp9'+(a?',opus':''),'video/webm'],t=c.find(x=>MediaRecorder.isTypeSupported(x));return{type:t,ext:t.includes('mp4')?'mp4':'webm'}}
+function fit(cx,s,W,H,it){if(!s)return;try{const sw=s.videoWidth||s.naturalWidth||s.width||it.w||512,sh=s.videoHeight||s.naturalHeight||s.height||it.h||512;if(!sw||!sh)return;const k=Math.min(W/sw,H/sh);cx.drawImage(s,(W-sw*k)/2,(H-sh*k)/2,sw*k,sh*k)}catch(e){}}
+function getMuxerLib(){
+ return window.Mp4Muxer||(window.parent&&window.parent.Mp4Muxer)||null;
+}
+
+function getOptimalAvcCodecs(W,H){
+ const px=Math.max(1,W*H);
+ if(px<=921600)return['avc1.640028','avc1.4D4028','avc1.42E028','avc1.64001F','avc1.4D401F','avc1.42E01F','avc1.64002A','avc1.42E01E'];
+ if(px<=2097152)return['avc1.64002A','avc1.4D402A','avc1.42E02A','avc1.640028','avc1.4D4028','avc1.42E028','avc1.640033'];
+ return['avc1.640033','avc1.640034','avc1.4D4033','avc1.64002A','avc1.4D402A','avc1.42E02A'];
+}
+
+function getEffectiveFps(reqFps,list){
+ const safeReq=Math.max(12,Math.min(60,Math.round(reqFps||30)));
+ if(list&&list.length===1){
+  const it=list[0]&&(list[0].it||list[0]);
+  const nf=Math.round((it&&it.nativeFps)||0);
+  if(it&&nf>=12&&nf<=60&&['svga','lottie','pag'].includes(it.fmt)){
+   if(safeReq%nf!==0){
+    if(safeReq>=50&&nf*2<=60)return nf*(nf*3<=60?3:2);
+    return nf;
+   }
+  }
+ }
+ return safeReq;
+}
+
+function pickMime(a){
+ if(window.VideoEncoder&&window.VideoFrame&&getMuxerLib()){
+  return{type:'video/mp4',ext:'mp4',useWebCodecs:true};
+ }
+ const c=[
+  'video/mp4;codecs=avc1.640028'+(a?',mp4a.40.2':''),
+  'video/mp4;codecs=avc1.42E01E'+(a?',mp4a.40.2':''),
+  'video/mp4;codecs=avc1.640028'+(a?',opus':''),
+  'video/mp4;codecs=avc1.42E01E'+(a?',opus':''),
+  'video/mp4',
+  'video/webm;codecs=vp9'+(a?',opus':''),
+  'video/webm;codecs=vp8'+(a?',opus':''),
+  'video/webm'
+ ];
+ const t=c.find(x=>window.MediaRecorder&&MediaRecorder.isTypeSupported(x))||'video/webm';
+ return{type:t,ext:t.includes('mp4')?'mp4':'webm'};
+}
+
+function isAudioBytesHeader(b){
+ if(!b||b.length<4)return false;
+ // ID3 tag, MP3 frame sync, RIFF WAV, Ogg, or ftyp/ADTS
+ if(b[0]===0x49&&b[1]===0x44&&b[2]===0x33)return true;
+ if(b[0]===0xFF&&(b[1]&0xE0)===0xE0)return true;
+ if(b[0]===0x52&&b[1]===0x49&&b[2]===0x46&&b[3]===0x46)return true;
+ if(b[0]===0x4F&&b[1]===0x67&&b[2]===0x67&&b[3]===0x53)return true;
+ return false;
+}
+
+async function extractSvgaAudioBytes(it,rawU8){
+ if(it&&it._audioBytes)return it._audioBytes;
+ // 1. Check parsed svgaItem.images / svgaItem.audios first
+ const v=it&&it.svgaItem;
+ if(v&&v.images){
+  const keys=[];
+  if(Array.isArray(v.audios)){
+   for(const a of v.audios){if(a&&a.audioKey)keys.push(a.audioKey)}
+  }
+  for(const k of Object.keys(v.images)){if(!keys.includes(k))keys.push(k)}
+  for(const k of keys){
+   const val=v.images[k];
+   if(!val)continue;
+   if(val instanceof Uint8Array&&isAudioBytesHeader(val))return val;
+   if(val instanceof ArrayBuffer){const u=new Uint8Array(val);if(isAudioBytesHeader(u))return u}
+   if(typeof val==='string'){
+    let b64=val;
+    const comma=val.indexOf(',');
+    if(comma>=0)b64=val.slice(comma+1);
+    try{
+     const bin=atob(b64.trim());
+     if(bin.length>16){
+      const u=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+      if(isAudioBytesHeader(u)||(Array.isArray(v.audios)&&v.audios.some(a=>a&&a.audioKey===k)))return u;
+     }
+    }catch(e){}
+   }
+  }
+ }
+ // 2. Parse raw SVGA 2.0 zlib protobuf (field 3 = images map) or ZIP
+ const u=rawU8||(it&&it.file?new Uint8Array(await it.file.arrayBuffer()):null);
+ if(!u||u.length<8)return null;
+ if(u[0]===0x50&&u[1]===0x4B&&window.JSZip){
+  try{
+   const z=await JSZip.loadAsync(u);
+   for(const name of Object.keys(z.files)){
+    if(/\.(mp3|wav|m4a|aac|ogg)$/i.test(name)){
+     return new Uint8Array(await z.files[name].async('arraybuffer'));
+    }
+   }
+  }catch(e){}
+  return null;
+ }
+ if(typeof DecompressionStream==='function'){
+  for(const fmt of ['deflate','deflate-raw']){
+   try{
+    const ds=new DecompressionStream(fmt);
+    const w=ds.writable.getWriter();
+    w.write(u);w.close();
+    const inf=new Uint8Array(await new Response(ds.readable).arrayBuffer());
+    let p=0;
+    const rv=()=>{let r=0,s=0;while(p<inf.length){const b=inf[p++];r|=(b&127)<<s;if(!(b&128))return r;s+=7}return r};
+    while(p<inf.length){
+     const tag=rv(),fn=tag>>>3,wt=tag&7;
+     if(wt===0){rv()}
+     else if(wt===1){p+=8}
+     else if(wt===5){p+=4}
+     else if(wt===2){
+      const len=rv(),end=p+len;
+      if(fn===3&&end<=inf.length){
+       let q=p,valBytes=null;
+       const rv2=()=>{let r=0,s=0;while(q<end){const b=inf[q++];r|=(b&127)<<s;if(!(b&128))return r;s+=7}return r};
+       while(q<end){
+        const t2=rv2(),f2=t2>>>3,w2=t2&7;
+        if(w2===2){
+         const l2=rv2();
+         if(f2===2&&q+l2<=end)valBytes=inf.subarray(q,q+l2);
+         q+=l2;
+        }else if(w2===0){rv2()}
+        else if(w2===1){q+=8}
+        else if(w2===5){q+=4}
+        else break;
+       }
+       if(valBytes&&isAudioBytesHeader(valBytes))return valBytes.slice();
+      }
+      p=end;
+     }else break;
+    }
+    break;
+   }catch(e){}
+  }
+ }
+ return null;
+}
+
+function getAudioEncoderCandidates(sourceSampleRate,sourceChannels){
+ const ch=Math.min(2,Math.max(1,Math.round(sourceChannels||2)));
+ const sr=Math.round(sourceSampleRate||48000);
+ const list=[
+  {codec:'mp4a.40.2',muxCodec:'aac',sampleRate:sr,numberOfChannels:ch,bitrate:160000}
+ ];
+ if(sr!==48000)list.push({codec:'mp4a.40.2',muxCodec:'aac',sampleRate:48000,numberOfChannels:ch,bitrate:160000});
+ if(sr!==44100)list.push({codec:'mp4a.40.2',muxCodec:'aac',sampleRate:44100,numberOfChannels:ch,bitrate:160000});
+ list.push({codec:'opus',muxCodec:'opus',sampleRate:48000,numberOfChannels:ch,bitrate:128000});
+ if(ch!==2)list.push({codec:'opus',muxCodec:'opus',sampleRate:48000,numberOfChannels:2,bitrate:128000});
+ return list;
+}
+
+function resampleChannel(input,srcRate,dstRate,dstLength,srcOffsetSamples){
+ const out=new Float32Array(Math.max(0,dstLength));
+ if(!input||!input.length||dstLength<=0)return out;
+ const sRate=Math.max(1,srcRate||48000),dRate=Math.max(1,dstRate||48000);
+ const ratio=sRate/dRate,maxIdx=input.length-1,off=srcOffsetSamples||0;
+ if(Math.abs(ratio-1)<1e-6){
+  for(let i=0;i<dstLength;i++){
+   const idx=off+i;
+   out[i]=(idx>=0&&idx<=maxIdx)?input[idx]:0;
+  }
+  return out;
+ }
+ for(let i=0;i<dstLength;i++){
+  const pos=off+i*ratio;
+  if(pos<0||pos>maxIdx){out[i]=0;continue}
+  const i0=Math.floor(pos),i1=Math.min(maxIdx,i0+1),f=pos-i0;
+  out[i]=input[i0]*(1-f)+input[i1]*f;
+ }
+ return out;
+}
+
+async function decodeItemAudioBuffer(it){
+ if(!it||!it.file)return null;
+ if(it._audioBuf)return it._audioBuf;
+ if(it.fmt!=='mp4'&&it.fmt!=='vap'&&it.fmt!=='svga')return null;
+ const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+ const AC=window.AudioContext||window.webkitAudioContext;
+ if(!OAC&&!AC)return null;
+ let rawBytes=null;
+ try{
+  if(it.fmt==='svga'){
+   rawBytes=await extractSvgaAudioBytes(it);
+  }else{
+   let u=new Uint8Array(await it.file.arrayBuffer());
+   // Strip any custom prefix before ftyp box so decodeAudioData sees a valid MP4 container
+   for(let i=4;i<Math.min(u.length-4,65536);i++){
+    if(u[i]===0x66&&u[i+1]===0x74&&u[i+2]===0x79&&u[i+3]===0x70){
+     if(i>4)u=u.subarray(i-4);
+     break;
+    }
+   }
+   rawBytes=u;
+  }
+ }catch(e){}
+ if(!rawBytes||rawBytes.byteLength<16)return null;
+
+ // Decode at 48000 Hz stereo via OfflineAudioContext so both AAC and Opus encoders work without pitch drift
+ const ctx=OAC?new OAC(2,48000,48000):new AC();
+ try{
+  const ab=rawBytes.buffer.slice(rawBytes.byteOffset,rawBytes.byteOffset+rawBytes.byteLength);
+  const buf=await Promise.race([
+   ctx.decodeAudioData(ab).catch(()=>null),
+   new Promise(r=>setTimeout(()=>r(null),4000))
+  ]);
+  if(buf&&buf.length>0){
+   it._audioBuf=buf;
+   it.audio=true;
+   return buf;
+  }
+  return null;
+ }catch(e){
+  return null;
+ }finally{
+  if(!OAC&&ctx&&typeof ctx.close==='function'){
+   try{ctx.close().catch(N)}catch(e){}
+  }
+ }
+}
+
+async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
+ const MuxerLib=getMuxerLib();
+ if(!MuxerLib||!window.VideoEncoder||!window.VideoFrame)return null;
+ W=Math.max(64,(W+1)&~1);
+ H=Math.max(64,(H+1)&~1);
+ const safeFps=getEffectiveFps(reqFps,list);
+ let encConfig=null;
+ const targetBitrate=Math.max(2500000,Math.min(32000000,Math.round(W*H*safeFps*0.20)));
+ for(const codec of getOptimalAvcCodecs(W,H)){
+  const cfg={codec,width:W,height:H,bitrate:targetBitrate,framerate:safeFps,avc:{format:'avc'}};
+  try{
+   const sup=await VideoEncoder.isConfigSupported(cfg);
+   if(sup&&sup.supported){encConfig=cfg;break}
+  }catch(e){}
+ }
+ if(!encConfig)return null;
+
+ // دائماً نحفظ الصوت الأصلي للهدية في الفيديو المصدّر حتى لو كان كتم المعاينة مفعلاً
+ const audioClips=[];
+ let audioCfg=null;
+ if(window.AudioEncoder&&window.AudioData&&list.some(o=>o.it&&(o.it.audio||o.it.fmt==='mp4'||o.it.fmt==='vap'||o.it.fmt==='svga'))){
+  for(const o of list){
+   const ab=await decodeItemAudioBuffer(o.it);
+   audioClips.push({dur:o.dur,buf:ab});
+  }
+  const firstBuf=audioClips.find(x=>x.buf)?.buf;
+  if(firstBuf){
+   for(const cand of getAudioEncoderCandidates(firstBuf.sampleRate,firstBuf.numberOfChannels)){
+    try{
+     const asup=await AudioEncoder.isConfigSupported({
+      codec:cand.codec,
+      sampleRate:cand.sampleRate,
+      numberOfChannels:cand.numberOfChannels,
+      bitrate:cand.bitrate
+     });
+     if(asup&&asup.supported){audioCfg=cand;break}
+    }catch(e){}
+   }
+  }
+ }
+
+ const target=new MuxerLib.ArrayBufferTarget();
+ const mux=new MuxerLib.Muxer({
+  target,
+  fastStart:'in-memory',
+  video:{codec:'avc',width:W,height:H,frameRate:safeFps},
+  ...(audioCfg?{audio:{codec:audioCfg.muxCodec,sampleRate:audioCfg.sampleRate,numberOfChannels:audioCfg.numberOfChannels}}:{})
+ });
+ let encErr=null;
+ const ve=new VideoEncoder({
+  output:(chunk,meta)=>{try{mux.addVideoChunk(chunk,meta)}catch(e){encErr=e}},
+  error:e=>{encErr=e}
+ });
+ ve.configure(encConfig);
+
+ const cvs=[E('canvas'),E('canvas')];
+ cvs[0].width=cvs[1].width=W;
+ cvs[0].height=cvs[1].height=H;
+ const cxs=[cvs[0].getContext('2d',{alpha:false}),cvs[1].getContext('2d',{alpha:false})];
+ let posterCv=null;
+
+ const root=E('div');
+ root.style.cssText=`position:fixed;left:0;top:0;width:${W}px;height:${H}px;pointer-events:none;opacity:0.002;z-index:-1;overflow:hidden`;
+ document.body.append(root);
+ const total=Math.max(0.1,list.reduce((a,o)=>a+o.dur,0));
+ let el=0,globalFrameIdx=0;
+
+ try{
+  for(const o of list){
+   if(sig.stop||encErr)break;
+   const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);
+   const P=await mkPlayer(o.it,h,{loop:false,hiRes:true,manual:true});
+   if(P.waitReady)await P.waitReady();
+   P.pause&&P.pause();
+
+   const totalFrames=Math.max(1,Math.round(o.dur*safeFps));
+   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
+
+   for(let fIdx=0;fIdx<totalFrames;fIdx++){
+    if(sig.stop||encErr)break;
+    const sec=o.it.fmt==='mp4'?Math.min(Math.max(0.05,o.dur)-0.002,(fIdx+0.35)/safeFps):(fIdx/safeFps);
+    if(P.stepTo)await P.stepTo(sec);
+    P.syncNow&&P.syncNow();
+
+    const bufIdx=globalFrameIdx&1;
+    const curCv=cvs[bufIdx],curCx=cxs[bufIdx];
+    drawBg(curCx,W,H);
+    fit(curCx,P.src(),W,H,o.it);
+    drawWatermark(curCx,W,H,false);
+
+    if(poster&&!posterCv&&fIdx>=posterFrame){
+     posterCv=E('canvas');posterCv.width=W;posterCv.height=H;
+     posterCv.getContext('2d').drawImage(curCv,0,0);
+    }
+
+    const ts=Math.round((globalFrameIdx*1e6)/safeFps);
+    const nextTs=Math.round(((globalFrameIdx+1)*1e6)/safeFps);
+    const vf=new VideoFrame(curCv,{timestamp:ts,duration:nextTs-ts});
+    try{
+     ve.encode(vf,{keyFrame:globalFrameIdx%Math.max(1,Math.round(safeFps))===0});
+    }finally{
+     vf.close();
+    }
+    globalFrameIdx++;
+
+    const waitStart=performance.now();
+    while(ve.encodeQueueSize>2&&!sig.stop&&!encErr&&performance.now()-waitStart<8000){
+     await new Promise(r=>setTimeout(r,2));
+    }
+    await new Promise(r=>setTimeout(r,0));
+    prog(Math.min(1,(el+(fIdx+1)/safeFps)/total));
+   }
+
+   el+=o.dur;
+   P.destroy();
+   h.remove();
+   await new Promise(r=>setTimeout(r,25));
+  }
+  if(!sig.stop&&!encErr){
+   await ve.flush();
+
+   if(audioCfg&&audioClips.length){
+    let ae=null;
+    try{
+     ae=new AudioEncoder({
+      output:(chunk,meta)=>{try{mux.addAudioChunk(chunk,meta)}catch(e){}},
+      error:N
+     });
+     ae.configure({
+      codec:audioCfg.codec,
+      sampleRate:audioCfg.sampleRate,
+      numberOfChannels:audioCfg.numberOfChannels,
+      bitrate:audioCfg.bitrate
+     });
+     const sr=audioCfg.sampleRate,nCh=audioCfg.numberOfChannels;
+     let sampleCursor=0;
+     for(const clip of audioClips){
+      if(sig.stop)break;
+      const clipSamples=Math.max(1,Math.round(clip.dur*sr));
+      const chunkLen=960;
+      for(let off=0;off<clipSamples;off+=chunkLen){
+       const n=Math.min(chunkLen,clipSamples-off);
+       const pcm=new Float32Array(n*nCh);
+       if(clip.buf){
+        const srcSr=clip.buf.sampleRate||sr;
+        const srcOff=(off*srcSr)/sr;
+        for(let ch=0;ch<nCh;ch++){
+         const srcCh=clip.buf.getChannelData(Math.min(ch,clip.buf.numberOfChannels-1));
+         const resampled=resampleChannel(srcCh,srcSr,sr,n,srcOff);
+         pcm.set(resampled,ch*n);
+        }
+       }
+       const ad=new AudioData({
+        format:'f32-planar',
+        sampleRate:sr,
+        numberOfChannels:nCh,
+        numberOfFrames:n,
+        timestamp:Math.round(((sampleCursor+off)*1e6)/sr),
+        data:pcm
+       });
+       try{ae.encode(ad)}finally{ad.close()}
+       while(ae.encodeQueueSize>12&&!sig.stop)await new Promise(r=>setTimeout(r,2));
+      }
+      sampleCursor+=clipSamples;
+     }
+     await ae.flush();
+    }catch(e){}finally{
+     try{if(ae&&ae.state!=='closed')ae.close()}catch(e){}
+    }
+   }
+
+   mux.finalize();
+   if(poster&&posterCv&&!poster.p){
+    poster.p=new Promise(r=>posterCv.toBlob(r,'image/png'));
+   }
+   return new Blob([target.buffer],{type:'video/mp4'});
+  }
+ }catch(e){
+  encErr=e;
+ }finally{
+  try{if(ve.state!=='closed')ve.close()}catch(e){}
+  root.remove();
+ }
+ return null;
+}
+
 async function record(list,W,H,fps,mt,prog,poster){
- const cv=E('canvas');cv.width=W;cv.height=H;const cx=cv.getContext('2d'),st=cv.captureStream(fps);
- let ac,dest;if(list.some(o=>o.it.audio&&/mp4|vap/.test(o.it.fmt))){ac=new AudioContext();dest=ac.createMediaStreamDestination();st.addTrack(dest.stream.getAudioTracks()[0]);await ac.resume()}
- const rec=new MediaRecorder(st,{mimeType:mt.type,videoBitsPerSecond:Math.min(4e7,Math.round(W*H*fps*.1))}),ch=[];
- rec.ondataavailable=e=>e.data.size&&ch.push(e.data);const fin=new Promise(r=>rec.onstop=r);
- const root=E('div');root.style.cssText='position:fixed;left:-99999px;top:0;width:'+W+'px;height:'+H+'px';document.body.append(root);
- rec.start(1000);const total=list.reduce((a,o)=>a+o.dur,0);let el=0;
- try{for(const o of list){if(sig.stop)break;
-  const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);
-  const P=await mkPlayer(o.it,h,{loop:false,hiRes:true,ac,dest});P.restart();const t0=performance.now();
-  await new Promise(res=>{const f=()=>{const t=(performance.now()-t0)/1000;if(sig.stop||t>=o.dur)return res();drawBg(cx,W,H);fit(cx,P.src(),W,H,o.it);
-   if(poster&&!poster.p&&t>=Math.min(o.dur*.5,1.5))poster.p=new Promise(r=>cv.toBlob(r,'image/png'));prog((el+t)/total);requestAnimationFrame(f)};f()});
-  el+=o.dur;P.destroy();h.remove()}
-  await new Promise(r=>setTimeout(r,250))}finally{if(rec.state!='inactive')rec.stop();await fin;root.remove();ac&&ac.close()}
- return new Blob(ch,{type:mt.type.split(';')[0]})}
+ W=Math.max(64,(W+1)&~1);H=Math.max(64,(H+1)&~1);
+ const safeFps=getEffectiveFps(fps,list);
+ if(window.VideoEncoder&&window.VideoFrame&&getMuxerLib()){
+  const wcBlob=await recordWebCodecsMP4(list,W,H,safeFps,prog,poster);
+  if(wcBlob&&wcBlob.size>0)return wcBlob;
+ }
+ const hasAudio=list.some(o=>o.it&&(o.it.audio||/mp4|vap|svga/.test(o.it.fmt)));
+ const cv=E('canvas');cv.width=W;cv.height=H;
+ const cx=cv.getContext('2d',{alpha:false});
+ const st=cv.captureStream(0);
+ st.__internalExport=true;
+ const vTrack=st.getVideoTracks&&st.getVideoTracks()[0];
+ let ac,dest;
+ if(hasAudio){
+  ac=new AudioContext();
+  dest=ac.createMediaStreamDestination();
+  const aTrack=dest.stream.getAudioTracks()[0];
+  if(aTrack)st.addTrack(aTrack);
+  await ac.resume().catch(N);
+ }
+ const targetBitrate=Math.max(2500000,Math.min(28000000,Math.round(W*H*safeFps*0.18)));
+ const rec=new MediaRecorder(st,{mimeType:mt.type,videoBitsPerSecond:targetBitrate}),ch=[];
+ rec.ondataavailable=e=>e.data&&e.data.size&&ch.push(e.data);
+ const fin=new Promise(r=>rec.onstop=r);
+ const root=E('div');
+ root.style.cssText=`position:fixed;left:0;top:0;width:${W}px;height:${H}px;pointer-events:none;opacity:0.002;z-index:-1;overflow:hidden`;
+ document.body.append(root);
+
+ const total=Math.max(0.1,list.reduce((a,o)=>a+o.dur,0));
+ let el=0,startedRec=false;
+ const frameIntervalMs=1000/safeFps;
+
+ try{
+  for(const o of list){
+   if(sig.stop)break;
+   const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);
+   const P=await mkPlayer(o.it,h,{loop:false,hiRes:true,ac,dest,manual:true});
+   if(P.waitReady)await P.waitReady();
+   if(P.stepTo)await P.stepTo(0);
+   P.syncNow&&P.syncNow();
+   drawBg(cx,W,H);
+   fit(cx,P.src(),W,H,o.it);
+   drawWatermark(cx,W,H,false);
+
+   if(!startedRec){
+    rec.start(500);
+    startedRec=true;
+   }else if(rec.state==='paused'){
+    rec.resume();
+   }
+
+   P.pause&&P.pause();
+   const totalFrames=Math.max(1,Math.round(o.dur*safeFps));
+   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
+   for(let fIdx=0;fIdx<totalFrames;fIdx++){
+    if(sig.stop)break;
+    const tStart=performance.now();
+    const sec=o.it.fmt==='mp4'?Math.min(Math.max(0.05,o.dur)-0.002,(fIdx+0.35)/safeFps):(fIdx/safeFps);
+    if(P.stepTo)await P.stepTo(sec);
+    drawBg(cx,W,H);
+    fit(cx,P.src(),W,H,o.it);
+    drawWatermark(cx,W,H,false);
+    if(vTrack&&typeof vTrack.requestFrame==='function'){
+     try{vTrack.requestFrame()}catch(e){}
+    }
+    if(poster&&!poster.p&&fIdx>=posterFrame){
+     poster.p=new Promise(r=>cv.toBlob(r,'image/png'));
+    }
+    prog(Math.min(1,(el+(fIdx+1)/safeFps)/total));
+    const spent=performance.now()-tStart;
+    const waitMs=Math.max(4,frameIntervalMs-spent);
+    await new Promise(r=>setTimeout(r,waitMs));
+   }
+
+   if(rec.state==='recording'&&list.length>1)rec.pause();
+   el+=o.dur;
+   P.destroy();
+   h.remove();
+   await new Promise(r=>setTimeout(r,50));
+  }
+  await new Promise(r=>setTimeout(r,120));
+ }finally{
+  if(rec.state!='inactive')rec.stop();
+  await fin;
+  st.getTracks().forEach(t=>t.stop());
+  root.remove();
+  ac&&ac.close().catch(N);
+ }
+ return new Blob(ch,{type:mt.type.split(';')[0]});
+}
+
 async function snapBlob(it,W,H){
- const root=E('div');root.style.cssText='position:fixed;left:-99999px;top:0;width:'+W+'px;height:'+H+'px';document.body.append(root);
+ W=Math.max(2,W&~1);H=Math.max(2,H&~1);
+ const root=E('div');
+ root.style.cssText=`position:fixed;left:0;top:0;width:${W}px;height:${H}px;pointer-events:none;opacity:0.002;z-index:-1;overflow:hidden`;
+ document.body.append(root);
  const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);let P;
- try{P=await mkPlayer(it,h,{loop:false,hiRes:true});P.restart();await new Promise(r=>setTimeout(r,Math.min(dur(it)*.5,1.5)*1000+200));
-  const cv=E('canvas');cv.width=W;cv.height=H;const cx=cv.getContext('2d');fit(cx,P.src(),W,H,it);
-  return await new Promise(r=>cv.toBlob(r,'image/png'))}finally{P&&P.destroy();root.remove()}}
+ try{
+  P=await mkPlayer(it,h,{loop:false,hiRes:true,manual:true});
+  if(P.waitReady)await P.waitReady();
+  const snapSec=Math.min(dur(it)*0.5,1.5);
+  if(P.stepTo)await P.stepTo(snapSec);
+  else{P.restart();await new Promise(r=>setTimeout(r,snapSec*1000+180));P.syncNow&&P.syncNow()}
+  const cv=E('canvas');cv.width=W;cv.height=H;const cx=cv.getContext('2d');
+  if(bg.mode!='tr')drawBg(cx,W,H);
+  fit(cx,P.src(),W,H,it);
+  drawWatermark(cx,W,H,false);
+  return await new Promise(r=>cv.toBlob(r,'image/png'));
+ }finally{P&&P.destroy();root.remove()}
+}
+
 async function save(name,blob){
  const ds=$('#ds');
- /* 1) قدرة التنزيل داخل claude.ai */
  try{dl=dl||(window.claude?await claude.use('downloads'):null)}catch(e){}
  if(dl){try{await dl.save({filename:name,data:new Uint8Array(await blob.arrayBuffer())});return}catch(e){if(e.code=='declined')return}}
- /* 2) بديل: تنزيل مباشر عبر المتصفح (يعمل عند فتح الملف محليًا) */
  try{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);ds.textContent='تم بدء التنزيل: '+name}
- catch(e){ds.textContent='تعذر الحفظ: '+(e.message||e)}}
+ catch(e){ds.textContent='تعذر الحفظ: '+(e.message||e)}
+}
 $('#cx').onclick=()=>{sig.stop=true;$('#dock').style.display='none'};$('#sv').onclick=()=>out&&save(out.name,out.blob);
 $('#ex').onclick=async()=>{
  const ok=items.filter(i=>!i.err&&i.fmt),sel=ok.filter(i=>i.sel),list=sel.length?sel:ok;
- if(!list.length)return;if(!window.MediaRecorder)return alert('المتصفح لا يدعم التسجيل');
+ if(!list.length)return;if(!window.MediaRecorder&&!window.VideoEncoder)return toast('المتصفح لا يدعم التسجيل');
  sig={stop:false};out=null;const mode=$('#mode').value,H0=+$('#q').value,fps=+$('#fps').value,mt=pickMime(list.some(i=>i.audio));
- const sz=it=>{const h=Math.min(2160,Math.max(2,Math.round((H0||it.h||720)/2)*2)),w=Math.min(4096,Math.max(2,Math.round(h*((it.w/it.h)||1)/2)*2));return[w,h]};
+ const sz=it=>{const h=Math.min(2160,Math.max(64,Math.round((H0||it.h||720)/2)*2)),w=Math.min(4096,Math.max(64,Math.round(h*((it.w/it.h)||1)/2)*2));return[w,h]};
  $('#dock').style.display='block';$('#sv').style.display='none';$('#cx').style.display='';$('#ex').disabled=true;
- const pg=v=>$('#pg').style.width=Math.min(100,v*100)+'%',ds=$('#ds');ds.textContent=mt.ext=='mp4'?'أبقِ التبويب ظاهرًا أثناء التسجيل':'متصفحك لا يسجّل MP4 مباشرة فسيكون الناتج WebM';
+ const pg=v=>$('#pg').style.width=Math.min(100,v*100)+'%',ds=$('#ds');ds.textContent='جارٍ معالجة وتصدير الفريمات بدقة عالية بدون تقطيع…';
+
+ // تحرير جميع مشغلات الشبكة الخلفية مؤقتاً لتفريغ كامل موارد المعالج وكرت الشاشة للتصدير
+ isExporting=true;
+ players.forEach(p=>p!=1&&p.destroy&&p.destroy());
+ players.clear();
+ alphaTasks.clear();
+
  try{
   if(mode=='gift'||mode=='img'||mode=='gi'){const ent=[],used=new Set();let d=0;
    for(const it of list){if(sig.stop)break;$('#dt').textContent=`(${d+1}/${list.length}) ${it.name}`;
@@ -437,22 +1401,87 @@ $('#ex').onclick=async()=>{
    if(!sig.stop&&ent.length){if(ent.length==1)out={name:ent[0][0],blob:ent[0][1]};
     else{$('#dt').textContent='جارٍ تجهيز الملف…';const z=new JSZip();ent.forEach(([a,b])=>z.file(a,b));out={name:(mode=='gift'?'gifts-files':mode=='img'?'gifts-images':'gifts-files-images')+'.zip',blob:await z.generateAsync({type:'blob'})}}}}
   else if(mode=='one'){$('#dt').textContent='جارٍ إنشاء الفيديو…';const [W,H]=sz(list[0]);
-   const b=await record(list.map(it=>({it,dur:dur(it)})),W,H,fps,mt,pg);if(!sig.stop)out={name:'gifts.'+mt.ext,blob:b}}
+   const b=await record(list.map(it=>({it,dur:dur(it)})),W,H,fps,mt,pg,null);if(!sig.stop&&b)out={name:'gifts.'+mt.ext,blob:b}}
   else{const z=new JSZip(),used=new Set();let d=0;
    for(const it of list){if(sig.stop)break;$('#dt').textContent=`(${d+1}/${list.length}) ${it.name}`;
-    const [W,H]=sz(it),po={};let b;
+    const [W,H]=sz(it),po=mode=='pack'?{}:null;let b;
     try{b=await record([{it,dur:dur(it)}],W,H,fps,mt,v=>pg((d+v)/list.length),po)}catch(e){ds.textContent='فشل: '+it.name+' — '+(e.message||e);d++;continue}
-    if(sig.stop)break;
+    if(sig.stop||!b)break;
     let base=it.name.replace(/\.[^.]+$/,''),k=base,n=1;while(used.has(k))k=base+'_'+ ++n;used.add(k);
-    if(mode=='pack'){z.file(k+'/'+k+'.'+mt.ext,b);try{const pb=await snapBlob(it,W,H);if(pb)z.file(k+'/'+k+'.png',pb)}catch(e){}z.file(k+'/'+it.name,it.file)}else{z.file(k+'.'+mt.ext,b);window.__lv={name:k+'.'+mt.ext,blob:b}}
+    if(mode=='pack'){
+     z.file(k+'/'+k+'.'+mt.ext,b);
+     try{const pb=(po&&await po.p)||(await snapBlob(it,W,H));if(pb)z.file(k+'/'+k+'.png',pb)}catch(e){}
+     z.file(k+'/'+it.name,it.file);
+    }else{
+     z.file(k+'.'+mt.ext,b);window.__lv={name:k+'.'+mt.ext,blob:b};
+    }
     d++;pg(d/list.length)}
    if(!sig.stop&&mode=='sep'&&list.length==1&&window.__lv)out=window.__lv;else if(!sig.stop){$('#dt').textContent='جارٍ تجهيز الملف…';out={name:(mode=='pack'?'gifts-pack':'gifts-videos')+'.zip',blob:await z.generateAsync({type:'blob'})}}}
  }catch(e){ds.textContent='خطأ: '+(e.message||e)}
+ finally{
+  isExporting=false;
+  items.forEach(it=>{if(!it.err&&it.fmt&&it.vis!==false)ensure(it.id)});
+ }
  $('#ex').disabled=false;
- if(out){pg(1);$('#dt').textContent='اكتمل ✓ ('+(out.blob.size/1048576).toFixed(1)+' MB)';$('#sv').style.display='';$('#cx').style.display='none'}else if(!sig.stop)$('#dt').textContent='لم يكتمل التصدير'};
+ if(out){pg(1);$('#dt').textContent='اكتمل ✓ ('+(out.blob.size/1048576).toFixed(1)+' MB)';$('#sv').style.display='';$('#cx').style.display='none';save(out.name,out.blob)}else if(!sig.stop)$('#dt').textContent='لم يكتمل التصدير'};
 $('#pwb').onclick=()=>$('#pwi').click();
 $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;window.__pagWasm=await f.arrayBuffer();_pag=null;toast('تم تحميل ملف المحرك — جارٍ إعادة المحاولة');for(const it of items.filter(i=>i.fmt=='pag'&&i.err)){delete it.err;await analyze(it);render()}};
+
+/* حماية تلقائية ذكية ضد تصوير الشاشة وتسجيل الفيديو داخل استوديو الهدايا */
+(function initGiftStudioSecurity(){
+ try{
+  const isTest=window.location.search.includes('test=1')||(window.parent&&window.parent.location&&window.parent.location.search.includes('test=1'));
+  if(isTest)return;
+ }catch(e){}
+
+ const notifyCapture=(reason)=>{
+  try{
+   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText('').catch(N);
+  }catch(e){}
+  try{
+   window.parent&&window.parent.postMessage({type:'MOTIONTOOLS_SCREEN_CAPTURE_DETECTED',reason:reason||'capture'},'*');
+  }catch(e){}
+ };
+
+ addEventListener('contextmenu',e=>{
+  if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;
+  e.preventDefault();
+ },{capture:true});
+
+ addEventListener('keydown',e=>{
+  const k=(e.key||'').toLowerCase();
+  if(e.key==='F12'||e.keyCode===123||((e.ctrlKey||e.metaKey)&&e.shiftKey&&['i','j','c'].includes(k))||((e.ctrlKey||e.metaKey)&&['u','s','p'].includes(k))){
+   e.preventDefault();e.stopPropagation();return false;
+  }
+  if(
+   e.key==='PrintScreen'||e.code==='PrintScreen'||e.keyCode===44||k==='snapshot'||
+   ((e.metaKey||e.ctrlKey)&&e.shiftKey&&['3','4','5','s','r'].includes(k))||
+   (e.metaKey&&e.altKey&&k==='r')||
+   (e.metaKey&&!e.ctrlKey&&!e.shiftKey&&k==='g')
+  ){
+   e.preventDefault();e.stopPropagation();
+   notifyCapture('shortcut');
+   return false;
+  }
+ },{capture:true});
+
+ addEventListener('keyup',e=>{
+  if(e.key==='PrintScreen'||e.code==='PrintScreen'||e.keyCode===44){
+   e.preventDefault();e.stopPropagation();
+   notifyCapture('printscreen');
+  }
+ },{capture:true});
+
+ if(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia){
+  navigator.mediaDevices.getDisplayMedia=async()=>{
+   notifyCapture('getDisplayMedia');
+   throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة.');
+  };
+ }
+})();
+
 applyBg();
+refreshAllWatermarks();
 const FB=[['SVGA','https://cdn.jsdelivr.net/npm/svgaplayerweb@2.3.1/build/svga.min.js'],['lottie','https://cdn.jsdelivr.net/npm/lottie-web@5.12.2/build/player/lottie.min.js'],['JSZip','https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js']];
 addEventListener('load',()=>FB.forEach(([n,u])=>{if(!window[n])document.head.append(Object.assign(document.createElement('script'),{src:u}))}));
 </script>

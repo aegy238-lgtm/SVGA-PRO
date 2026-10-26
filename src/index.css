@@ -55,8 +55,8 @@ h1{font-size:clamp(30px,5vw,44px);margin:6px 0 0;font-weight:700;background:line
 .drop svg{width:34px;stroke:var(--tx)}
 .pill{border:1px solid var(--line);background:#14141c;color:var(--tx);padding:7px 14px;border-radius:8px;cursor:pointer}
 .pill:hover{border-color:var(--ac)}
-.app{display:grid;grid-template-columns:230px 1fr 290px;height:100%}
-.side{background:var(--panel);overflow:auto;padding:12px;border-right:1px solid var(--line)}
+.app{display:grid;grid-template-columns:340px 1fr 290px;height:100%}
+.side{background:var(--panel);overflow-y:auto;overflow-x:hidden;padding:12px;border-right:1px solid var(--line)}
 .side.r{border-right:0;border-left:1px solid var(--line)}
 .side h4{margin:12px 0 6px;font-size:13px;font-weight:700}.side h4:first-child{margin-top:0}
 .box{border:1px dashed var(--line);border-radius:6px;padding:10px;text-align:center;color:var(--mu);font-size:11px}
