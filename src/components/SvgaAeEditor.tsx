@@ -35,7 +35,7 @@ import {
   Check,
   Scissors,
 } from 'lucide-react';
-import { parseMovie, SvgaMovie, SvgaSprite } from '../utils/codecs';
+import { parseMovie, SvgaMovie } from '../utils/codecs';
 import {
   LayerTransform,
   AnimatableProperty,
@@ -1900,30 +1900,6 @@ export default function SvgaAeEditor({
       deletedSpriteIndices,
       pushHistory,
     ]
-  );
-
-  // Delete asset and all sprite layers referencing it
-  const handleDeleteAsset = useCallback(
-    (assetKey: string) => {
-      setDeletedSpriteIndices((prev) => {
-        const next = new Set(prev);
-        movie.sp.forEach((s, idx) => {
-          if (s.key === assetKey) next.add(idx);
-        });
-        return next;
-      });
-      setMovie((prev) => {
-        const nextIm = { ...prev.im };
-        delete nextIm[assetKey];
-        return { ...prev, im: nextIm };
-      });
-      if (selectedAssetKey === assetKey) {
-        setSelectedAssetKey(null);
-        setSelectedTarget('DOCUMENT');
-      }
-      setLastAction(`Deleted asset ${assetKey} and its layers`);
-    },
-    [movie.sp, selectedAssetKey]
   );
 
   // Purge all unused assets from movie.im

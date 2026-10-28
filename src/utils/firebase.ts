@@ -9,7 +9,6 @@ import {
   onSnapshot,
   collection,
   getDocs,
-  enableIndexedDbPersistence,
 } from 'firebase/firestore';
 import { getAuth, Auth } from 'firebase/auth';
 import {

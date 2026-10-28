@@ -25,19 +25,16 @@ import {
   PlatformSettings,
   PlatformState,
   UserAccount,
-  INITIAL_USERS,
   buildWhatsAppUrl,
   checkConversionPermission,
   loadPlatformState,
   savePlatformState,
   getDeletedUserIds,
-  addDeletedUserId,
   canAccessAdminDashboard,
   hasAdminPermission,
   isSuperAdminUser,
   sanitizeUsersList,
   getEffectiveAdminPermissions,
-  normalizeProPlans,
   checkAndExpireUsersPro,
   getUserProSubscriptionInfo,
   sanitizeSiteLogoUrl,
@@ -48,9 +45,7 @@ import {
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
-  firebaseConfig,
   testFirebaseConnection,
-  subscribeToFirebaseStatus,
   syncSettingsToFirestore,
   fetchFirestoreSettings,
   subscribeToFirestoreSettings,
@@ -65,7 +60,6 @@ import {
   fetchFirestoreActivityLogs,
   saveActivityLogToFirestore,
   purgeLegacyAdminsFromFirestore,
-  FirebaseConnectionStatus,
 } from './utils/firebase';
 
 export default function App() {
@@ -89,12 +83,6 @@ export default function App() {
 
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminDashboardTabId>('users');
-  const [firebaseStatus, setFirebaseStatus] = useState<FirebaseConnectionStatus>({
-    isConfigured: true,
-    isConnected: false,
-    isTesting: false,
-    projectId: firebaseConfig.projectId,
-  });
   const [authOpen, setAuthOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [proModalOpen, setProModalOpen] = useState(false);
@@ -130,13 +118,9 @@ export default function App() {
   }, [platformState.settings.siteName, platformState.settings.siteLogoUrl]);
 
   useEffect(() => {
-    const unsub = subscribeToFirebaseStatus((status) => {
-      setFirebaseStatus(status);
-    });
     // Automatic ping, live connection verification, and legacy admin purge on boot
     testFirebaseConnection();
     purgeLegacyAdminsFromFirestore();
-    return unsub;
   }, []);
 
   // Full real-time synchronization with Firebase Firestore (Settings, Users, Notifications)

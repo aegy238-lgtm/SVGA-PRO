@@ -94,7 +94,7 @@ export default function AdminDashboardModal({
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('123456');
+  const [newUserPassword] = useState('123456');
   const [newUserPlanChoice, setNewUserPlanChoice] = useState<'free' | ProPlanDurationKey>('month');
 
   // Moderator & Granular Permissions Editor state

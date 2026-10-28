@@ -4,7 +4,6 @@ import {
   detectVapYyevaSequentialSync,
   detectAlphaLayoutFromRgbaFrame,
   clampMetaToVideoBounds,
-  parseMp4BoxesTolerant,
 } from '../src/utils/vapYyevaDetection';
 import { boxes, readMeta } from '../src/utils/codecs';
 

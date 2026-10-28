@@ -3,3 +3,7 @@ dist
 .env
 .env.local
 .DS_Store
+.aistudio
+.playwright-cli
+public/assets/aistudio
+*.log

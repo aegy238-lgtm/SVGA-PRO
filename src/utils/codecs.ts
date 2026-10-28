@@ -1,7 +1,6 @@
 import {
   VapYyevaMeta,
   Mp4Box,
-  parseMp4BoxesTolerant,
   metaFromAnyObject,
   detectVapYyevaSequentialSync,
 } from './vapYyevaDetection';
