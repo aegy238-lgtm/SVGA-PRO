@@ -14,6 +14,7 @@ import {
   UserAccount,
   buildWhatsAppUrl,
   canAccessAdminDashboard,
+  canUserCaptureScreen,
   getEffectiveAdminPermissions,
   hasAdminPermission,
   isPurgedLegacyAdmin,
@@ -23,6 +24,7 @@ import {
   getDeletedUserIds,
   addDeletedUserId,
   revokeAdminFromUserAccount,
+  setUserScreenCapturePermission,
   getUserProSubscriptionInfo,
   optimizeLogoImageFile,
   sanitizeSiteLogoUrl,
@@ -88,7 +90,9 @@ export default function AdminDashboardModal({
   const [fbSyncing, setFbSyncing] = useState(false);
   const [fbLog, setFbLog] = useState<string>('');
   const [userSearch, setUserSearch] = useState('');
-  const [userFilterRole, setUserFilterRole] = useState<'all' | 'admin' | 'pro' | 'free'>('all');
+  const [userFilterRole, setUserFilterRole] = useState<
+    'all' | 'admin' | 'pro' | 'free' | 'screen_capture'
+  >('all');
   const [logSearch, setLogSearch] = useState('');
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [newUserName, setNewUserName] = useState('');
@@ -96,10 +100,12 @@ export default function AdminDashboardModal({
   const [newUserPhone, setNewUserPhone] = useState('');
   const [newUserPassword] = useState('123456');
   const [newUserPlanChoice, setNewUserPlanChoice] = useState<'free' | ProPlanDurationKey>('month');
+  const [newUserAllowScreenCapture, setNewUserAllowScreenCapture] = useState<boolean>(false);
 
   // Moderator & Granular Permissions Editor state
   const [selectedModUserId, setSelectedModUserId] = useState<string>('');
   const [modIsAdmin, setModIsAdmin] = useState<boolean>(false);
+  const [modAllowScreenCapture, setModAllowScreenCapture] = useState<boolean>(false);
   const [modBadgeTitle, setModBadgeTitle] = useState<string>('مشرف معتمد 🛡️');
   const [modPermissions, setModPermissions] = useState<AdminPermissionKey[]>([
     'manage_users',
@@ -205,6 +211,7 @@ export default function AdminDashboardModal({
     if (target) {
       const isTargetMod = canAccessAdminDashboard(target);
       setModIsAdmin(isTargetMod);
+      setModAllowScreenCapture(Boolean(target.allowScreenCapture));
       setModBadgeTitle(target.adminBadgeTitle || 'مشرف معتمد 🛡️');
       const existingPerms = getEffectiveAdminPermissions(target);
       setModPermissions(existingPerms.length > 0 ? existingPerms : ['manage_users', 'view_logs']);
@@ -274,8 +281,9 @@ export default function AdminDashboardModal({
 
     const cleanPerms = modIsAdmin ? modPermissions : [];
     const effectiveRole: 'admin' | 'user' = modIsAdmin && cleanPerms.length > 0 ? 'admin' : 'user';
+    const nowIso = new Date().toISOString();
 
-    const updatedUser: UserAccount =
+    const baseUpdated: UserAccount =
       effectiveRole === 'admin'
         ? {
             ...target,
@@ -283,10 +291,16 @@ export default function AdminDashboardModal({
             isSuperAdmin: false,
             adminPermissions: cleanPerms,
             adminBadgeTitle: modBadgeTitle.trim() || 'مشرف معتمد 🛡️',
-            adminGrantedAt: target.adminGrantedAt || new Date().toISOString(),
+            adminGrantedAt: target.adminGrantedAt || nowIso,
             isPro: true,
           }
         : revokeAdminFromUserAccount(target);
+
+    const updatedUser: UserAccount = setUserScreenCapturePermission(
+      baseUpdated,
+      modAllowScreenCapture,
+      nowIso
+    );
 
     if (effectiveRole === 'user') {
       setModIsAdmin(false);
@@ -300,11 +314,46 @@ export default function AdminDashboardModal({
 
     showSavedFeedback(
       effectiveRole === 'admin'
-        ? `🛡️ تم منح الحساب (${updatedUser.email}) صلاحية مشرف (${cleanPerms.length} صلاحيات) وإظهار العلامة في حسابه فوراً ✓`
-        : `🚫 تم حذف صلاحية الأدمن نهائياً من الحساب (${updatedUser.email}) وإعادته كمستخدم عادي ✓`,
+        ? `🛡️ تم حفظ صلاحيات الحساب (${updatedUser.email}) كمشرف${updatedUser.allowScreenCapture ? ' + السماح بتصوير الشاشة والفيديو 📸' : ''} ✓`
+        : updatedUser.allowScreenCapture
+          ? `📸 تم منح الحساب (${updatedUser.email}) صلاحية تصوير الشاشة وتسجيل فيديو الشاشة بحرية ✓`
+          : `✅ تم تحديث صلاحيات الحساب (${updatedUser.email}) كمستخدم عادي ✓`,
       effectiveRole === 'admin'
-        ? `🛡️ Granted Moderator access (${cleanPerms.length} permissions) & account badge to ${updatedUser.email} ✓`
-        : `🚫 Removed Admin role permanently from ${updatedUser.email} ✓`
+        ? `🛡️ Moderator permissions${updatedUser.allowScreenCapture ? ' + Screen Capture 📸' : ''} saved for ${updatedUser.email} ✓`
+        : updatedUser.allowScreenCapture
+          ? `📸 Screen capture & video recording permission granted to ${updatedUser.email} ✓`
+          : `✅ Updated permissions for ${updatedUser.email} ✓`
+    );
+  };
+
+  const handleToggleUserScreenCapture = async (userId: string) => {
+    if (
+      !hasAdminPermission(currentUser, 'manage_users') &&
+      !hasAdminPermission(currentUser, 'manage_admins')
+    ) {
+      return;
+    }
+    const target = users.find((u) => u.id === userId);
+    if (!target || isSuperAdminUser(target)) return;
+
+    const nextAllowed = !target.allowScreenCapture;
+    const updatedUser = setUserScreenCapturePermission(target, nextAllowed);
+
+    if (selectedModUserId === userId) {
+      setModAllowScreenCapture(nextAllowed);
+    }
+
+    const nextUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    onUpdateUsers(nextUsers);
+    await saveUserToFirestore(updatedUser);
+
+    showSavedFeedback(
+      nextAllowed
+        ? `📸 تم منح الحساب (${updatedUser.email}) صلاحية تصوير الشاشة وتسجيل فيديو الشاشة من أي موقع أو أداة بحرية ✓`
+        : `🚫 تم إلغاء صلاحية تصوير الشاشة وتسجيل الفيديو من الحساب (${updatedUser.email}) وتفعيل الحماية عليه ✓`,
+      nextAllowed
+        ? `📸 Granted screenshot & screen video recording permission to ${updatedUser.email} ✓`
+        : `🚫 Revoked screenshot & screen video recording permission from ${updatedUser.email} ✓`
     );
   };
 
@@ -610,6 +659,8 @@ export default function AdminDashboardModal({
       phone: newUserPhone.trim(),
       password: newUserPassword || '123456',
       role: 'user',
+      allowScreenCapture: Boolean(newUserAllowScreenCapture),
+      screenCaptureGrantedAt: newUserAllowScreenCapture ? now.toISOString() : '',
       isPro: !!chosenPlan,
       proPlanId: chosenPlan ? chosenPlan.id : undefined,
       proPlanName: chosenPlan ? (isAr ? chosenPlan.nameAr : chosenPlan.nameEn) : undefined,
@@ -622,7 +673,15 @@ export default function AdminDashboardModal({
     setNewUserName('');
     setNewUserEmail('');
     setNewUserPhone('');
-    showSavedFeedback('تم إنشاء الحساب وحفظه في Firebase بنجاح ✓', 'User account created & saved to Firebase ✓');
+    setNewUserAllowScreenCapture(false);
+    showSavedFeedback(
+      created.allowScreenCapture
+        ? 'تم إنشاء الحساب مع منحه صلاحية تصوير الشاشة وتسجيل الفيديو وحفظه في Firebase ✓'
+        : 'تم إنشاء الحساب وحفظه في Firebase بنجاح ✓',
+      created.allowScreenCapture
+        ? 'User account created with screen capture permission & saved to Firebase ✓'
+        : 'User account created & saved to Firebase ✓'
+    );
   };
 
   const handleToggleFormatPro = (fmtKey: string) => {
@@ -908,6 +967,7 @@ export default function AdminDashboardModal({
     if (userFilterRole === 'admin' && !isUserAdmin) return false;
     if (userFilterRole === 'pro' && (!u.isPro || isUserAdmin)) return false;
     if (userFilterRole === 'free' && (u.isPro || isUserAdmin)) return false;
+    if (userFilterRole === 'screen_capture' && !canUserCaptureScreen(u)) return false;
 
     const q = userSearch.toLowerCase().trim();
     if (!q) return true;
@@ -935,6 +995,7 @@ export default function AdminDashboardModal({
 
   const proUsersCount = sortedUsers.filter((u) => u.isPro).length;
   const freeUsersCount = sortedUsers.filter((u) => !u.isPro).length;
+  const screenCaptureAllowedCount = sortedUsers.filter((u) => canUserCaptureScreen(u)).length;
   const allDefinitionsTabs: { id: AdminDashboardTabId; label: string; perm: AdminPermissionKey }[] = [
     { id: 'users', label: t.dashTabUsers, perm: 'manage_users' },
     {
@@ -1310,6 +1371,23 @@ export default function AdminDashboardModal({
                 </div>
                 <div
                   style={{
+                    background: 'rgba(6, 182, 212, 0.1)',
+                    border: '1px solid rgba(6, 182, 212, 0.4)',
+                    borderRadius: '10px',
+                    padding: '14px',
+                  }}
+                >
+                  <div style={{ fontSize: '12px', color: '#67e8f9' }}>
+                    {isAr
+                      ? 'مصرح بتصوير الشاشة والفيديو 📸'
+                      : 'Screen Capture & Video Allowed 📸'}
+                  </div>
+                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#22d3ee' }}>
+                    {screenCaptureAllowedCount}
+                  </div>
+                </div>
+                <div
+                  style={{
                     background: 'rgba(124, 92, 255, 0.1)',
                     border: '1px solid rgba(124, 92, 255, 0.4)',
                     borderRadius: '10px',
@@ -1415,6 +1493,35 @@ export default function AdminDashboardModal({
                     <option value="free">{isAr ? '👤 مجاني (Free)' : '👤 Free'}</option>
                   </select>
                 </div>
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    padding: '7px 12px',
+                    borderRadius: '8px',
+                    border: newUserAllowScreenCapture
+                      ? '1px solid #06b6d4'
+                      : '1px solid #2e2e46',
+                    background: newUserAllowScreenCapture
+                      ? 'rgba(6, 182, 212, 0.16)'
+                      : '#10101a',
+                    color: newUserAllowScreenCapture ? '#67e8f9' : '#cbd5e1',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={newUserAllowScreenCapture}
+                    onChange={(e) => setNewUserAllowScreenCapture(e.target.checked)}
+                    style={{ width: '15px', height: '15px', accentColor: '#06b6d4' }}
+                  />
+                  <span>
+                    📸 {isAr ? 'السماح بتصوير الشاشة والفيديو' : 'Allow Screen Capture & Video'}
+                  </span>
+                </label>
                 <button
                   type="submit"
                   style={{
@@ -1492,6 +1599,10 @@ export default function AdminDashboardModal({
                         { id: 'admin', label: isAr ? '👑 المديرين' : '👑 Admins' },
                         { id: 'pro', label: isAr ? '⚡ مشترك برو' : '⚡ Pro Users' },
                         { id: 'free', label: isAr ? '👤 مجاني' : '👤 Free Users' },
+                        {
+                          id: 'screen_capture',
+                          label: isAr ? '📸 مصرح بالتصوير' : '📸 Screen Capture',
+                        },
                       ] as const
                     ).map((f) => (
                       <button
@@ -1699,6 +1810,31 @@ export default function AdminDashboardModal({
                                     👤 {isAr ? 'مستخدم مجاني (Free)' : 'Free User'}
                                   </span>
                                 )}
+                                {canUserCaptureScreen(u) && (
+                                  <div style={{ marginTop: '4px' }}>
+                                    <span
+                                      id={`screenCaptureBadge_${u.id}`}
+                                      style={{
+                                        background: 'rgba(6, 182, 212, 0.18)',
+                                        border: '1px solid #06b6d4',
+                                        color: '#67e8f9',
+                                        padding: '2px 9px',
+                                        borderRadius: '99px',
+                                        fontWeight: 800,
+                                        fontSize: '10.5px',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      📸{' '}
+                                      {isAr
+                                        ? 'مصرح بتصوير الشاشة وتسجيل الفيديو'
+                                        : 'Screen Capture & Video Allowed'}
+                                    </span>
+                                  </div>
+                                )}
                               </td>
                               <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>{u.email}</td>
                               <td style={{ padding: '10px 8px', color: '#94a3b8' }}>{u.phone || '—'}</td>
@@ -1768,6 +1904,43 @@ export default function AdminDashboardModal({
                                           : isAr
                                             ? '⚡ تفعيل برو'
                                             : '⚡ Activate Pro'}
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        id={`toggleScreenCaptureBtn_${u.id}`}
+                                        onClick={() => handleToggleUserScreenCapture(u.id)}
+                                        style={{
+                                          padding: '6px 10px',
+                                          borderRadius: '8px',
+                                          border: u.allowScreenCapture
+                                            ? '1px solid #06b6d4'
+                                            : '1px solid rgba(6, 182, 212, 0.45)',
+                                          background: u.allowScreenCapture
+                                            ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.28), rgba(14, 116, 144, 0.28))'
+                                            : 'rgba(6, 182, 212, 0.1)',
+                                          color: u.allowScreenCapture ? '#a5f3fc' : '#67e8f9',
+                                          fontWeight: 800,
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          whiteSpace: 'nowrap',
+                                          boxShadow: u.allowScreenCapture
+                                            ? '0 2px 10px rgba(6, 182, 212, 0.28)'
+                                            : 'none',
+                                        }}
+                                        title={
+                                          isAr
+                                            ? 'منح أو إلغاء صلاحية تصوير الشاشة وتسجيل سكرين فيديو لهذا الحساب من أي موقع أو أداة'
+                                            : 'Grant or revoke screenshot & screen video recording permission for this user account'
+                                        }
+                                      >
+                                        {u.allowScreenCapture
+                                          ? isAr
+                                            ? '📸 التصوير مفعل (اضغط للإلغاء)'
+                                            : '📸 Capture Allowed (Revoke)'
+                                          : isAr
+                                            ? '📸 سماح بتصوير الشاشة والفيديو'
+                                            : '📸 Allow Screen Capture'}
                                       </button>
                                     </>
                                   )}
@@ -2023,6 +2196,47 @@ export default function AdminDashboardModal({
                               fontSize: '13px',
                             }}
                           />
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '12px', color: '#67e8f9', fontWeight: 700, marginBottom: '6px' }}>
+                            {isAr
+                              ? '📸 صلاحية تصوير الشاشة وتسجيل الفيديو للحساب:'
+                              : '📸 Account Screen Capture & Video Permission:'}
+                          </label>
+                          <button
+                            type="button"
+                            id="toggleModScreenCaptureBtn"
+                            onClick={() => setModAllowScreenCapture((prev) => !prev)}
+                            style={{
+                              width: '100%',
+                              padding: '9px 14px',
+                              borderRadius: '8px',
+                              border: modAllowScreenCapture ? '1px solid #06b6d4' : '1px solid #475569',
+                              background: modAllowScreenCapture
+                                ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.25), rgba(8, 145, 178, 0.25))'
+                                : '#181826',
+                              color: modAllowScreenCapture ? '#67e8f9' : '#cbd5e1',
+                              fontWeight: 800,
+                              fontSize: '12.5px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '8px',
+                            }}
+                          >
+                            <span>{modAllowScreenCapture ? '📸' : '🔒'}</span>
+                            <span>
+                              {modAllowScreenCapture
+                                ? isAr
+                                  ? 'مسموح بتصوير الشاشة وتسجيل فيديو الشاشة ✓'
+                                  : 'Screen Capture & Video Recording Allowed ✓'
+                                : isAr
+                                  ? 'ممنوع من التصوير (اضغط للسماح للحساب بالتصوير)'
+                                  : 'Blocked (Click to Allow Screen Capture)'}
+                            </span>
+                          </button>
                         </div>
                       </div>
 
@@ -2340,6 +2554,148 @@ export default function AdminDashboardModal({
                         );
                       })}
                   </div>
+                </div>
+              </div>
+
+              {/* Section 1.5: Dedicated Screen Capture & Screen Video Recording Authorization Panel */}
+              <div
+                id="screenCapturePermissionsPanel"
+                style={{
+                  background: 'linear-gradient(180deg, #101926 0%, #0f131d 100%)',
+                  border: '1px solid rgba(6, 182, 212, 0.45)',
+                  borderRadius: '14px',
+                  padding: '20px',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  <div>
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: '16px',
+                        fontWeight: 800,
+                        color: '#67e8f9',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span>📸</span>
+                      <span>
+                        {isAr
+                          ? 'إدارة صلاحية تصوير الشاشة وتسجيل فيديو الشاشة للحسابات'
+                          : 'Account Screen Capture & Screen Video Recording Permissions'}
+                      </span>
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>
+                      {isAr
+                        ? 'الموقع يمنع تصوير الشاشة وتسجيل الفيديو تلقائياً لحماية المحتوى. يمكنك من هنا منح صلاحية لأي حساب مستخدم لكي يتمكن من استخدام الموقع وأخذ لقطات شاشة (Screenshot) وتسجيل فيديو شاشة (Screen Video) بحرية من أي موقع أو برنامج أو أداة دون توقف الموقع.'
+                        : 'The platform blocks screenshots and screen recording by default. Grant permission below to any user account so they can freely take screenshots and record screen video from any tool, browser, or website without interruption.'}
+                    </p>
+                  </div>
+                  <span
+                    style={{
+                      background: 'rgba(6, 182, 212, 0.18)',
+                      border: '1px solid #06b6d4',
+                      color: '#a5f3fc',
+                      padding: '4px 12px',
+                      borderRadius: '99px',
+                      fontSize: '11.5px',
+                      fontWeight: 800,
+                    }}
+                  >
+                    📸{' '}
+                    {isAr
+                      ? `${screenCaptureAllowedCount} حساب مصرح له بالتصوير`
+                      : `${screenCaptureAllowedCount} Authorized Account(s)`}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {sortedUsers.map((acc) => {
+                    const isSuper = isSuperAdminUser(acc);
+                    const allowed = canUserCaptureScreen(acc);
+                    return (
+                      <div
+                        key={acc.id}
+                        style={{
+                          background: '#0b0f19',
+                          border: allowed
+                            ? '1px solid rgba(6, 182, 212, 0.5)'
+                            : '1px solid #1e293b',
+                          borderRadius: '10px',
+                          padding: '10px 14px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '10px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '16px' }}>
+                            {isSuper ? '👑' : allowed ? '📸' : '🔒'}
+                          </span>
+                          <div>
+                            <div style={{ fontWeight: 800, fontSize: '13px', color: '#fff' }}>
+                              {acc.name}{' '}
+                              <span style={{ color: '#94a3b8', fontWeight: 500 }}>({acc.email})</span>
+                            </div>
+                            <div style={{ fontSize: '11px', color: allowed ? '#67e8f9' : '#64748b', marginTop: '2px' }}>
+                              {isSuper
+                                ? isAr
+                                  ? 'المدير العام — مسموح له بتصوير الشاشة وتسجيل الفيديو دائماً'
+                                  : 'Super Admin — Always allowed to capture & record screen'
+                                : allowed
+                                  ? isAr
+                                    ? '✅ مصرح للحساب بتصوير الشاشة وتسجيل سكرين فيديو من أي موقع أو أداة عادي'
+                                    : '✅ Authorized to take screenshots & record screen video freely'
+                                  : isAr
+                                    ? '🚫 الحماية مفعلة على هذا الحساب (ممنوع من تصوير الشاشة وتسجيل الفيديو)'
+                                    : '🚫 Screen capture & recording blocked for this account'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {!isSuper && (
+                          <button
+                            type="button"
+                            id={`secPanelToggleCapture_${acc.id}`}
+                            onClick={() => handleToggleUserScreenCapture(acc.id)}
+                            style={{
+                              padding: '7px 14px',
+                              borderRadius: '8px',
+                              border: allowed ? '1px solid #ef4444' : '1px solid #06b6d4',
+                              background: allowed
+                                ? 'rgba(239, 68, 68, 0.16)'
+                                : 'linear-gradient(135deg, #06b6d4, #0891b2)',
+                              color: allowed ? '#fca5a5' : '#042f2e',
+                              fontWeight: 900,
+                              fontSize: '12px',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {allowed
+                              ? isAr
+                                ? '🚫 سحب صلاحية التصوير'
+                                : '🚫 Revoke Capture Permission'
+                              : isAr
+                                ? '📸 منح صلاحية تصوير الشاشة والفيديو'
+                                : '📸 Grant Screen Capture Permission'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

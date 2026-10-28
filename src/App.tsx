@@ -32,6 +32,7 @@ import {
   savePlatformState,
   getDeletedUserIds,
   canAccessAdminDashboard,
+  canUserCaptureScreen,
   hasAdminPermission,
   isSuperAdminUser,
   sanitizeUsersList,
@@ -81,6 +82,7 @@ export default function App() {
   const currentUser = users.find((u) => u.id === currentUserId) || null;
   const hasAdminAccess = canAccessAdminDashboard(currentUser);
   const isSuperAdmin = isSuperAdminUser(currentUser);
+  const canCaptureScreen = canUserCaptureScreen(currentUser, adminPreviewRole);
 
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminDashboardTabId>('users');
@@ -291,10 +293,33 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [platformState.users.length]);
 
-  const isSecurityEnforced =
-    typeof window !== 'undefined' && !window.location.search.includes('test=1');
+  const isTestMode =
+    typeof window !== 'undefined' && window.location.search.includes('test=1');
+  const isSecurityEnforced = !isTestMode && !canCaptureScreen;
 
-  // Toggle Admin Attribute and Style on Body for Unrestricted Text Selection vs Enforced Protection
+  // Expose live helper & sync screen capture permission state with embedded Gifts Studio iframe
+  useEffect(() => {
+    (window as any).__canUserCaptureScreen = () => {
+      const st = stateRef.current;
+      const u = st.users.find((acc) => acc.id === st.currentUserId) || null;
+      return canUserCaptureScreen(u, st.adminPreviewRole);
+    };
+    document.body.setAttribute('data-allow-screen-capture', canCaptureScreen ? 'true' : 'false');
+    if (canCaptureScreen && screenShieldActive) {
+      setScreenShieldActive(false);
+    }
+    const giftsFrame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
+    if (giftsFrame && giftsFrame.contentWindow) {
+      try {
+        giftsFrame.contentWindow.postMessage(
+          { type: 'MOTIONTOOLS_SCREEN_CAPTURE_PERMISSION', allowed: canCaptureScreen },
+          '*'
+        );
+      } catch {}
+    }
+  }, [canCaptureScreen, screenShieldActive]);
+
+  // Toggle Admin / Screen-Capture Attribute and Style on Body for Unrestricted Selection vs Enforced Protection
   useEffect(() => {
     if (!isSecurityEnforced) {
       document.body.setAttribute('data-role', 'admin');

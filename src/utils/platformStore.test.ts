@@ -12,6 +12,7 @@ import {
   verifyUserPassword,
   isSuperAdminUser,
   canAccessAdminDashboard,
+  canUserCaptureScreen,
   hasAdminPermission,
   computeSessionToken,
   verifySessionToken,
@@ -20,6 +21,7 @@ import {
   resetLoginAttempts,
   sanitizeUsersList,
   revokeAdminFromUserAccount,
+  setUserScreenCapturePermission,
   getUserProSubscriptionInfo,
   checkAndExpireUsersPro,
   sanitizeSiteLogoUrl,
@@ -343,6 +345,44 @@ test('resolveAuthenticatedUserOnLogin locks user name permanently after first-ti
   assert.equal(secondLogin.nameLocked, true);
 });
 
+test('canUserCaptureScreen and setUserScreenCapturePermission manage account screen capture and video recording privileges accurately', () => {
+  const regularUser: UserAccount = {
+    id: 'usr_capture_test',
+    name: 'أحمد مصمم',
+    email: 'designer@example.com',
+    password: '123456',
+    role: 'user',
+    isPro: true,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
 
+  // By default, regular users and guests cannot capture/record screen
+  assert.equal(canUserCaptureScreen(null), false);
+  assert.equal(canUserCaptureScreen(regularUser), false);
 
+  // Super Admin is always allowed to capture/record screen unless previewing as free_user
+  assert.equal(canUserCaptureScreen(INITIAL_SUPER_ADMIN_ACCOUNT, 'actual'), true);
+  assert.equal(canUserCaptureScreen(INITIAL_SUPER_ADMIN_ACCOUNT, 'free_user'), false);
 
+  // Grant screen capture & video recording permission to regularUser
+  const grantedUser = setUserScreenCapturePermission(regularUser, true, '2026-10-28T12:00:00.000Z');
+  assert.equal(grantedUser.allowScreenCapture, true);
+  assert.equal(grantedUser.screenCaptureGrantedAt, '2026-10-28T12:00:00.000Z');
+  assert.equal(canUserCaptureScreen(grantedUser), true);
+
+  // Sanitization preserves allowScreenCapture on user accounts
+  const sanitized = sanitizeUsersList([grantedUser]);
+  const sanitizedTarget = sanitized.find((u) => u.id === 'usr_capture_test')!;
+  assert.equal(sanitizedTarget.allowScreenCapture, true);
+
+  // Session token protects allowScreenCapture from localStorage tampering
+  const tokenBefore = computeSessionToken(regularUser);
+  assert.equal(verifySessionToken(regularUser, tokenBefore), true);
+  assert.equal(verifySessionToken(grantedUser, tokenBefore), false);
+
+  // Revoke screen capture permission
+  const revokedUser = setUserScreenCapturePermission(grantedUser, false);
+  assert.equal(revokedUser.allowScreenCapture, false);
+  assert.equal(revokedUser.screenCaptureGrantedAt, '');
+  assert.equal(canUserCaptureScreen(revokedUser), false);
+});

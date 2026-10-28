@@ -1753,14 +1753,41 @@ $('#ex').onclick=async()=>{
 $('#pwb').onclick=()=>$('#pwi').click();
 $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;window.__pagWasm=await f.arrayBuffer();_pag=null;toast('تم تحميل ملف المحرك — جارٍ إعادة المحاولة');for(const it of items.filter(i=>i.fmt=='pag'&&i.err)){delete it.err;await analyze(it);render()}};
 
-/* حماية تلقائية ذكية ضد تصوير الشاشة وتسجيل الفيديو داخل استوديو الهدايا */
+/* حماية تلقائية ذكية ضد تصوير الشاشة وتسجيل الفيديو داخل استوديو الهدايا مع دعم صلاحية التصوير للحسابات المصرح لها */
 (function initGiftStudioSecurity(){
- try{
-  const isTest=window.location.search.includes('test=1')||(window.parent&&window.parent.location&&window.parent.location.search.includes('test=1'));
-  if(isTest)return;
- }catch(e){}
+ let parentAllowedCapture=false;
+ const isCaptureAllowedNow=()=>{
+  try{
+   const isTest=window.location.search.includes('test=1')||(window.parent&&window.parent.location&&window.parent.location.search.includes('test=1'));
+   if(isTest)return true;
+  }catch(e){}
+  try{
+   if(window.parent&&typeof window.parent.__canUserCaptureScreen==='function'){
+    return !!window.parent.__canUserCaptureScreen();
+   }
+  }catch(e){}
+  if(parentAllowedCapture)return true;
+  try{
+   const raw=localStorage.getItem('motiontools_platform_state_v2');
+   if(raw){
+    const st=JSON.parse(raw);
+    if(st&&st.adminPreviewRole!=='free_user'&&st.currentUserId&&Array.isArray(st.users)){
+     const u=st.users.find(x=>x&&x.id===st.currentUserId);
+     if(u&&(u.allowScreenCapture===true||u.isSuperAdmin===true||u.id==='usr_super_admin_2026'))return true;
+    }
+   }
+  }catch(e){}
+  return false;
+ };
+
+ addEventListener('message',e=>{
+  if(e.data&&e.data.type==='MOTIONTOOLS_SCREEN_CAPTURE_PERMISSION'){
+   parentAllowedCapture=!!e.data.allowed;
+  }
+ });
 
  const notifyCapture=(reason)=>{
+  if(isCaptureAllowedNow())return;
   try{
    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText('').catch(N);
   }catch(e){}
@@ -1770,11 +1797,13 @@ $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)r
  };
 
  addEventListener('contextmenu',e=>{
+  if(isCaptureAllowedNow())return;
   if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;
   e.preventDefault();
  },{capture:true});
 
  addEventListener('keydown',e=>{
+  if(isCaptureAllowedNow())return;
   const k=(e.key||'').toLowerCase();
   if(e.key==='F12'||e.keyCode===123||((e.ctrlKey||e.metaKey)&&e.shiftKey&&['i','j','c'].includes(k))||((e.ctrlKey||e.metaKey)&&['u','s','p'].includes(k))){
    e.preventDefault();e.stopPropagation();return false;
@@ -1792,6 +1821,7 @@ $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)r
  },{capture:true});
 
  addEventListener('keyup',e=>{
+  if(isCaptureAllowedNow())return;
   if(e.key==='PrintScreen'||e.code==='PrintScreen'||e.keyCode===44){
    e.preventDefault();e.stopPropagation();
    notifyCapture('printscreen');
@@ -1799,7 +1829,11 @@ $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)r
  },{capture:true});
 
  if(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia){
-  navigator.mediaDevices.getDisplayMedia=async()=>{
+  const origGetDisplayMedia=navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getDisplayMedia=async(...args)=>{
+   if(isCaptureAllowedNow()){
+    return origGetDisplayMedia(...args);
+   }
    notifyCapture('getDisplayMedia');
    throw new Error('🚫 يمنع تصوير الشاشة أو تسجيل الفيديو داخل المنصة.');
   };

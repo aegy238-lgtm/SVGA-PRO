@@ -7,6 +7,7 @@ import {
   UserAccount,
   buildWhatsAppUrl,
   canAccessAdminDashboard,
+  canUserCaptureScreen,
   checkLoginRateLimit,
   getEffectiveAdminPermissions,
   isPurgedLegacyAdmin,
@@ -982,6 +983,29 @@ export function UserAuthModal({
                           {subInfo.isActive
                             ? `👑 ${t.authStatusPro} — (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`
                             : `👤 ${t.authStatusFree}`}
+                        </span>
+                      )}
+
+                      {canUserCaptureScreen(currentUser) && (
+                        <span
+                          id="userModalScreenCaptureBadge"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            background: 'rgba(6, 182, 212, 0.2)',
+                            border: '1px solid rgba(6, 182, 212, 0.55)',
+                            color: '#67e8f9',
+                            fontSize: '10.5px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          📸{' '}
+                          {isAr
+                            ? 'مصرح بتصوير الشاشة وتسجيل الفيديو'
+                            : 'Screen Capture & Video Allowed'}
                         </span>
                       )}
                     </div>

@@ -194,6 +194,8 @@ export interface UserAccount {
   adminPermissions?: AdminPermissionKey[];
   adminBadgeTitle?: string;
   adminGrantedAt?: string;
+  allowScreenCapture?: boolean;
+  screenCaptureGrantedAt?: string;
   isPro: boolean;
   proPlanId?: ProPlanDurationKey;
   proPlanName?: string;
@@ -311,6 +313,8 @@ export const INITIAL_SUPER_ADMIN_ACCOUNT: UserAccount = {
   adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
   adminBadgeTitle: 'المدير العام (Super Admin)',
   adminGrantedAt: '2026-10-25T00:00:00.000Z',
+  allowScreenCapture: true,
+  screenCaptureGrantedAt: '2026-10-25T00:00:00.000Z',
   isPro: true,
   createdAt: '2026-10-25T00:00:00.000Z',
   proActivatedAt: '2026-10-25T00:00:00.000Z',
@@ -479,6 +483,43 @@ export function revokeAdminFromUserAccount(user: UserAccount, nowMs: number = Da
     adminBadgeTitle: '',
     adminGrantedAt: '',
     isPro: hasValidPaidSubscription ? user.isPro : false,
+  };
+}
+
+/**
+ * Pure function: Checks whether a user account has permission to take screenshots and record screen video
+ * anywhere on the platform (or via external screen recording tools/websites) without triggering the anti-capture shield.
+ */
+export function canUserCaptureScreen(
+  user: UserAccount | null | undefined,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual'
+): boolean {
+  if (adminPreviewRole === 'free_user') return false;
+  if (!user || isPurgedLegacyAdmin(user)) return false;
+  if (isSuperAdminUser(user)) return true;
+  return user.allowScreenCapture === true;
+}
+
+/**
+ * Pure function: Grants or revokes the account-level permission to take screenshots and record screen video.
+ */
+export function setUserScreenCapturePermission(
+  user: UserAccount,
+  allowed: boolean,
+  nowIso: string = new Date().toISOString()
+): UserAccount {
+  if (isSuperAdminUser(user)) {
+    return {
+      ...user,
+      allowScreenCapture: true,
+      screenCaptureGrantedAt: user.screenCaptureGrantedAt || nowIso,
+    };
+  }
+  const nextAllowed = Boolean(allowed);
+  return {
+    ...user,
+    allowScreenCapture: nextAllowed,
+    screenCaptureGrantedAt: nextAllowed ? user.screenCaptureGrantedAt || nowIso : '',
   };
 }
 
@@ -663,7 +704,8 @@ export function checkAndExpireUsersPro(
 export function computeSessionToken(user: UserAccount | null | undefined): string {
   if (!user || isPurgedLegacyAdmin(user)) return '';
   const perms = getEffectiveAdminPermissions(user).sort().join(',');
-  const payload = `mt_sec_v2|${user.id}|${user.email.toLowerCase()}|${user.role}|${user.isSuperAdmin ? 'SA' : 'U'}|${perms}|${user.password || ''}`;
+  const scFlag = isSuperAdminUser(user) || user.allowScreenCapture === true ? 'SC1' : 'SC0';
+  const payload = `mt_sec_v2|${user.id}|${user.email.toLowerCase()}|${user.role}|${user.isSuperAdmin ? 'SA' : 'U'}|${perms}|${scFlag}|${user.password || ''}`;
   let h1 = 0xdeadbeef ^ payload.length;
   let h2 = 0x41c6ce57 ^ payload.length;
   for (let i = 0; i < payload.length; i++) {
@@ -1172,6 +1214,7 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         role: 'admin',
         isSuperAdmin: true,
         adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
+        allowScreenCapture: true,
         isPro: true,
       };
     }
@@ -1188,6 +1231,7 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         adminPermissions: [],
         adminBadgeTitle: '',
         adminGrantedAt: '',
+        allowScreenCapture: Boolean(u.allowScreenCapture),
       };
     }
     return {
@@ -1197,6 +1241,7 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
       role: 'admin',
       isSuperAdmin: false,
       adminPermissions: validPerms,
+      allowScreenCapture: Boolean(u.allowScreenCapture),
     };
   });
 }
