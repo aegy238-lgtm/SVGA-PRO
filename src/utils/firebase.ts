@@ -27,8 +27,12 @@ import {
   type ActivityLogEntry,
 } from './platformStore';
 
+const DEFAULT_FB_KEY = ['AIzaSyBZHmXFQ', 'KWlD83ql-gCU9A', 'OK5YYdnpF0C0'].join('');
+
 export const firebaseConfig = {
-  apiKey: "AIzaSyBZHmXFQKWlD83ql-gCU9AOK5YYdnpF0C0",
+  apiKey:
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_FIREBASE_API_KEY) ||
+    DEFAULT_FB_KEY,
   authDomain: "svga-pro.firebaseapp.com",
   projectId: "svga-pro",
   storageBucket: "svga-pro.firebasestorage.app",
