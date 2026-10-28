@@ -6,8 +6,11 @@ import {
   ALL_ADMIN_PERMISSION_KEYS,
   ALL_SUPPORTED_FORMATS,
   BroadcastNotification,
+  DEFAULT_PRO_PLANS,
   PlatformSettings,
   PlatformState,
+  ProPlanDurationKey,
+  ProSubscriptionPlan,
   UserAccount,
   buildWhatsAppUrl,
   canAccessAdminDashboard,
@@ -15,8 +18,12 @@ import {
   hasAdminPermission,
   isPurgedLegacyAdmin,
   isSuperAdminUser,
+  normalizeProPlans,
   sanitizeUsersList,
   getDeletedUserIds,
+  addDeletedUserId,
+  revokeAdminFromUserAccount,
+  getUserProSubscriptionInfo,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import {
@@ -82,7 +89,7 @@ export default function AdminDashboardModal({
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('123456');
-  const [newUserIsPro, setNewUserIsPro] = useState(true);
+  const [newUserPlanChoice, setNewUserPlanChoice] = useState<'free' | ProPlanDurationKey>('month');
 
   // Moderator & Granular Permissions Editor state
   const [selectedModUserId, setSelectedModUserId] = useState<string>('');
@@ -238,19 +245,24 @@ export default function AdminDashboardModal({
     const cleanPerms = modIsAdmin ? modPermissions : [];
     const effectiveRole: 'admin' | 'user' = modIsAdmin && cleanPerms.length > 0 ? 'admin' : 'user';
 
-    const updatedUser: UserAccount = {
-      ...target,
-      role: effectiveRole,
-      isSuperAdmin: false,
-      adminPermissions: cleanPerms,
-      adminBadgeTitle:
-        effectiveRole === 'admin' ? modBadgeTitle.trim() || 'مشرف معتمد 🛡️' : undefined,
-      adminGrantedAt:
-        effectiveRole === 'admin'
-          ? target.adminGrantedAt || new Date().toISOString()
-          : undefined,
-      isPro: effectiveRole === 'admin' ? true : target.isPro,
-    };
+    const updatedUser: UserAccount =
+      effectiveRole === 'admin'
+        ? {
+            ...target,
+            role: 'admin',
+            isSuperAdmin: false,
+            adminPermissions: cleanPerms,
+            adminBadgeTitle: modBadgeTitle.trim() || 'مشرف معتمد 🛡️',
+            adminGrantedAt: target.adminGrantedAt || new Date().toISOString(),
+            isPro: true,
+          }
+        : revokeAdminFromUserAccount(target);
+
+    if (effectiveRole === 'user') {
+      setModIsAdmin(false);
+      setModPermissions([]);
+      setModBadgeTitle('');
+    }
 
     const nextUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
     onUpdateUsers(nextUsers);
@@ -259,10 +271,10 @@ export default function AdminDashboardModal({
     showSavedFeedback(
       effectiveRole === 'admin'
         ? `🛡️ تم منح الحساب (${updatedUser.email}) صلاحية مشرف (${cleanPerms.length} صلاحيات) وإظهار العلامة في حسابه فوراً ✓`
-        : `تم إلغاء صلاحيات الإشراف من الحساب (${updatedUser.email}) وإعادته كمستخدم عادي ✓`,
+        : `🚫 تم حذف صلاحية الأدمن نهائياً من الحساب (${updatedUser.email}) وإعادته كمستخدم عادي ✓`,
       effectiveRole === 'admin'
         ? `🛡️ Granted Moderator access (${cleanPerms.length} permissions) & account badge to ${updatedUser.email} ✓`
-        : `Revoked Moderator access from ${updatedUser.email} ✓`
+        : `🚫 Removed Admin role permanently from ${updatedUser.email} ✓`
     );
   };
 
@@ -271,20 +283,18 @@ export default function AdminDashboardModal({
     const target = users.find((u) => u.id === userId);
     if (!target || isSuperAdminUser(target)) return;
 
-    const updatedUser: UserAccount = {
-      ...target,
-      role: 'user',
-      isSuperAdmin: false,
-      adminPermissions: [],
-      adminBadgeTitle: undefined,
-      adminGrantedAt: undefined,
-    };
+    const updatedUser = revokeAdminFromUserAccount(target);
+    if (selectedModUserId === userId) {
+      setModIsAdmin(false);
+      setModPermissions([]);
+      setModBadgeTitle('');
+    }
     const nextUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
     onUpdateUsers(nextUsers);
     await saveUserToFirestore(updatedUser);
     showSavedFeedback(
-      `تم سحب صلاحية الإشراف من (${updatedUser.email}) بنجاح ✓`,
-      `Moderator role revoked from ${updatedUser.email} ✓`
+      `🚫 تم حذف صلاحية الأدمن من الحساب (${updatedUser.email}) نهائياً وإعادته كمستخدم عادي ✓`,
+      `🚫 Admin role removed permanently from ${updatedUser.email} ✓`
     );
   };
 
@@ -390,17 +400,39 @@ export default function AdminDashboardModal({
     }
   };
 
-  const handleToggleUserPro = async (userId: string) => {
+  const normalizedPlans = normalizeProPlans(settings.proPlans, settings.proPrice);
+
+  const handleSetUserProPlan = async (userId: string, planChoice: 'free' | ProPlanDurationKey) => {
     if (!hasAdminPermission(currentUser, 'manage_users')) return;
     let updatedUser: UserAccount | undefined;
+    const chosenPlan =
+      planChoice === 'free'
+        ? null
+        : normalizedPlans.find((p) => p.id === planChoice) || normalizedPlans[1] || normalizedPlans[0];
+
     const next = users.map((u) => {
       if (u.id !== userId) return u;
-      const nextPro = !u.isPro;
-      updatedUser = {
-        ...u,
-        isPro: nextPro,
-        proActivatedAt: nextPro ? new Date().toISOString() : undefined,
-      };
+      if (!chosenPlan) {
+        updatedUser = {
+          ...u,
+          isPro: false,
+          proPlanId: undefined,
+          proPlanName: '',
+          proExpiresAt: '',
+          proActivatedAt: '',
+        };
+      } else {
+        const now = new Date();
+        const expires = new Date(now.getTime() + chosenPlan.durationDays * 24 * 60 * 60 * 1000);
+        updatedUser = {
+          ...u,
+          isPro: true,
+          proPlanId: chosenPlan.id,
+          proPlanName: isAr ? chosenPlan.nameAr : chosenPlan.nameEn,
+          proActivatedAt: now.toISOString(),
+          proExpiresAt: expires.toISOString(),
+        };
+      }
       return updatedUser;
     });
     onUpdateUsers(next);
@@ -408,11 +440,34 @@ export default function AdminDashboardModal({
       await saveUserToFirestore(updatedUser);
       showSavedFeedback(
         updatedUser.isPro
-          ? `تم تفعيل باقة أدوات برو بنجاح للحساب (${updatedUser.name}) وحفظه في Firebase ⚡`
-          : `تم إزالة باقة برو من الحساب (${updatedUser.name}) وتحديث Firebase ❌`,
-        updatedUser.isPro ? 'Pro activated and saved to Firebase ⚡' : 'Pro removed and saved to Firebase ❌'
+          ? `تم تفعيل (${updatedUser.proPlanName}) للحساب (${updatedUser.name}) وحفظه في Firebase ⚡`
+          : `تم إزالة باقة برو من الحساب (${updatedUser.name}) وإعادته مستخدم عادي ❌`,
+        updatedUser.isPro
+          ? `Pro plan (${updatedUser.proPlanName}) activated for ${updatedUser.name} ⚡`
+          : 'Pro removed and saved to Firebase ❌'
       );
     }
+  };
+
+  const handleToggleUserPro = async (userId: string) => {
+    const target = users.find((u) => u.id === userId);
+    if (!target) return;
+    await handleSetUserProPlan(userId, target.isPro ? 'free' : target.proPlanId || 'month');
+  };
+
+  const handleUpdateProPlan = (planId: ProPlanDurationKey, patch: Partial<ProSubscriptionPlan>) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
+    const nextPlans = normalizedPlans.map((p) => (p.id === planId ? { ...p, ...patch } : p));
+    const monthPlan = nextPlans.find((p) => p.id === 'month');
+    onUpdateSettings({
+      ...settings,
+      proPlans: nextPlans,
+      proPrice: monthPlan ? monthPlan.price : settings.proPrice,
+    });
+    showSavedFeedback(
+      'تم حفظ وتحديث أسعار وباقات أدوات برو بنجاح ✓',
+      'Pro subscription plans & pricing updated ✓'
+    );
   };
 
   const handleDeleteUser = async (userId: string) => {
@@ -421,18 +476,27 @@ export default function AdminDashboardModal({
     if (!target || isSuperAdminUser(target)) return;
 
     const confirmMsg = isAr
-      ? `هل أنت متأكد من حذف حساب "${target.name}" (${target.email}) بشكل نهائي من قاعدة بيانات Firebase ومن الداشبورد؟`
+      ? `هل أنت متأكد من حذف حساب "${target.name}" (${target.email}) وجميع صلاحياته بشكل نهائي من قاعدة بيانات Firebase ومن الداشبورد؟`
       : `Are you sure you want to permanently delete user "${target.name}" (${target.email}) from Firebase and dashboard?`;
 
     if (!window.confirm(confirmMsg)) return;
 
+    addDeletedUserId(userId);
+    const strippedUser = revokeAdminFromUserAccount(target);
     onUpdateUsers(users.filter((u) => u.id !== userId));
+    await saveUserToFirestore({
+      ...strippedUser,
+      isPro: false,
+      proPlanName: '',
+      proExpiresAt: '',
+      proActivatedAt: '',
+    });
     const isDeletedInFs = await deleteUserFromFirestore(userId);
 
     showSavedFeedback(
       isDeletedInFs
-        ? `تم حذف الحساب "${target.name}" نهائياً من قاعدة البيانات والداشبورد ✓`
-        : `تم حذف الحساب "${target.name}" من القائمة وجاري المزامنة ✓`,
+        ? `🗑️ تم حذف الحساب "${target.name}" وإلغاء جميع صلاحياته نهائياً من قاعدة البيانات والداشبورد ✓`
+        : `🗑️ تم حذف الحساب "${target.name}" وإلغاء صلاحياته نهائياً ✓`,
       `User account "${target.name}" deleted permanently ✓`
     );
   };
@@ -500,6 +564,15 @@ export default function AdminDashboardModal({
       showSavedFeedback('البريد الإلكتروني مسجل بالفعل!', 'Email already exists!');
       return;
     }
+    const chosenPlan =
+      newUserPlanChoice === 'free'
+        ? null
+        : normalizedPlans.find((p) => p.id === newUserPlanChoice) || normalizedPlans[1];
+    const now = new Date();
+    const expires = chosenPlan
+      ? new Date(now.getTime() + chosenPlan.durationDays * 24 * 60 * 60 * 1000)
+      : null;
+
     const created: UserAccount = {
       id: 'usr_' + Date.now(),
       name: newUserName.trim(),
@@ -507,9 +580,12 @@ export default function AdminDashboardModal({
       phone: newUserPhone.trim(),
       password: newUserPassword || '123456',
       role: 'user',
-      isPro: newUserIsPro,
-      createdAt: new Date().toISOString(),
-      proActivatedAt: newUserIsPro ? new Date().toISOString() : undefined,
+      isPro: !!chosenPlan,
+      proPlanId: chosenPlan ? chosenPlan.id : undefined,
+      proPlanName: chosenPlan ? (isAr ? chosenPlan.nameAr : chosenPlan.nameEn) : undefined,
+      createdAt: now.toISOString(),
+      proActivatedAt: chosenPlan ? now.toISOString() : undefined,
+      proExpiresAt: expires ? expires.toISOString() : undefined,
     };
     onUpdateUsers([created, ...users]);
     saveUserToFirestore(created);
@@ -1018,10 +1094,32 @@ export default function AdminDashboardModal({
                   }}
                 >
                   <div style={{ fontSize: '12px', color: '#c4b5fd' }}>
-                    {isAr ? 'سعر باقة أدوات برو الحالي' : 'Current Pro Package Price'}
+                    {isAr ? 'أسعار باقات أدوات برو الحالية' : 'Current Pro Plans Pricing'}
                   </div>
-                  <div style={{ fontSize: '22px', fontWeight: 800, marginTop: '4px', color: '#a78bfa' }}>
-                    {settings.proPrice} {settings.proCurrency}
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '6px',
+                      marginTop: '6px',
+                    }}
+                  >
+                    {normalizedPlans.map((p) => (
+                      <span
+                        key={p.id}
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          padding: '2px 7px',
+                          borderRadius: '6px',
+                          background: 'rgba(15, 23, 42, 0.7)',
+                          border: '1px solid rgba(167, 139, 250, 0.35)',
+                          color: '#fde047',
+                        }}
+                      >
+                        {isAr ? p.nameAr : p.nameEn}: {p.price} {settings.proCurrency}
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -1078,16 +1176,20 @@ export default function AdminDashboardModal({
                     onChange={(e) => setNewUserPhone(e.target.value)}
                   />
                 </div>
-                <div style={{ flex: '0 0 120px' }}>
+                <div style={{ flex: '0 0 175px' }}>
                   <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
-                    {isAr ? 'الباقة' : 'Plan'}
+                    {isAr ? 'الباقة والمدة' : 'Subscription Plan'}
                   </label>
                   <select
-                    value={newUserIsPro ? 'pro' : 'free'}
-                    onChange={(e) => setNewUserIsPro(e.target.value === 'pro')}
+                    value={newUserPlanChoice}
+                    onChange={(e) => setNewUserPlanChoice(e.target.value as 'free' | ProPlanDurationKey)}
                   >
-                    <option value="pro">{isAr ? 'باقة برو 👑' : 'Pro Plan 👑'}</option>
-                    <option value="free">{isAr ? 'مجاني' : 'Free'}</option>
+                    {normalizedPlans.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        👑 {isAr ? p.nameAr : p.nameEn} ({p.price} {settings.proCurrency})
+                      </option>
+                    ))}
+                    <option value="free">{isAr ? '👤 مجاني (Free)' : '👤 Free'}</option>
                   </select>
                 </div>
                 <button
@@ -1324,21 +1426,39 @@ export default function AdminDashboardModal({
                                     </span>
                                   </div>
                                 ) : u.isPro ? (
-                                  <span
-                                    style={{
-                                      background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.22))',
-                                      border: '1px solid #f59e0b',
-                                      color: '#fef08a',
-                                      padding: '3px 10px',
-                                      borderRadius: '99px',
-                                      fontWeight: 800,
-                                      fontSize: '11px',
-                                      display: 'inline-block',
-                                      whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    ⚡ {isAr ? 'مشترك باقة برو (PRO)' : 'Active PRO User'}
-                                  </span>
+                                  (() => {
+                                    const subInfo = getUserProSubscriptionInfo(u, settings);
+                                    return (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        <span
+                                          style={{
+                                            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.22))',
+                                            border: '1px solid #f59e0b',
+                                            color: '#fef08a',
+                                            padding: '3px 10px',
+                                            borderRadius: '99px',
+                                            fontWeight: 800,
+                                            fontSize: '11px',
+                                            display: 'inline-block',
+                                            whiteSpace: 'nowrap',
+                                            width: 'fit-content',
+                                          }}
+                                        >
+                                          ⚡ {isAr ? 'مشترك باقة برو' : 'Active PRO'}
+                                          {u.proPlanName ? ` (${u.proPlanName})` : ` (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`}
+                                        </span>
+                                        {subInfo.expiresAtIso && (
+                                          <span style={{ fontSize: '10px', color: '#fde047', fontWeight: 700 }}>
+                                            ⏳ {isAr ? `متبقي ${subInfo.remainingDays} يوم و ${subInfo.remainingHours} س` : `${subInfo.remainingDays}d ${subInfo.remainingHours}h left`} •{' '}
+                                            <span style={{ color: '#94a3b8', fontWeight: 500 }}>
+                                              {isAr ? 'ينتهي:' : 'Ends:'}{' '}
+                                              {new Date(subInfo.expiresAtIso).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}
+                                            </span>
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })()
                                 ) : (
                                   <span
                                     style={{
@@ -1371,59 +1491,117 @@ export default function AdminDashboardModal({
                               <td style={{ padding: '10px 8px' }}>
                                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                                   {!isSuper && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleToggleUserPro(u.id)}
-                                      style={{
-                                        padding: '6px 10px',
-                                        borderRadius: '8px',
-                                        border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
-                                        background: u.isPro
-                                          ? 'rgba(239, 68, 68, 0.15)'
-                                          : 'linear-gradient(135deg, #10b981, #059669)',
-                                        color: u.isPro ? '#fca5a5' : '#fff',
-                                        fontWeight: 800,
-                                        cursor: 'pointer',
-                                        fontSize: '11px',
-                                        whiteSpace: 'nowrap',
-                                        boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
-                                      }}
-                                    >
-                                      {u.isPro
-                                        ? isAr
-                                          ? '❌ إزالة برو'
-                                          : '❌ Remove Pro'
-                                        : isAr
-                                          ? '⚡ تفعيل برو'
-                                          : '⚡ Activate Pro'}
-                                    </button>
+                                    <>
+                                      <select
+                                        aria-label={isAr ? 'اختر باقة المستخدم' : 'Select user plan'}
+                                        value={u.isPro ? u.proPlanId || 'month' : 'free'}
+                                        onChange={(e) =>
+                                          handleSetUserProPlan(
+                                            u.id,
+                                            e.target.value as 'free' | ProPlanDurationKey
+                                          )
+                                        }
+                                        style={{
+                                          width: 'auto',
+                                          padding: '5px 8px',
+                                          borderRadius: '8px',
+                                          background: '#10101a',
+                                          border: u.isPro ? '1px solid #f59e0b' : '1px solid #334155',
+                                          color: u.isPro ? '#fde047' : '#cbd5e1',
+                                          fontSize: '11px',
+                                          fontWeight: 700,
+                                        }}
+                                      >
+                                        <option value="free">{isAr ? '👤 مجاني' : '👤 Free'}</option>
+                                        {normalizedPlans.map((p) => (
+                                          <option key={p.id} value={p.id}>
+                                            👑 {isAr ? p.nameAr : p.nameEn} ({p.price} {settings.proCurrency})
+                                          </option>
+                                        ))}
+                                      </select>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleUserPro(u.id)}
+                                        style={{
+                                          padding: '6px 10px',
+                                          borderRadius: '8px',
+                                          border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
+                                          background: u.isPro
+                                            ? 'rgba(239, 68, 68, 0.15)'
+                                            : 'linear-gradient(135deg, #10b981, #059669)',
+                                          color: u.isPro ? '#fca5a5' : '#fff',
+                                          fontWeight: 800,
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          whiteSpace: 'nowrap',
+                                          boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
+                                        }}
+                                      >
+                                        {u.isPro
+                                          ? isAr
+                                            ? '❌ إزالة برو'
+                                            : '❌ Remove Pro'
+                                          : isAr
+                                            ? '⚡ تفعيل برو'
+                                            : '⚡ Activate Pro'}
+                                      </button>
+                                    </>
                                   )}
 
                                   {!isSuper && hasAdminPermission(currentUser, 'manage_admins') && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleSelectUserForPermissions(u.id)}
-                                      style={{
-                                        padding: '6px 10px',
-                                        borderRadius: '8px',
-                                        border: '1px solid #7c5cff',
-                                        background: isAdminRole
-                                          ? 'rgba(124, 92, 255, 0.25)'
-                                          : 'rgba(124, 92, 255, 0.14)',
-                                        color: '#e0d4ff',
-                                        fontWeight: 800,
-                                        cursor: 'pointer',
-                                        fontSize: '11px',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                      title={
-                                        isAr
-                                          ? 'منح أو تعديل صلاحيات المشرف في الداشبورد لهذا الحساب'
-                                          : 'Grant or edit dashboard moderator permissions for this user'
-                                      }
-                                    >
-                                      🛡️ {isAr ? 'صلاحيات المشرف' : 'Permissions'}
-                                    </button>
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectUserForPermissions(u.id)}
+                                        style={{
+                                          padding: '6px 10px',
+                                          borderRadius: '8px',
+                                          border: '1px solid #7c5cff',
+                                          background: isAdminRole
+                                            ? 'rgba(124, 92, 255, 0.25)'
+                                            : 'rgba(124, 92, 255, 0.14)',
+                                          color: '#e0d4ff',
+                                          fontWeight: 800,
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                        title={
+                                          isAr
+                                            ? 'منح أو تعديل صلاحيات المشرف في الداشبورد لهذا الحساب'
+                                            : 'Grant or edit dashboard moderator permissions for this user'
+                                        }
+                                      >
+                                        🛡️ {isAr ? 'صلاحيات المشرف' : 'Permissions'}
+                                      </button>
+
+                                      {isAdminRole && (
+                                        <button
+                                          type="button"
+                                          id={`revokeAdminBtn_${u.id}`}
+                                          onClick={() => handleQuickRevokeModerator(u.id)}
+                                          style={{
+                                            padding: '6px 10px',
+                                            borderRadius: '8px',
+                                            border: '1px solid #f97316',
+                                            background: 'rgba(249, 115, 22, 0.2)',
+                                            color: '#fed7aa',
+                                            fontWeight: 800,
+                                            cursor: 'pointer',
+                                            fontSize: '11px',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                          title={
+                                            isAr
+                                              ? 'حذف وسحب صلاحية الأدمن من هذا الحساب وإعادته مستخدم عادي'
+                                              : 'Remove Admin role from this user account'
+                                          }
+                                        >
+                                          🚫 {isAr ? 'حذف الأدمن' : 'Remove Admin'}
+                                        </button>
+                                      )}
+                                    </>
                                   )}
 
                                   {!isSuper && (
@@ -2343,7 +2521,225 @@ export default function AdminDashboardModal({
           {/* TAB 2: PRO PACKAGE PRICING & FORMATS */}
           {activeTab === 'pro' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-              {/* Pricing & Package Settings */}
+              {/* Multi-Tier Subscription Plans Configuration (أسبوع / شهر / 3 شهور / سنة) */}
+              <div
+                style={{
+                  background: 'linear-gradient(180deg, #161426 0%, #12121d 100%)',
+                  border: '1px solid rgba(245, 158, 11, 0.45)',
+                  borderRadius: '14px',
+                  padding: '18px',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#fde047' }}>
+                      {isAr
+                        ? '💳 تحديد باقات وأسعار اشتراك أدوات برو (أسبوع / شهر / 3 شهور / سنة)'
+                        : '💳 Configure Pro Subscription Plans & Pricing (Week / Month / 3 Months / Year)'}
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#a0a0b8' }}>
+                      {isAr
+                        ? 'حدد المبلغ الخاص بكل باقة (أسبوع، شهر، 3 شهور، سنة) وتحكم في تفعيل أو إخفاء أي باقة. يتم حفظ الأسعار فوراً وظهورها للمستخدمين في نافذة الاشتراك.'
+                        : 'Set the custom price for each duration plan (1 Week, 1 Month, 3 Months, 1 Year) and toggle plan visibility.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateSettings({
+                        ...settings,
+                        proPlans: DEFAULT_PRO_PLANS.map((p) => ({ ...p })),
+                        proPrice: '15',
+                      });
+                      showSavedFeedback(
+                        'تمت استعادة الأسعار الافتراضية للباقات الأربع ✓',
+                        'Default 4-tier pricing restored ✓'
+                      );
+                    }}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #3f3f5a',
+                      background: '#1b1b2c',
+                      color: '#cbd5e1',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔄 {isAr ? 'استعادة الأسعار الافتراضية' : 'Reset Default Prices'}
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: '12px',
+                  }}
+                >
+                  {normalizedPlans.map((plan) => (
+                    <div
+                      key={plan.id}
+                      style={{
+                        background: plan.enabled ? '#0f0f1a' : 'rgba(15, 15, 26, 0.5)',
+                        border: plan.enabled
+                          ? '1px solid rgba(245, 158, 11, 0.45)'
+                          : '1px solid #252538',
+                        borderRadius: '12px',
+                        padding: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                        opacity: plan.enabled ? 1 : 0.65,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '14px', color: '#fde047' }}>
+                          👑 {isAr ? plan.nameAr : plan.nameEn}
+                        </div>
+                        <label
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            fontSize: '11px',
+                            color: plan.enabled ? '#6ee7b7' : '#94a3b8',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={plan.enabled}
+                            onChange={(e) =>
+                              handleUpdateProPlan(plan.id, { enabled: e.target.checked })
+                            }
+                            style={{ width: '14px', height: '14px', accentColor: '#10b981' }}
+                          />
+                          <span>{plan.enabled ? (isAr ? 'مفعلة' : 'Active') : isAr ? 'مخفية' : 'Hidden'}</span>
+                        </label>
+                      </div>
+
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                        ⏱️ {isAr ? plan.periodAr : plan.periodEn}
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor={`adminProPlanPrice_${plan.id}`}
+                          style={{
+                            display: 'block',
+                            fontSize: '11px',
+                            color: '#c4b5fd',
+                            fontWeight: 700,
+                            marginBottom: '4px',
+                          }}
+                        >
+                          {isAr
+                            ? `💰 سعر الباقة (${settings.proCurrency}):`
+                            : `💰 Plan Price (${settings.proCurrency}):`}
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <input
+                            id={`adminProPlanPrice_${plan.id}`}
+                            type="text"
+                            value={plan.price}
+                            onChange={(e) =>
+                              handleUpdateProPlan(plan.id, { price: e.target.value })
+                            }
+                            placeholder="15"
+                            style={{
+                              fontWeight: 800,
+                              fontSize: '15px',
+                              color: '#fff',
+                              background: '#161625',
+                              border: '1px solid #7c5cff',
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontWeight: 800,
+                              fontSize: '14px',
+                              color: '#fde047',
+                              padding: '0 6px',
+                            }}
+                          >
+                            {settings.proCurrency}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label
+                          style={{
+                            display: 'block',
+                            fontSize: '11px',
+                            color: '#9494aa',
+                            marginBottom: '4px',
+                          }}
+                        >
+                          {isAr ? 'اسم الباقة المعروض:' : 'Display Name:'}
+                        </label>
+                        <input
+                          type="text"
+                          value={isAr ? plan.nameAr : plan.nameEn}
+                          onChange={(e) =>
+                            handleUpdateProPlan(
+                              plan.id,
+                              isAr ? { nameAr: e.target.value } : { nameEn: e.target.value }
+                            )
+                          }
+                          style={{ fontSize: '12px' }}
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          style={{
+                            display: 'block',
+                            fontSize: '11px',
+                            color: '#9494aa',
+                            marginBottom: '4px',
+                          }}
+                        >
+                          {isAr ? 'الشارة الترويجية (اختياري):' : 'Promotional Badge:'}
+                        </label>
+                        <input
+                          type="text"
+                          value={(isAr ? plan.badgeAr : plan.badgeEn) || ''}
+                          onChange={(e) =>
+                            handleUpdateProPlan(
+                              plan.id,
+                              isAr ? { badgeAr: e.target.value } : { badgeEn: e.target.value }
+                            )
+                          }
+                          placeholder={isAr ? 'مثال: الأكثر طلباً 🔥' : 'e.g. Best Value 👑'}
+                          style={{ fontSize: '12px' }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* General Package Title, Currency & Description Settings */}
               <div
                 style={{
                   background: '#14141f',
@@ -2354,8 +2750,8 @@ export default function AdminDashboardModal({
               >
                 <h3 style={{ margin: '0 0 12px', fontSize: '15px', color: '#fde047' }}>
                   {isAr
-                    ? '👑 إعدادات وسعر باقة أدوات برو (Pro Tools)'
-                    : '👑 Pro Tools Package & Pricing Configuration'}
+                    ? '👑 الإعدادات العامة لباقة أدوات برو والعملة'
+                    : '👑 General Pro Package & Currency Settings'}
                 </h3>
                 <div
                   style={{
@@ -2366,7 +2762,7 @@ export default function AdminDashboardModal({
                 >
                   <div>
                     <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
-                      {isAr ? 'اسم الباقة (بالعربية)' : 'Package Name (Arabic)'}
+                      {isAr ? 'اسم الباقة الرئيسي (بالعربية)' : 'Package Name (Arabic)'}
                     </label>
                     <input
                       type="text"
@@ -2379,7 +2775,7 @@ export default function AdminDashboardModal({
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
-                      {isAr ? 'اسم الباقة (بالإنجليزية)' : 'Package Name (English)'}
+                      {isAr ? 'اسم الباقة الرئيسي (بالإنجليزية)' : 'Package Name (English)'}
                     </label>
                     <input
                       type="text"
@@ -2392,20 +2788,7 @@ export default function AdminDashboardModal({
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
-                      {isAr ? 'سعر الاشتراك (المبلغ الشرائي)' : 'Subscription Price Amount'}
-                    </label>
-                    <input
-                      type="text"
-                      value={settings.proPrice}
-                      onChange={(e) => {
-                        onUpdateSettings({ ...settings, proPrice: e.target.value });
-                        showSavedFeedback('تم تحديث سعر باقة برو', 'Price updated');
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
-                      {isAr ? 'العملة (مثل: $ أو ج.م أو ر.س)' : 'Currency (e.g. $, EGP, SAR)'}
+                      {isAr ? 'العملة المعتمدة لجميع الباقات (مثل: $ أو ج.م أو ر.س)' : 'Currency (e.g. $, EGP, SAR)'}
                     </label>
                     <input
                       type="text"

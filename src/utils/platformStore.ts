@@ -93,6 +93,95 @@ export const PURGED_LEGACY_ADMIN_IDS = [
   'usr_admin_old',
 ];
 
+export type ProPlanDurationKey = 'week' | 'month' | 'three_months' | 'year';
+
+export interface ProSubscriptionPlan {
+  id: ProPlanDurationKey;
+  nameAr: string;
+  nameEn: string;
+  periodAr: string;
+  periodEn: string;
+  durationDays: number;
+  price: string;
+  badgeAr?: string;
+  badgeEn?: string;
+  enabled: boolean;
+}
+
+export const DEFAULT_PRO_PLANS: ProSubscriptionPlan[] = [
+  {
+    id: 'week',
+    nameAr: 'باقة أسبوع',
+    nameEn: '1 Week Plan',
+    periodAr: 'لمدة أسبوع (7 أيام)',
+    periodEn: '1 Week (7 Days)',
+    durationDays: 7,
+    price: '5',
+    badgeAr: 'سريعة ⚡',
+    badgeEn: 'Starter ⚡',
+    enabled: true,
+  },
+  {
+    id: 'month',
+    nameAr: 'باقة شهر',
+    nameEn: '1 Month Plan',
+    periodAr: 'لمدة شهر (30 يوم)',
+    periodEn: '1 Month (30 Days)',
+    durationDays: 30,
+    price: '15',
+    badgeAr: 'الأكثر طلباً 🔥',
+    badgeEn: 'Most Popular 🔥',
+    enabled: true,
+  },
+  {
+    id: 'three_months',
+    nameAr: 'باقة 3 شهور',
+    nameEn: '3 Months Plan',
+    periodAr: 'لمدة 3 شهور (90 يوم)',
+    periodEn: '3 Months (90 Days)',
+    durationDays: 90,
+    price: '35',
+    badgeAr: 'توفير مميز ⭐',
+    badgeEn: 'Great Value ⭐',
+    enabled: true,
+  },
+  {
+    id: 'year',
+    nameAr: 'باقة سنة',
+    nameEn: '1 Year Plan',
+    periodAr: 'لمدة سنة كاملة (365 يوم)',
+    periodEn: '1 Full Year (365 Days)',
+    durationDays: 365,
+    price: '100',
+    badgeAr: 'أفضل قيمة 👑',
+    badgeEn: 'Best Value 👑',
+    enabled: true,
+  },
+];
+
+export function normalizeProPlans(
+  plans?: ProSubscriptionPlan[] | null,
+  fallbackMonthPrice?: string
+): ProSubscriptionPlan[] {
+  if (!Array.isArray(plans) || plans.length === 0) {
+    return DEFAULT_PRO_PLANS.map((p) =>
+      p.id === 'month' && fallbackMonthPrice ? { ...p, price: fallbackMonthPrice } : { ...p }
+    );
+  }
+  return DEFAULT_PRO_PLANS.map((def) => {
+    const found = plans.find((p) => p && p.id === def.id);
+    if (!found) {
+      return def.id === 'month' && fallbackMonthPrice ? { ...def, price: fallbackMonthPrice } : { ...def };
+    }
+    return {
+      ...def,
+      ...found,
+      price: String(found.price ?? def.price),
+      enabled: typeof found.enabled === 'boolean' ? found.enabled : true,
+    };
+  });
+}
+
 export interface UserAccount {
   id: string;
   name: string;
@@ -105,6 +194,9 @@ export interface UserAccount {
   adminBadgeTitle?: string;
   adminGrantedAt?: string;
   isPro: boolean;
+  proPlanId?: ProPlanDurationKey;
+  proPlanName?: string;
+  proExpiresAt?: string;
   createdAt: string;
   proActivatedAt?: string;
 }
@@ -150,6 +242,7 @@ export interface PlatformSettings {
   proCurrency: string;
   proPeriodAr: string;
   proPeriodEn: string;
+  proPlans: ProSubscriptionPlan[];
   proDescriptionAr: string;
   proDescriptionEn: string;
   proFormats: string[]; // array of format keys that require Pro subscription
@@ -191,6 +284,7 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   proCurrency: '$',
   proPeriodAr: 'شهرياً / اشتراك كامل',
   proPeriodEn: 'Monthly / Full Access',
+  proPlans: DEFAULT_PRO_PLANS.map((p) => ({ ...p })),
   proDescriptionAr:
     'احصل على وصول كامل لتحويل وتصدير جميع الصيغ الاحترافية (SVGA, VAP, YYEVA, PAG, Lottie, MP4) مع ضغط الملفات وتعديل الصوت والصور بدون قيود.',
   proDescriptionEn:
@@ -239,8 +333,11 @@ export const INITIAL_USERS: UserAccount[] = [
     phone: '',
     role: 'user',
     isPro: true,
+    proPlanId: 'month',
+    proPlanName: 'باقة شهر',
     createdAt: '2026-10-24T09:15:00.000Z',
     proActivatedAt: '2026-10-24T09:20:00.000Z',
+    proExpiresAt: '2026-11-23T09:20:00.000Z',
   },
 ];
 
@@ -315,17 +412,16 @@ export function isSuperAdminUser(user: UserAccount | null | undefined): boolean 
 
 /**
  * Pure function: Checks if a user has access to the Admin Dashboard (either Super Admin or a delegated Admin with >=1 permission).
+ * Strictly requires role === 'admin' so revoked users never retain access.
  */
 export function canAccessAdminDashboard(user: UserAccount | null | undefined): boolean {
   if (!user || isPurgedLegacyAdmin(user)) return false;
   if (isSuperAdminUser(user)) return true;
-  if (user.role === 'admin') {
-    if (Array.isArray(user.adminPermissions)) {
-      return user.adminPermissions.length > 0;
-    }
-    return true;
+  if (user.role !== 'admin') return false;
+  if (Array.isArray(user.adminPermissions)) {
+    return user.adminPermissions.length > 0;
   }
-  return Array.isArray(user.adminPermissions) && user.adminPermissions.length > 0;
+  return true;
 }
 
 /**
@@ -350,10 +446,204 @@ export function hasAdminPermission(
 export function getEffectiveAdminPermissions(user: UserAccount | null | undefined): AdminPermissionKey[] {
   if (!user || isPurgedLegacyAdmin(user)) return [];
   if (isSuperAdminUser(user)) return [...ALL_ADMIN_PERMISSION_KEYS];
-  if (!canAccessAdminDashboard(user)) return [];
+  if (user.role !== 'admin' || !canAccessAdminDashboard(user)) return [];
   return Array.isArray(user.adminPermissions)
     ? user.adminPermissions.filter((k): k is AdminPermissionKey => ALL_ADMIN_PERMISSION_KEYS.includes(k))
     : [];
+}
+
+/**
+ * Pure function: Completely strips all Admin / Moderator roles, permissions, and badges from a user account
+ * so that when Admin is removed in the dashboard, the account cleanly reverts to a normal user in both local state and Firestore.
+ */
+export function revokeAdminFromUserAccount(user: UserAccount, nowMs: number = Date.now()): UserAccount {
+  if (isSuperAdminUser(user)) return user;
+  // Keep Pro status ONLY if the user has an active paid subscription with a future expiration date
+  const hasValidPaidSubscription =
+    Boolean(user.proExpiresAt) && new Date(user.proExpiresAt!).getTime() > nowMs;
+  return {
+    ...user,
+    role: 'user',
+    isSuperAdmin: false,
+    adminPermissions: [],
+    adminBadgeTitle: '',
+    adminGrantedAt: '',
+    isPro: hasValidPaidSubscription ? user.isPro : false,
+  };
+}
+
+export interface ProSubscriptionInfo {
+  isActive: boolean;
+  isExpired: boolean;
+  isPermanentAdmin: boolean;
+  planId?: ProPlanDurationKey;
+  planNameAr: string;
+  planNameEn: string;
+  durationDays: number;
+  durationLabelAr: string;
+  durationLabelEn: string;
+  activatedAtIso: string | null;
+  expiresAtIso: string | null;
+  remainingDays: number;
+  remainingHours: number;
+  remainingMinutes: number;
+  totalRemainingMs: number;
+  progressPercent: number;
+}
+
+/**
+ * Pure function: Computes full subscription timing, duration, start date, expiration date, and remaining time for a user.
+ */
+export function getUserProSubscriptionInfo(
+  user: UserAccount | null | undefined,
+  settings?: PlatformSettings,
+  nowMs: number = Date.now()
+): ProSubscriptionInfo {
+  const emptyInfo: ProSubscriptionInfo = {
+    isActive: false,
+    isExpired: false,
+    isPermanentAdmin: false,
+    planId: undefined,
+    planNameAr: 'مستخدم عادي (مجاني)',
+    planNameEn: 'Free User',
+    durationDays: 0,
+    durationLabelAr: 'غير مشترك',
+    durationLabelEn: 'Not Subscribed',
+    activatedAtIso: null,
+    expiresAtIso: null,
+    remainingDays: 0,
+    remainingHours: 0,
+    remainingMinutes: 0,
+    totalRemainingMs: 0,
+    progressPercent: 0,
+  };
+
+  if (!user || isPurgedLegacyAdmin(user)) return emptyInfo;
+
+  if (canAccessAdminDashboard(user)) {
+    return {
+      ...emptyInfo,
+      isActive: true,
+      isPermanentAdmin: true,
+      planNameAr: isSuperAdminUser(user) ? 'صلاحية المدير العام (مفتوحة دائماً)' : 'صلاحية مشرف الداشبورد (مفعلة)',
+      planNameEn: isSuperAdminUser(user) ? 'Super Admin (Unlimited)' : 'Moderator Access (Active)',
+      durationLabelAr: 'دائم طوال فترة الإشراف',
+      durationLabelEn: 'Unlimited while Admin',
+      activatedAtIso: user.adminGrantedAt || user.proActivatedAt || user.createdAt || null,
+      progressPercent: 100,
+    };
+  }
+
+  if (!user.isPro) {
+    return emptyInfo;
+  }
+
+  const plans = normalizeProPlans(settings?.proPlans, settings?.proPrice);
+  const matchedPlan =
+    plans.find((p) => p.id === user.proPlanId) ||
+    plans.find((p) => p.nameAr === user.proPlanName || p.nameEn === user.proPlanName) ||
+    plans.find((p) => p.id === 'month') ||
+    DEFAULT_PRO_PLANS[1];
+
+  const durationDays = matchedPlan?.durationDays || 30;
+  const startIso = user.proActivatedAt || user.createdAt || new Date(nowMs).toISOString();
+  const startMs = new Date(startIso).getTime();
+  const validStartMs = Number.isFinite(startMs) ? startMs : nowMs;
+
+  let expiresMs: number;
+  let expiresIso: string;
+  if (user.proExpiresAt && Number.isFinite(new Date(user.proExpiresAt).getTime())) {
+    expiresMs = new Date(user.proExpiresAt).getTime();
+    expiresIso = user.proExpiresAt;
+  } else {
+    expiresMs = validStartMs + durationDays * 24 * 60 * 60 * 1000;
+    expiresIso = new Date(expiresMs).toISOString();
+  }
+
+  const totalDurationMs = Math.max(1, expiresMs - validStartMs);
+  const remainingMs = expiresMs - nowMs;
+
+  if (remainingMs <= 0) {
+    return {
+      isActive: false,
+      isExpired: true,
+      isPermanentAdmin: false,
+      planId: matchedPlan.id,
+      planNameAr: user.proPlanName || matchedPlan.nameAr,
+      planNameEn: matchedPlan.nameEn,
+      durationDays,
+      durationLabelAr: matchedPlan.periodAr,
+      durationLabelEn: matchedPlan.periodEn,
+      activatedAtIso: new Date(validStartMs).toISOString(),
+      expiresAtIso: expiresIso,
+      remainingDays: 0,
+      remainingHours: 0,
+      remainingMinutes: 0,
+      totalRemainingMs: 0,
+      progressPercent: 0,
+    };
+  }
+
+  const remainingDays = Math.floor(remainingMs / (1000 * 60 * 60 * 24));
+  const remainingHours = Math.floor((remainingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const remainingMinutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+  const progressPercent = Math.min(100, Math.max(2, Math.round((remainingMs / totalDurationMs) * 100)));
+
+  return {
+    isActive: true,
+    isExpired: false,
+    isPermanentAdmin: false,
+    planId: matchedPlan.id,
+    planNameAr: user.proPlanName || matchedPlan.nameAr,
+    planNameEn: matchedPlan.nameEn,
+    durationDays,
+    durationLabelAr: matchedPlan.periodAr,
+    durationLabelEn: matchedPlan.periodEn,
+    activatedAtIso: new Date(validStartMs).toISOString(),
+    expiresAtIso: expiresIso,
+    remainingDays,
+    remainingHours,
+    remainingMinutes,
+    totalRemainingMs: remainingMs,
+    progressPercent,
+  };
+}
+
+/**
+ * Pure function: Checks all users and automatically disconnects Pro (`isPro: false`) for any user
+ * whose subscription duration (`proExpiresAt`) has ended, returning them to a regular free user.
+ */
+export function checkAndExpireUsersPro(
+  users: UserAccount[],
+  settings?: PlatformSettings,
+  nowMs: number = Date.now()
+): { updatedUsers: UserAccount[]; expiredUsers: UserAccount[] } {
+  const expiredUsers: UserAccount[] = [];
+  const updatedUsers = (Array.isArray(users) ? users : []).map((u) => {
+    if (!u || isSuperAdminUser(u) || canAccessAdminDashboard(u) || !u.isPro) {
+      return u;
+    }
+    // Only auto-expire if the user has an explicit proExpiresAt or proActivatedAt timestamp that has passed
+    if (!u.proExpiresAt && !u.proActivatedAt) {
+      return u;
+    }
+    const subInfo = getUserProSubscriptionInfo(u, settings, nowMs);
+    if (subInfo.isExpired) {
+      const reverted: UserAccount = {
+        ...u,
+        isPro: false,
+        proPlanId: undefined,
+        proPlanName: '',
+        proActivatedAt: '',
+        proExpiresAt: '',
+      };
+      expiredUsers.push(reverted);
+      return reverted;
+    }
+    return u;
+  });
+
+  return { updatedUsers, expiredUsers };
 }
 
 /**
@@ -478,7 +768,8 @@ export function checkConversionPermission(
   settings: PlatformSettings,
   targetFormat: string,
   sourceFileName?: string,
-  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual'
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual',
+  nowMs: number = Date.now()
 ): {
   allowed: boolean;
   effectiveFormatKey: string;
@@ -491,14 +782,22 @@ export function checkConversionPermission(
     settings.proFormats.includes(effectiveFormatKey) ||
     (targetFormat === 'orig' && settings.proFormats.includes('orig'));
 
-  // Determine effective user privileges taking adminPreviewRole into account
+  // Determine effective user privileges taking adminPreviewRole and subscription expiration into account
   let hasProAccess = false;
   if (adminPreviewRole === 'free_user') {
     hasProAccess = false;
   } else if (adminPreviewRole === 'pro_user') {
     hasProAccess = true;
   } else if (user && !isPurgedLegacyAdmin(user)) {
-    hasProAccess = canAccessAdminDashboard(user) || user.isPro === true;
+    if (canAccessAdminDashboard(user)) {
+      hasProAccess = true;
+    } else if (user.isPro === true) {
+      if (user.proExpiresAt) {
+        hasProAccess = new Date(user.proExpiresAt).getTime() > nowMs;
+      } else {
+        hasProAccess = true;
+      }
+    }
   }
 
   if (!isFormatPro || hasProAccess) {
@@ -555,17 +854,16 @@ export function addDeletedUserId(userId: string): void {
 }
 
 /**
- * Sanitizes and ensures the Super Admin account is always present while all legacy admin accounts are purged.
+ * Sanitizes and ensures the Super Admin account is always present while all legacy admin accounts are purged
+ * and revoked admin accounts do not retain stale admin permissions or badges.
  */
 export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] = []): UserAccount[] {
   const filtered = (Array.isArray(rawUsers) ? rawUsers : []).filter(
     (u) => u && u.id && u.email && !isPurgedLegacyAdmin(u) && !deletedIds.includes(u.id)
   );
   const hasSuperAdmin = filtered.some((u) => isSuperAdminUser(u));
-  if (!hasSuperAdmin) {
-    return [{ ...INITIAL_SUPER_ADMIN_ACCOUNT }, ...filtered];
-  }
-  return filtered.map((u) => {
+  const baseList = hasSuperAdmin ? filtered : [{ ...INITIAL_SUPER_ADMIN_ACCOUNT }, ...filtered];
+  return baseList.map((u) => {
     if (isSuperAdminUser(u)) {
       return {
         ...u,
@@ -573,6 +871,16 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         isSuperAdmin: true,
         adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
         isPro: true,
+      };
+    }
+    if (u.role !== 'admin') {
+      return {
+        ...u,
+        role: 'user',
+        isSuperAdmin: false,
+        adminPermissions: [],
+        adminBadgeTitle: '',
+        adminGrantedAt: '',
       };
     }
     return u;
@@ -635,8 +943,14 @@ export function loadPlatformState(): PlatformState {
         log && !PURGED_LEGACY_ADMIN_EMAILS.includes((log.userEmail || '').trim().toLowerCase())
     );
 
+    const mergedSettings: PlatformSettings = {
+      ...DEFAULT_PLATFORM_SETTINGS,
+      ...(parsed.settings || {}),
+    };
+    mergedSettings.proPlans = normalizeProPlans(mergedSettings.proPlans, mergedSettings.proPrice);
+
     return {
-      settings: { ...DEFAULT_PLATFORM_SETTINGS, ...(parsed.settings || {}) },
+      settings: mergedSettings,
       users: cleanedUsers,
       currentUserId: validCurrentUserId,
       sessionToken: validSessionToken,

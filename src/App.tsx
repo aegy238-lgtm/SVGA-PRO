@@ -36,6 +36,9 @@ import {
   isSuperAdminUser,
   sanitizeUsersList,
   getEffectiveAdminPermissions,
+  normalizeProPlans,
+  checkAndExpireUsersPro,
+  getUserProSubscriptionInfo,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -123,25 +126,33 @@ export default function App() {
     // 1. Settings Real-Time Listener (Logo, Site Name, Pro Pricing, Formats, WhatsApp)
     const unsubSettings = subscribeToFirestoreSettings((liveSettings) => {
       if (!liveSettings || !liveSettings.siteName) return;
-      updatePlatformState((prev) => ({
-        ...prev,
-        settings: {
+      updatePlatformState((prev) => {
+        const merged = {
           ...prev.settings,
           ...liveSettings,
-        },
-      }));
+        };
+        merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+        return {
+          ...prev,
+          settings: merged,
+        };
+      });
     });
 
     // Initial fetch of settings from Firestore
     fetchFirestoreSettings().then((remoteSettings) => {
       if (remoteSettings && remoteSettings.siteName) {
-        updatePlatformState((prev) => ({
-          ...prev,
-          settings: {
+        updatePlatformState((prev) => {
+          const merged = {
             ...prev.settings,
             ...remoteSettings,
-          },
-        }));
+          };
+          merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+          return {
+            ...prev,
+            settings: merged,
+          };
+        });
       } else {
         // Bootstrap initial platform settings to Firestore
         syncSettingsToFirestore(stateRef.current.settings);
@@ -240,7 +251,31 @@ export default function App() {
     };
   }, []);
 
+  // Automatic Pro Subscription Duration & Expiration Enforcer:
+  // Checks from activation date until expiration date; when a user's Pro plan ends, disconnects Pro and reverts to regular user.
+  useEffect(() => {
+    const enforceProExpirations = () => {
+      const current = stateRef.current;
+      const { updatedUsers, expiredUsers } = checkAndExpireUsersPro(
+        current.users,
+        current.settings,
+        Date.now()
+      );
+      if (expiredUsers.length > 0) {
+        updatePlatformState((prev) => ({
+          ...prev,
+          users: updatedUsers,
+        }));
+        expiredUsers.forEach((expiredAcc) => {
+          saveUserToFirestore(expiredAcc);
+        });
+      }
+    };
 
+    enforceProExpirations();
+    const timer = window.setInterval(enforceProExpirations, 15000);
+    return () => window.clearInterval(timer);
+  }, [platformState.users.length]);
 
   const isSecurityEnforced =
     typeof window !== 'undefined' && !window.location.search.includes('test=1');
@@ -769,6 +804,32 @@ export default function App() {
             </a>
           )}
 
+          {/* Crown + Subscribe Button right next to WhatsApp */}
+          <button
+            type="button"
+            id="proSubscribeNavBtn"
+            onClick={() => setProModalOpen(true)}
+            title={isAr ? 'عرض باقات الاشتراك في أدوات برو' : 'View Pro Subscription Packages'}
+            style={{
+              padding: '4px 11px',
+              borderRadius: '99px',
+              border: '1px solid rgba(245, 158, 11, 0.75)',
+              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.24), rgba(217, 119, 6, 0.18))',
+              color: '#fde047',
+              fontSize: '11.5px',
+              fontWeight: 800,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              boxShadow: '0 2px 10px rgba(245, 158, 11, 0.22)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span>👑</span>
+            <span>{isAr ? 'اشتراك' : 'Subscribe'}</span>
+          </button>
+
           {/* Language Toggle Button (AR / EN) */}
           <button
             type="button"
@@ -890,38 +951,41 @@ export default function App() {
                   ? 'تسجيل الدخول'
                   : 'Sign In'}
             </span>
-            {currentUser && (
-              <span
-                id="navbarUserRoleBadge"
-                style={{
-                  fontSize: '9px',
-                  padding: '1px 6px',
-                  borderRadius: '99px',
-                  background: isSuperAdmin
-                    ? 'linear-gradient(135deg, #7c5cff, #6366f1)'
+            {currentUser && (() => {
+              const navSubInfo = getUserProSubscriptionInfo(currentUser, settings);
+              return (
+                <span
+                  id="navbarUserRoleBadge"
+                  style={{
+                    fontSize: '9px',
+                    padding: '1px 6px',
+                    borderRadius: '99px',
+                    background: isSuperAdmin
+                      ? 'linear-gradient(135deg, #7c5cff, #6366f1)'
+                      : hasAdminAccess
+                        ? 'linear-gradient(135deg, #10b981, #059669)'
+                        : effectiveIsPro
+                          ? '#f59e0b'
+                          : '#2d2d3f',
+                    color: hasAdminAccess || effectiveIsPro ? '#fff' : '#cbd5e1',
+                    fontWeight: 800,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '3px',
+                  }}
+                >
+                  {isSuperAdmin
+                    ? isAr
+                      ? '👑 المدير العام'
+                      : '👑 Super Admin'
                     : hasAdminAccess
-                      ? 'linear-gradient(135deg, #10b981, #059669)'
+                      ? `🛡️ ${currentUser.adminBadgeTitle || (isAr ? 'مشرف معتمد' : 'Moderator')} (${getEffectiveAdminPermissions(currentUser).length})`
                       : effectiveIsPro
-                        ? '#f59e0b'
-                        : '#2d2d3f',
-                  color: hasAdminAccess || effectiveIsPro ? '#fff' : '#cbd5e1',
-                  fontWeight: 800,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '3px',
-                }}
-              >
-                {isSuperAdmin
-                  ? isAr
-                    ? '👑 المدير العام'
-                    : '👑 Super Admin'
-                  : hasAdminAccess
-                    ? `🛡️ ${currentUser.adminBadgeTitle || (isAr ? 'مشرف معتمد' : 'Moderator')} (${getEffectiveAdminPermissions(currentUser).length})`
-                    : effectiveIsPro
-                      ? t.navProBadge
-                      : t.navFreeBadge}
-              </span>
-            )}
+                        ? `${t.navProBadge}${navSubInfo.isActive && !navSubInfo.isPermanentAdmin ? (isAr ? ` • ${navSubInfo.remainingDays} يوم` : ` • ${navSubInfo.remainingDays}d`) : ''}`
+                        : t.navFreeBadge}
+                </span>
+              );
+            })()}
           </button>
         </div>
       </nav>
@@ -1678,6 +1742,7 @@ export default function App() {
           }))
         }
         onOpenAdminDashboard={() => setAdminOpen(true)}
+        onOpenProModal={() => setProModalOpen(true)}
       />
 
       {/* Pro Subscription Gate Modal */}
