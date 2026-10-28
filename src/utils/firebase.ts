@@ -14,6 +14,9 @@ import {
 import { getAuth, Auth } from 'firebase/auth';
 import {
   addDeletedUserId,
+  isPurgedLegacyAdmin,
+  PURGED_LEGACY_ADMIN_IDS,
+  INITIAL_SUPER_ADMIN_ACCOUNT,
   type PlatformSettings,
   type UserAccount,
   type BroadcastNotification,
@@ -52,12 +55,6 @@ let currentStatus: FirebaseConnectionStatus = {
   projectId: firebaseConfig.projectId,
   message: 'جاري تهيئة الاتصال...',
 };
-
-if (typeof window !== 'undefined') {
-  (window as any).__firebaseConfig = firebaseConfig;
-  (window as any).__testFirebase = testFirebaseConnection;
-  (window as any).__currentFirebaseStatus = () => currentStatus;
-}
 
 const listeners = new Set<(status: FirebaseConnectionStatus) => void>();
 
@@ -275,9 +272,53 @@ export function subscribeToFirestoreSettings(callback: (settings: PlatformSettin
 }
 
 /**
+ * Permanently deletes all legacy admin accounts from Firestore and ensures the new Super Admin account exists.
+ */
+export async function purgeLegacyAdminsFromFirestore(): Promise<void> {
+  try {
+    const db = getFirebaseDb();
+    for (const legacyId of PURGED_LEGACY_ADMIN_IDS) {
+      addDeletedUserId(legacyId);
+      await deleteDoc(doc(db, 'users', legacyId)).catch(() => {});
+    }
+    const snap = await getDocs(collection(db, 'users'));
+    let hasSuperAdminInRemote = false;
+    const deletePromises: Promise<any>[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as UserAccount;
+      if (isPurgedLegacyAdmin(data) || PURGED_LEGACY_ADMIN_IDS.includes(d.id)) {
+        addDeletedUserId(d.id);
+        deletePromises.push(deleteDoc(doc(db, 'users', d.id)).catch(() => {}));
+      } else if (
+        data &&
+        (data.id === INITIAL_SUPER_ADMIN_ACCOUNT.id || data.isSuperAdmin === true)
+      ) {
+        hasSuperAdminInRemote = true;
+      }
+    });
+    if (deletePromises.length > 0) {
+      await Promise.all(deletePromises);
+    }
+    if (!hasSuperAdminInRemote) {
+      await setDoc(
+        doc(db, 'users', INITIAL_SUPER_ADMIN_ACCOUNT.id),
+        {
+          ...INITIAL_SUPER_ADMIN_ACCOUNT,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      ).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('Firestore legacy admin purge notice:', err);
+  }
+}
+
+/**
  * Save single user account directly to Firestore (and attempt Firebase Auth registration)
  */
 export async function saveUserToFirestore(user: UserAccount): Promise<boolean> {
+  if (!user || isPurgedLegacyAdmin(user)) return false;
   try {
     const db = getFirebaseDb();
     const uRef = doc(db, 'users', user.id);
@@ -340,8 +381,10 @@ export async function fetchFirestoreUsers(): Promise<UserAccount[]> {
     const list: UserAccount[] = [];
     snap.forEach((d) => {
       const data = d.data() as UserAccount;
-      if (data && data.id && data.email) {
+      if (data && data.id && data.email && !isPurgedLegacyAdmin(data)) {
         list.push(data);
+      } else if (isPurgedLegacyAdmin(data)) {
+        deleteDoc(doc(db, 'users', d.id)).catch(() => {});
       }
     });
     return list;
@@ -363,8 +406,10 @@ export function subscribeToFirestoreUsers(callback: (users: UserAccount[]) => vo
         const list: UserAccount[] = [];
         snapshot.forEach((d) => {
           const data = d.data() as UserAccount;
-          if (data && data.id && data.email) {
+          if (data && data.id && data.email && !isPurgedLegacyAdmin(data)) {
             list.push(data);
+          } else if (isPurgedLegacyAdmin(data)) {
+            deleteDoc(doc(db, 'users', d.id)).catch(() => {});
           }
         });
         if (list.length > 0) {
@@ -389,6 +434,7 @@ export async function syncUsersToFirestore(users: UserAccount[]): Promise<boolea
   try {
     const db = getFirebaseDb();
     for (const u of users) {
+      if (isPurgedLegacyAdmin(u)) continue;
       const uRef = doc(db, 'users', u.id);
       await setDoc(uRef, { ...u, updatedAt: new Date().toISOString() }, { merge: true });
     }

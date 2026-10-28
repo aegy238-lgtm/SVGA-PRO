@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
 import {
+  ALL_ADMIN_PERMISSIONS,
   ALL_SUPPORTED_FORMATS,
   PlatformState,
   UserAccount,
   buildWhatsAppUrl,
+  canAccessAdminDashboard,
+  checkLoginRateLimit,
+  getEffectiveAdminPermissions,
+  isPurgedLegacyAdmin,
+  isSuperAdminUser,
+  recordFailedLoginAttempt,
+  resetLoginAttempts,
+  verifyUserPassword,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import { fetchFirestoreUsers } from '../utils/firebase';
@@ -304,16 +313,37 @@ export function UserAuthModal({
       return;
     }
 
+    if (isPurgedLegacyAdmin({ email: emailClean })) {
+      setErrorMsg(
+        isAr
+          ? '⛔ هذا الحساب قديم وتم حذفه وإلغاء صلاحيته نهائياً من النظام.'
+          : '⛔ This legacy account has been permanently removed and revoked.'
+      );
+      return;
+    }
+
     if (mode === 'login') {
+      const rateLimit = checkLoginRateLimit(emailClean);
+      if (!rateLimit.allowed) {
+        setErrorMsg(
+          isAr
+            ? `🔒 تم قفل محاولات الدخول مؤقتاً لحماية الحساب. يرجى الانتظار ${rateLimit.retryAfterSeconds} ثانية ثم المحاولة.`
+            : `🔒 Too many failed login attempts. Please wait ${rateLimit.retryAfterSeconds} seconds.`
+        );
+        return;
+      }
+
       let found = state.users.find(
-        (u) => u.email.toLowerCase() === emailClean
+        (u) => u.email.toLowerCase() === emailClean && !isPurgedLegacyAdmin(u)
       );
 
       // If not in local state, query Firestore directly for cross-device / fresh sessions
       if (!found) {
         try {
           const remoteUsers = await fetchFirestoreUsers();
-          const remoteFound = remoteUsers.find((u) => u.email.toLowerCase() === emailClean);
+          const remoteFound = remoteUsers.find(
+            (u) => u.email.toLowerCase() === emailClean && !isPurgedLegacyAdmin(u)
+          );
           if (remoteFound) {
             onRegisterUser(remoteFound);
             found = remoteFound;
@@ -322,6 +352,7 @@ export function UserAuthModal({
       }
 
       if (!found) {
+        recordFailedLoginAttempt(emailClean);
         setErrorMsg(
           isAr
             ? 'لم يتم العثور على حساب بهذا البريد الإلكتروني. يرجى التأكد أو إنشاء حساب جديد.'
@@ -330,31 +361,32 @@ export function UserAuthModal({
         return;
       }
 
-      // Check password: allow exact match, or master admin passwords for admin emails
-      const isAdminEmail = found.role === 'admin' || emailClean === 'aegy238@gmail.com' || emailClean === 'admin@motiontools.com';
-      const isValidAdmin = isAdminEmail && (pwdClean === 'admin' || pwdClean === 'admin123456' || pwdClean === found.password);
-      const isNormalMatch = found.password ? found.password === pwdClean : true;
-
-      if (!isValidAdmin && !isNormalMatch) {
+      if (!verifyUserPassword(found, pwdClean)) {
+        const failRes = recordFailedLoginAttempt(emailClean);
         setErrorMsg(
-          isAr
-            ? 'كلمة المرور غير صحيحة، يرجى المحاولة مجدداً.'
-            : 'Incorrect password, please try again.'
+          failRes.locked
+            ? isAr
+              ? `🔒 تم حظر المحاولات مؤقتاً لمدة ${failRes.retryAfterSeconds} ثانية بسبب تكرار كلمة المرور الخاطئة.`
+              : `🔒 Account temporarily locked for ${failRes.retryAfterSeconds}s due to failed attempts.`
+            : isAr
+              ? `كلمة المرور غير صحيحة (متبقي ${failRes.remainingAttempts} محاولات).`
+              : `Incorrect password (${failRes.remainingAttempts} attempts remaining).`
         );
         return;
       }
 
+      resetLoginAttempts(emailClean);
       onLoginSuccess(found.id);
       onClose();
-      if (found.role === 'admin') {
+      if (canAccessAdminDashboard(found)) {
         onOpenAdminDashboard();
       }
     } else {
-      if (pwdClean.length < 5) {
+      if (pwdClean.length < 6) {
         setErrorMsg(
           isAr
-            ? 'كلمة السر يجب ألا تقل عن 5 أحرف أو أرقام'
-            : 'Password must be at least 5 characters'
+            ? 'كلمة السر يجب ألا تقل عن 6 أحرف أو أرقام لتأمين الحساب'
+            : 'Password must be at least 6 characters for security'
         );
         return;
       }
@@ -392,6 +424,10 @@ export function UserAuthModal({
     }
   };
 
+  const hasCurrentAdminAccess = canAccessAdminDashboard(currentUser);
+  const isCurrentSuperAdmin = isSuperAdminUser(currentUser);
+  const currentEffectivePerms = getEffectiveAdminPermissions(currentUser);
+
   return (
     <div
       role="dialog"
@@ -414,7 +450,7 @@ export function UserAuthModal({
     >
       <div
         style={{
-          width: 'min(420px, 95vw)',
+          width: 'min(450px, 95vw)',
           background: '#11111a',
           border: '1px solid #28283e',
           borderRadius: '16px',
@@ -456,69 +492,155 @@ export function UserAuthModal({
         {currentUser && (
           <div
             style={{
-              background: '#181826',
-              border: '1px solid #2c2c44',
-              borderRadius: '10px',
-              padding: '12px',
+              background: hasCurrentAdminAccess
+                ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(16, 185, 129, 0.12))'
+                : '#181826',
+              border: hasCurrentAdminAccess ? '1px solid rgba(124, 92, 255, 0.55)' : '1px solid #2c2c44',
+              borderRadius: '12px',
+              padding: '14px',
               marginBottom: '16px',
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: '8px',
-              flexWrap: 'wrap',
+              flexDirection: 'column',
+              gap: '10px',
             }}
           >
-            <div>
-              <div style={{ fontSize: '11px', color: '#9494aa' }}>{t.authCurrentAccount}</div>
-              <div style={{ fontWeight: 700, fontSize: '13px', color: '#fff' }}>
-                {currentUser.email}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: '11px', color: '#9494aa' }}>{t.authCurrentAccount}</div>
+                <div style={{ fontWeight: 800, fontSize: '14px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                  <span>{currentUser.email}</span>
+                  {hasCurrentAdminAccess && (
+                    <span
+                      id="userModalAdminBadge"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '2px 8px',
+                        borderRadius: '99px',
+                        background: isCurrentSuperAdmin
+                          ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
+                          : 'linear-gradient(135deg, #10b981, #059669)',
+                        color: '#fff',
+                        fontSize: '10px',
+                        fontWeight: 800,
+                        boxShadow: '0 2px 10px rgba(16, 185, 129, 0.35)',
+                      }}
+                    >
+                      <span>{isCurrentSuperAdmin ? '👑' : '🛡️'}</span>
+                      <span>
+                        {currentUser.adminBadgeTitle ||
+                          (isCurrentSuperAdmin
+                            ? isAr
+                              ? 'المدير العام (Super Admin)'
+                              : 'Super Admin'
+                            : isAr
+                              ? 'مشرف معتمد (Admin)'
+                              : 'Verified Admin')}
+                      </span>
+                    </span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: hasCurrentAdminAccess ? '#6ee7b7' : currentUser.isPro ? '#fde047' : '#94a3b8',
+                    marginTop: '3px',
+                    fontWeight: 600,
+                  }}
+                >
+                  {hasCurrentAdminAccess
+                    ? isCurrentSuperAdmin
+                      ? isAr
+                        ? '👑 صلاحية كاملة على جميع أقسام الداشبورد والحماية'
+                        : '👑 Full Super Administrator Access'
+                      : isAr
+                        ? `🛡️ تم منحك صلاحية مشرف في الداشبورد (${currentEffectivePerms.length} صلاحيات مفعلة)`
+                        : `🛡️ Granted Dashboard Moderator Access (${currentEffectivePerms.length} active permissions)`
+                    : currentUser.isPro
+                      ? t.authStatusPro
+                      : t.authStatusFree}
+                </div>
               </div>
-              <div style={{ fontSize: '11px', color: currentUser.role === 'admin' ? '#a78bfa' : currentUser.isPro ? '#fde047' : '#94a3b8', marginTop: '2px' }}>
-                {currentUser.role === 'admin'
-                  ? isAr ? '👑 مدير الموقع (Admin)' : '👑 Site Administrator'
-                  : currentUser.isPro
-                    ? t.authStatusPro
-                    : t.authStatusFree}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              {currentUser.role === 'admin' && (
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {hasCurrentAdminAccess && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenAdminDashboard();
+                    }}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
+                      border: 0,
+                      color: '#fff',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ⚙️ {t.navAdminDashboard}
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => {
-                    onClose();
-                    onOpenAdminDashboard();
-                  }}
+                  onClick={onLogout}
                   style={{
-                    padding: '5px 12px',
-                    borderRadius: '6px',
-                    background: '#7c5cff',
-                    border: 0,
-                    color: '#fff',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    background: '#261822',
+                    border: '1px solid #ef4444',
+                    color: '#fca5a5',
                     fontSize: '11px',
-                    fontWeight: 700,
                     cursor: 'pointer',
                   }}
                 >
-                  ⚙️ {t.navAdminDashboard}
+                  {t.authLogout}
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={onLogout}
+              </div>
+            </div>
+
+            {/* Granted Admin Permissions Badges inside the user's account modal */}
+            {hasCurrentAdminAccess && currentEffectivePerms.length > 0 && (
+              <div
                 style={{
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  background: '#261822',
-                  border: '1px solid #ef4444',
-                  color: '#fca5a5',
-                  fontSize: '11px',
-                  cursor: 'pointer',
+                  borderTop: '1px solid rgba(255,255,255,0.1)',
+                  paddingTop: '8px',
                 }}
               >
-                {t.authLogout}
-              </button>
-            </div>
+                <div style={{ fontSize: '10.5px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 700 }}>
+                  {isAr ? '✨ الصلاحيات الممنوحة لحسابك في لوحة التحكم:' : '✨ Your Granted Dashboard Permissions:'}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                  {ALL_ADMIN_PERMISSIONS.filter((p) => currentEffectivePerms.includes(p.key)).map((perm) => (
+                    <span
+                      key={perm.key}
+                      style={{
+                        fontSize: '10px',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        background: 'rgba(15, 23, 42, 0.75)',
+                        border: '1px solid rgba(16, 185, 129, 0.45)',
+                        color: '#a7f3d0',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {perm.icon} {isAr ? perm.labelAr : perm.labelEn}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

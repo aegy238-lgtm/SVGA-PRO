@@ -5,6 +5,7 @@ import {
   Shapes,
   GitCommitHorizontal,
   ChevronDown,
+  ChevronRight,
   FolderOpen,
   ImagePlus,
   Upload,
@@ -267,6 +268,8 @@ export default function SvgaAeEditor({
 
   const [hiddenLayerIds, setHiddenLayerIds] = useState<Set<string>>(() => new Set());
   const [deletedSpriteIndices, setDeletedSpriteIndices] = useState<Set<number>>(() => new Set());
+  const [isAllLayersGrouped, setIsAllLayersGrouped] = useState<boolean>(false);
+  const [isGroupSublayersExpanded, setIsGroupSublayersExpanded] = useState<boolean>(false);
 
   const [addedLayers, setAddedLayers] = useState<AddedLayer[]>([]);
   const [shapes, setShapes] = useState<ShapeObject[]>([]);
@@ -558,7 +561,7 @@ export default function SvgaAeEditor({
   // Helper to resolve effective transform for any layer ID at `frame`
   const getEffectiveTransform = useCallback(
     (layerId: string, assetKey: string | undefined, frame: number): LayerTransform => {
-      if (layerId === 'DOCUMENT') {
+      if (layerId === 'DOCUMENT' || layerId === 'GROUP_ALL') {
         return interpolateLayerTransform(docTransform, layerKeyframes['DOCUMENT'], frame);
       }
       const added = addedLayers.find((l) => l.id === layerId);
@@ -599,6 +602,11 @@ export default function SvgaAeEditor({
       ? 0
       : Math.max(0, Math.min(1, docT.opacity / 100));
 
+    let compMinX = Infinity;
+    let compMinY = Infinity;
+    let compMaxX = -Infinity;
+    let compMaxY = -Infinity;
+
     let selectedBounds: {
       x: number;
       y: number;
@@ -629,6 +637,24 @@ export default function SvgaAeEditor({
       const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
       const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
       const mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, docT);
+
+      const fw = f.w > 0 ? f.w : assetW;
+      const fh = f.h > 0 ? f.h : assetH;
+      const fx = f.x || 0;
+      const fy = f.y || 0;
+      for (const p of [
+        { x: fx, y: fy },
+        { x: fx + fw, y: fy },
+        { x: fx + fw, y: fy + fh },
+        { x: fx, y: fy + fh },
+      ]) {
+        const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+        const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+        if (sx < compMinX) compMinX = sx;
+        if (sy < compMinY) compMinY = sy;
+        if (sx > compMaxX) compMaxX = sx;
+        if (sy > compMaxY) compMaxY = sy;
+      }
 
       ctx.save();
       ctx.globalAlpha = finalAlpha;
@@ -697,7 +723,7 @@ export default function SvgaAeEditor({
 
       ctx.restore();
 
-      if (selectedTarget === spriteId) {
+      if (selectedTarget === spriteId && !isAllLayersGrouped) {
         selectedBounds = {
           x: f.x || 0,
           y: f.y || 0,
@@ -718,13 +744,28 @@ export default function SvgaAeEditor({
       if (finalAlpha <= 0.001) continue;
 
       const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
+
+      for (const p of [
+        { x: 0, y: 0 },
+        { x: al.width, y: 0 },
+        { x: al.width, y: al.height },
+        { x: 0, y: al.height },
+      ]) {
+        const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+        const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+        if (sx < compMinX) compMinX = sx;
+        if (sy < compMinY) compMinY = sy;
+        if (sx > compMaxX) compMaxX = sx;
+        if (sy > compMaxY) compMaxY = sy;
+      }
+
       ctx.save();
       ctx.globalAlpha = finalAlpha;
       ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
       ctx.drawImage(al.bitmap, 0, 0, al.width, al.height);
       ctx.restore();
 
-      if (selectedTarget === al.id) {
+      if (selectedTarget === al.id && !isAllLayersGrouped) {
         selectedBounds = {
           x: 0,
           y: 0,
@@ -745,6 +786,21 @@ export default function SvgaAeEditor({
       if (finalAlpha <= 0.001) continue;
 
       const mat = computeAddedLayerFrameMatrix(sh.w, sh.h, W, H, lt, docT);
+
+      for (const p of [
+        { x: 0, y: 0 },
+        { x: sh.w, y: 0 },
+        { x: sh.w, y: sh.h },
+        { x: 0, y: sh.h },
+      ]) {
+        const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+        const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+        if (sx < compMinX) compMinX = sx;
+        if (sy < compMinY) compMinY = sy;
+        if (sx > compMaxX) compMaxX = sx;
+        if (sy > compMaxY) compMaxY = sy;
+      }
+
       ctx.save();
       ctx.globalAlpha = finalAlpha;
       ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
@@ -813,7 +869,7 @@ export default function SvgaAeEditor({
 
       ctx.restore();
 
-      if (selectedTarget === sh.id) {
+      if (selectedTarget === sh.id && !isAllLayersGrouped) {
         selectedBounds = {
           x: 0,
           y: 0,
@@ -854,7 +910,22 @@ export default function SvgaAeEditor({
     }
 
     // 5. Render editor selection bounding box overlay (not exported into SVGA)
-    if (!selectedBounds && selectedTarget === 'DOCUMENT') {
+    if (isAllLayersGrouped || selectedTarget === 'GROUP_ALL') {
+      const hasContent = Number.isFinite(compMinX) && Number.isFinite(compMaxX) && compMinX < compMaxX && compMinY < compMaxY;
+      const totalLayers = movie.sp.length + addedLayers.length + shapes.length;
+      const bX = hasContent ? Math.max(0, compMinX) : 0;
+      const bY = hasContent ? Math.max(0, compMinY) : 0;
+      const bW = hasContent ? Math.min(W - bX, compMaxX - compMinX) : W;
+      const bH = hasContent ? Math.min(H - bY, compMaxY - compMinY) : H;
+      selectedBounds = {
+        x: bX,
+        y: bY,
+        w: Math.max(20, bW),
+        h: Math.max(20, bH),
+        mat: [1, 0, 0, 1, 0, 0],
+        label: `📁 مجموعة كل الطبقات (${totalLayers} طبقة)`,
+      };
+    } else if (!selectedBounds && selectedTarget === 'DOCUMENT') {
       const docT = getEffectiveTransform('DOCUMENT', undefined, currentFrame);
       const mat = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
       selectedBounds = {
@@ -1065,14 +1136,15 @@ export default function SvgaAeEditor({
       const currentEff = getEffectiveTransform(targetId, assetKey || undefined, currentFrame);
       const mergedEff: LayerTransform = { ...currentEff, ...patch };
 
-      if (targetId === 'DOCUMENT') {
+      if (targetId === 'DOCUMENT' || targetId === 'GROUP_ALL') {
         setDocTransform((prev) => {
           const next = { ...prev, ...patch };
           pushHistory(next, layerTransforms, hiddenLayerIds, deletedSpriteIndices);
           return next;
         });
         syncKeyframePatch('DOCUMENT', mergedEff, patch);
-        if (actionDesc) setLastAction(`${actionDesc} (${docName})`);
+        if (actionDesc)
+          setLastAction(`${actionDesc} (${targetId === 'GROUP_ALL' ? 'مجموعة كل الطبقات' : docName})`);
         return;
       }
 
@@ -2123,14 +2195,16 @@ export default function SvgaAeEditor({
           }
         }
         if (hitHandle) {
-          const curT = getEffectiveTransform(selectedTarget, selectedAssetKey || undefined, currentFrame);
+          const effectiveTargetId = isAllLayersGrouped ? 'GROUP_ALL' : selectedTarget;
+          const effectiveAssetKey = isAllLayersGrouped ? null : selectedAssetKey;
+          const curT = getEffectiveTransform(effectiveTargetId, effectiveAssetKey || undefined, currentFrame);
           const center = activeCenterRef.current || { x: canvasW / 2, y: canvasH / 2 };
           const initDist = Math.hypot(hitHandle.x - center.x, hitHandle.y - center.y);
           dragRef.current = {
             mode: 'scaleLayer',
             handle: hitHandle.handle,
-            targetId: selectedTarget,
-            assetKey: selectedAssetKey,
+            targetId: effectiveTargetId,
+            assetKey: effectiveAssetKey,
             startX: e.clientX,
             startY: e.clientY,
             origX: curT.x,
@@ -2203,12 +2277,19 @@ export default function SvgaAeEditor({
     // Move tool: hit-test if clicking a visible layer
     let targetId = selectedTarget;
     let assetKey = selectedAssetKey;
-    const hit = hitTestCanvasPoint(pt.x, pt.y);
-    if (hit.target !== 'DOCUMENT') {
-      targetId = hit.target;
-      assetKey = hit.assetKey;
-      setSelectedTarget(targetId);
-      setSelectedAssetKey(assetKey);
+    if (isAllLayersGrouped) {
+      targetId = 'GROUP_ALL';
+      assetKey = null;
+      setSelectedTarget('GROUP_ALL');
+      setSelectedAssetKey(null);
+    } else {
+      const hit = hitTestCanvasPoint(pt.x, pt.y);
+      if (hit.target !== 'DOCUMENT') {
+        targetId = hit.target;
+        assetKey = hit.assetKey;
+        setSelectedTarget(targetId);
+        setSelectedAssetKey(assetKey);
+      }
     }
 
     const curT = getEffectiveTransform(targetId, assetKey || undefined, currentFrame);
@@ -2627,274 +2708,29 @@ export default function SvgaAeEditor({
   };
 
   /**
-   * Merges all decomposed SVGA sprite tracks, added image layers, and vector/text shapes
-   * into a single unified root layer / sprite across all animation frames.
-   * This allows the user to scale, move, and transform the entire artwork as one single unit on stage.
+   * Toggles virtual grouping of all layers ("مجموعة كل الطبقات") without baking or rasterizing.
+   * Keeps all original decomposed tracks, vectors, shapes, and audio 100% intact.
+   * When grouped, allows dragging, repositioning, and scaling the entire design simultaneously.
    */
-  const handleMergeAllLayers = async () => {
+  const handleToggleGroupAllLayers = () => {
     const totalCount = movie.sp.length + addedLayers.length + shapes.length;
     if (totalCount === 0) {
-      setLastAction('لا توجد طبقات لدمجها');
-      return;
-    }
-    if (movie.sp.length <= 1 && addedLayers.length === 0 && shapes.length === 0) {
-      setLastAction('الطبقات مدمجة بالفعل في طبقة واحدة');
+      setLastAction('لا توجد طبقات لتجميعها');
       return;
     }
 
-    setLastAction('جاري دمج جميع الطبقات في لير واحد...');
-    try {
-      const W = canvasW;
-      const H = canvasH;
-      const offCanvas = document.createElement('canvas');
-      offCanvas.width = W;
-      offCanvas.height = H;
-      const offCtx = offCanvas.getContext('2d');
-      if (!offCtx) return;
-
-      const frameBlobs: Blob[] = [];
-
-      for (let fIdx = 0; fIdx < totalFrames; fIdx++) {
-        offCtx.clearRect(0, 0, W, H);
-        const fDocT = getEffectiveTransform('DOCUMENT', undefined, fIdx);
-        const fDocAlpha = hiddenLayerIds.has('DOCUMENT')
-          ? 0
-          : Math.max(0, Math.min(1, fDocT.opacity / 100));
-
-        // 1. Render original decomposed SVGA sprites in stacking order
-        movie.sp.forEach((s, idx) => {
-          if (deletedSpriteIndices.has(idx)) return;
-          const spriteId = `sprite_${idx}`;
-          if (hiddenLayerIds.has(spriteId)) return;
-
-          const resolved = resolveSpriteFrameAt(s, fIdx, totalFrames, spriteFrameRanges[idx]);
-          const f = resolved.frameObj;
-          if (!f || !resolved.visible) return;
-          const bm = s.key ? bitmaps[s.key] : undefined;
-          const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
-          if (f.a <= 0.001 && !hasShapes) return;
-
-          const lt = getEffectiveTransform(spriteId, s.key, fIdx);
-          const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
-          const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * fDocAlpha * layerAlpha));
-          if (finalAlpha <= 0.001) return;
-
-          const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
-          const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
-          const mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, fDocT);
-
-          offCtx.save();
-          offCtx.globalAlpha = finalAlpha;
-          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-
-          if (f.clipPath) {
-            try {
-              const clipP = new Path2D(f.clipPath);
-              offCtx.clip(clipP);
-            } catch {}
-          }
-
-          if (bm) {
-            offCtx.drawImage(bm, f.x || 0, f.y || 0, f.w || bm.width, f.h || bm.height);
-          }
-
-          if (hasShapes && f.shapesRaw) {
-            for (const rawSh of f.shapesRaw) {
-              const parsed = parseSvgaShapeEntity(rawSh);
-              if (parsed.pathD) {
-                try {
-                  const p = new Path2D(parsed.pathD);
-                  if (parsed.fill) {
-                    offCtx.fillStyle = parsed.fill;
-                    offCtx.fill(p);
-                  }
-                  if (parsed.stroke) {
-                    offCtx.strokeStyle = parsed.stroke;
-                    offCtx.lineWidth = parsed.strokeWidth || 1;
-                    offCtx.stroke(p);
-                  }
-                } catch {}
-              }
-            }
-          }
-          offCtx.restore();
-        });
-
-        // 2. Render added image layers
-        for (const al of addedLayers) {
-          if (hiddenLayerIds.has(al.id)) continue;
-          if (fIdx < al.inFrame || fIdx > al.outFrame) continue;
-          const lt = getEffectiveTransform(al.id, al.assetKey, fIdx);
-          const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * fDocAlpha));
-          if (finalAlpha <= 0.001) continue;
-
-          const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, fDocT);
-          offCtx.save();
-          offCtx.globalAlpha = finalAlpha;
-          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-          offCtx.drawImage(al.bitmap, 0, 0, al.width, al.height);
-          offCtx.restore();
-        }
-
-        // 3. Render vector / shape / text layers
-        for (const sh of shapes) {
-          if (hiddenLayerIds.has(sh.id)) continue;
-          if (fIdx < sh.inFrame || fIdx > sh.outFrame) continue;
-          const lt = getEffectiveTransform(sh.id, sh.assetKey, fIdx);
-          const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * fDocAlpha));
-          if (finalAlpha <= 0.001) continue;
-
-          const mat = computeAddedLayerFrameMatrix(sh.w, sh.h, W, H, lt, fDocT);
-          offCtx.save();
-          offCtx.globalAlpha = finalAlpha;
-          offCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-
-          const sw = Math.max(0, sh.strokeWidth ?? 2);
-          const pad = Math.ceil(sw / 2) + 2;
-          offCtx.fillStyle = sh.color + (sh.type === 'text' ? '' : '66');
-          offCtx.strokeStyle = sh.strokeColor || sh.color;
-          offCtx.lineWidth = sw;
-
-          if (sh.type === 'rectangle') {
-            offCtx.fillRect(pad, pad, Math.max(2, sh.w - pad * 2), Math.max(2, sh.h - pad * 2));
-            if (sw > 0) offCtx.strokeRect(pad, pad, Math.max(2, sh.w - pad * 2), Math.max(2, sh.h - pad * 2));
-          } else if (sh.type === 'ellipse') {
-            offCtx.beginPath();
-            offCtx.ellipse(sh.w / 2, sh.h / 2, Math.max(2, sh.w / 2 - pad), Math.max(2, sh.h / 2 - pad), 0, 0, Math.PI * 2);
-            offCtx.fill();
-            if (sw > 0) offCtx.stroke();
-          } else if (sh.type === 'polygon') {
-            offCtx.beginPath();
-            const cx = sh.w / 2;
-            const cy = sh.h / 2;
-            const r = Math.max(4, Math.min(sh.w, sh.h) / 2 - pad);
-            for (let i = 0; i < 6; i++) {
-              const ang = (i * Math.PI) / 3 - Math.PI / 2;
-              const px = cx + r * Math.cos(ang);
-              const py = cy + r * Math.sin(ang);
-              if (i === 0) offCtx.moveTo(px, py);
-              else offCtx.lineTo(px, py);
-            }
-            offCtx.closePath();
-            offCtx.fill();
-            if (sw > 0) offCtx.stroke();
-          } else if (sh.type === 'path' && sh.points && sh.points.length >= 2) {
-            offCtx.beginPath();
-            sh.points.forEach((pt, idx) => {
-              const lx = pt.x - sh.x;
-              const ly = pt.y - sh.y;
-              if (idx === 0) offCtx.moveTo(lx, ly);
-              else offCtx.lineTo(lx, ly);
-            });
-            if (sh.points.length >= 3) offCtx.closePath();
-            offCtx.fill();
-            if (sw > 0) offCtx.stroke();
-          } else if (sh.type === 'text') {
-            const fSize = sh.fontSize || 32;
-            offCtx.font = `bold ${fSize}px Inter, system-ui, sans-serif`;
-            offCtx.textAlign = 'center';
-            offCtx.textBaseline = 'middle';
-            if (sw > 0) {
-              offCtx.lineWidth = sw;
-              offCtx.strokeText(sh.text || sh.name, sh.w / 2, sh.h / 2);
-            }
-            offCtx.fillStyle = sh.color;
-            offCtx.fillText(sh.text || sh.name, sh.w / 2, sh.h / 2);
-          }
-          offCtx.restore();
-        }
-
-        const b: Blob = await new Promise((res) => offCanvas.toBlob((blob) => res(blob!), 'image/png'));
-        frameBlobs.push(b);
-      }
-
-      // Check if all rendered frame blobs are identical in size/content or single frame
-      const isAllStatic = frameBlobs.every((b) => b.size === frameBlobs[0].size);
-
-      const newIm: Record<string, Uint8Array> = {};
-      const newBitmaps: Record<string, ImageBitmap> = {};
-      const newThumbs: Record<string, { url: string; w: number; h: number }> = {};
-      let newSprites: SvgaSprite[] = [];
-
-      if (isAllStatic || totalFrames <= 1) {
-        const rootKey = 'img_merged_root';
-        const bytes = new Uint8Array(await frameBlobs[0].arrayBuffer());
-        const bm = await createImageBitmap(frameBlobs[0]);
-        const dataUrl = URL.createObjectURL(frameBlobs[0]);
-
-        newIm[rootKey] = bytes;
-        newBitmaps[rootKey] = bm;
-        newThumbs[rootKey] = { url: dataUrl, w: W, h: H };
-
-        newSprites = [
-          {
-            key: rootKey,
-            fr: Array.from({ length: totalFrames }, () => ({
-              a: 1,
-              x: 0,
-              y: 0,
-              w: W,
-              h: H,
-              t: [1, 0, 0, 1, 0, 0],
-            })),
-          },
-        ];
-      } else {
-        for (let i = 0; i < totalFrames; i++) {
-          const frameKey = `img_merged_f${i}`;
-          const bytes = new Uint8Array(await frameBlobs[i].arrayBuffer());
-          const bm = await createImageBitmap(frameBlobs[i]);
-          const dataUrl = URL.createObjectURL(frameBlobs[i]);
-
-          newIm[frameKey] = bytes;
-          newBitmaps[frameKey] = bm;
-          newThumbs[frameKey] = { url: dataUrl, w: W, h: H };
-
-          newSprites.push({
-            key: frameKey,
-            fr: Array.from({ length: totalFrames }, (_, k) => ({
-              a: k === i ? 1 : 0,
-              x: 0,
-              y: 0,
-              w: W,
-              h: H,
-              t: [1, 0, 0, 1, 0, 0],
-            })),
-          });
-        }
-      }
-
-      const audiosRaw = movie.audiosRaw;
-
-      // Push history before mutating so action is fully undoable
-      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
-        addedLayers,
-        shapes,
-      });
-
-      setMovie((prev) => ({
-        ...prev,
-        im: newIm,
-        sp: newSprites,
-        audiosRaw,
-      }));
-      setBitmaps(newBitmaps);
-      setThumbs(newThumbs);
-      setAddedLayers([]);
-      setShapes([]);
-      setDeletedSpriteIndices(new Set());
-      setHiddenLayerIds(new Set());
-      setLayerTransforms({});
-      setLayerKeyframes({});
-      setDocTransform({ ...DEFAULT_TRANSFORM });
-      setSelectedTarget('sprite_0');
-      setSelectedAssetKey(newSprites[0]?.key || null);
-      setSpriteFrameRanges({});
-
-      setLastAction(`تم دمج جميع الطبقات (${totalCount}) في لير واحد بنجاح! يمكنك الآن تحريكها وتكبيرها بحرية.`);
-    } catch (err: any) {
-      console.error('Failed to merge layers:', err);
-      setLastAction('حدث خطأ أثناء دمج الطبقات');
+    if (isAllLayersGrouped) {
+      setIsAllLayersGrouped(false);
+      setSelectedTarget('DOCUMENT');
+      setSelectedAssetKey(null);
+      setLastAction('تم فك تجميع الطبقات — يمكنك الآن التحكم في كل طبقة على حدة');
+    } else {
+      setIsAllLayersGrouped(true);
+      setSelectedTarget('GROUP_ALL');
+      setSelectedAssetKey(null);
+      setLastAction(
+        `تم تجميع جميع الطبقات (${totalCount} طبقة) في لير موحد — يمكنك تحريكها وتكبيرها معاً`
+      );
     }
   };
 
@@ -3658,13 +3494,20 @@ export default function SvgaAeEditor({
                       <button
                         type="button"
                         id="edMergeAllLayers"
-                        onClick={handleMergeAllLayers}
-                        title="دمج كل الطبقات (Sprites + Images + Shapes) في لير واحد مجمع لتسهيل تحريكه وتكبيره وتصغيره بالكامل"
+                        onClick={handleToggleGroupAllLayers}
+                        title={
+                          isAllLayersGrouped
+                            ? 'فك تجميع الطبقات والرجوع للتحكم في كل طبقة منفردة'
+                            : 'تجميع كل الطبقات في لير واحد مجمع لتسهيل تحريكه وتكبيره وتصغيره معاً دون فقدان جودة وبدون تحويل لصور'
+                        }
                         style={{
-                          background:
-                            'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(167, 139, 250, 0.18))',
-                          border: '1px solid rgba(139, 92, 246, 0.55)',
-                          color: '#ddd6fe',
+                          background: isAllLayersGrouped
+                            ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.28), rgba(248, 113, 113, 0.18))'
+                            : 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(167, 139, 250, 0.18))',
+                          border: isAllLayersGrouped
+                            ? '1px solid rgba(239, 68, 68, 0.55)'
+                            : '1px solid rgba(139, 92, 246, 0.55)',
+                          color: isAllLayersGrouped ? '#fca5a5' : '#ddd6fe',
                           borderRadius: '5px',
                           padding: '2px 7px',
                           fontSize: '10px',
@@ -3677,10 +3520,10 @@ export default function SvgaAeEditor({
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        <Layers size={10} color="#a78bfa" />
-                        <span>دمج الطبقات كلها في لير واحد</span>
+                        <Layers size={10} color={isAllLayersGrouped ? '#fca5a5' : '#a78bfa'} />
+                        <span>{isAllLayersGrouped ? 'فك التجميع (Ungroup)' : 'دمج الطبقات كلها في لير واحد'}</span>
                       </button>
-                      {selectedTarget !== 'DOCUMENT' && (
+                      {selectedTarget !== 'DOCUMENT' && selectedTarget !== 'GROUP_ALL' && (
                         <button
                           type="button"
                           onClick={() => handleDeleteLayer(selectedTarget)}
@@ -3706,6 +3549,87 @@ export default function SvgaAeEditor({
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto', padding: '6px' }}>
+                  {/* Master Group Row when isAllLayersGrouped */}
+                  {isAllLayersGrouped && (
+                    <div
+                      style={{
+                        marginBottom: '8px',
+                        border: '1px solid rgba(139, 92, 246, 0.5)',
+                        borderRadius: '7px',
+                        background:
+                          selectedTarget === 'GROUP_ALL'
+                            ? 'rgba(124, 92, 255, 0.22)'
+                            : 'rgba(124, 92, 255, 0.1)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        onClick={() => {
+                          setSelectedTarget('GROUP_ALL');
+                          setSelectedAssetKey(null);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '7px 9px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsGroupSublayersExpanded((prev) => !prev);
+                          }}
+                          title={isGroupSublayersExpanded ? 'طي الطبقات الفرعية' : 'عرض الطبقات الفرعية'}
+                          style={{
+                            background: 0,
+                            border: 0,
+                            color: '#c4b5fd',
+                            cursor: 'pointer',
+                            padding: 0,
+                            display: 'grid',
+                            placeItems: 'center',
+                          }}
+                        >
+                          {isGroupSublayersExpanded ? (
+                            <ChevronDown size={13} />
+                          ) : (
+                            <ChevronRight size={13} />
+                          )}
+                        </button>
+                        <Layers size={14} color="#a78bfa" />
+                        <span
+                          style={{
+                            flex: 1,
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            color: '#f3e8ff',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          📁 مجموعة كل الطبقات ({spriteLayers.length + addedLayers.length + shapes.length} طبقة)
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '9px',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            background: '#7c5cff',
+                            color: '#fff',
+                            fontWeight: 700,
+                            letterSpacing: '0.02em',
+                          }}
+                        >
+                          موحدة
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Document Root Row */}
                   <div
                     onClick={() => {
@@ -4803,105 +4727,182 @@ export default function SvgaAeEditor({
             gap: '14px',
           }}
         >
-          {(selectedAssetKey && selectedAssetStat) || selectedAddedLayer || selectedShapeLayer ? (
+          {selectedTarget === 'GROUP_ALL' ||
+          (selectedAssetKey && selectedAssetStat) ||
+          selectedAddedLayer ||
+          selectedShapeLayer ? (
             <>
-              {/* LAYER HEADER */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div
-                  style={{
-                    width: '28px',
-                    height: '28px',
-                    borderRadius: '6px',
-                    background: '#171722',
-                    border: '1px solid #262636',
-                    display: 'grid',
-                    placeItems: 'center',
-                    color: '#a0a0b4',
-                  }}
-                >
-                  {selectedShapeLayer ? <Shapes size={14} /> : <ImageIcon size={14} />}
-                </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
+              {selectedTarget === 'GROUP_ALL' ? (
+                <>
+                  {/* GROUP HEADER */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div
+                      style={{
+                        width: '30px',
+                        height: '30px',
+                        borderRadius: '7px',
+                        background: 'rgba(124, 92, 255, 0.2)',
+                        border: '1px solid rgba(139, 92, 246, 0.45)',
+                        display: 'grid',
+                        placeItems: 'center',
+                        color: '#c4b5fd',
+                      }}
+                    >
+                      <Layers size={15} />
+                    </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          color: '#f2f2f8',
+                          fontSize: '13px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        مجموعة كل الطبقات
+                      </div>
+                      <div style={{ color: '#a78bfa', fontSize: '11px' }}>
+                        {movie.sp.length + addedLayers.length + shapes.length} طبقة موحدة · SVGA 2.0 أصلية
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      id="edInspectorUngroup"
+                      onClick={handleToggleGroupAllLayers}
+                      title="فك التجميع"
+                      style={{
+                        background: 'rgba(239, 68, 68, 0.14)',
+                        border: '1px solid rgba(239, 68, 68, 0.35)',
+                        color: '#fca5a5',
+                        borderRadius: '6px',
+                        padding: '3px 8px',
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      فك التجميع
+                    </button>
+                  </div>
+
                   <div
                     style={{
-                      fontWeight: 700,
-                      color: '#f2f2f8',
-                      fontSize: '13px',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      background: 'rgba(124, 92, 255, 0.08)',
+                      border: '1px solid rgba(139, 92, 246, 0.25)',
+                      borderRadius: '7px',
+                      padding: '8px 10px',
+                      fontSize: '11px',
+                      color: '#ddd6fe',
+                      lineHeight: '1.45',
                     }}
                   >
-                    {selectedAddedLayer?.name ||
-                      selectedShapeLayer?.name ||
-                      selectedAssetStat?.key}
+                    تتحرك جميع الطبقات وتكبر وتصغر معاً عبر المقابض الأربعة على الكانفاس أو لوحة Transform أدناه دون التأثير على جودة الـ SVGA أو تحويلها لصور.
                   </div>
-                  <div style={{ color: '#727284', fontSize: '11px' }}>
-                    {selectedShapeLayer
-                      ? `Decomposed ${selectedShapeLayer.type} layer`
-                      : selectedAddedLayer
-                        ? 'Added decomposed image layer'
-                        : selectedTarget.startsWith('sprite_')
-                          ? `Image layer · #${movie.sp.length - Number(selectedTarget.replace('sprite_', ''))}`
-                          : 'Image layer'}
+                </>
+              ) : (
+                <>
+                  {/* LAYER HEADER */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div
+                      style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '6px',
+                        background: '#171722',
+                        border: '1px solid #262636',
+                        display: 'grid',
+                        placeItems: 'center',
+                        color: '#a0a0b4',
+                      }}
+                    >
+                      {selectedShapeLayer ? <Shapes size={14} /> : <ImageIcon size={14} />}
+                    </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          color: '#f2f2f8',
+                          fontSize: '13px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {selectedAddedLayer?.name ||
+                          selectedShapeLayer?.name ||
+                          selectedAssetStat?.key}
+                      </div>
+                      <div style={{ color: '#727284', fontSize: '11px' }}>
+                        {selectedShapeLayer
+                          ? `Decomposed ${selectedShapeLayer.type} layer`
+                          : selectedAddedLayer
+                            ? 'Added decomposed image layer'
+                            : selectedTarget.startsWith('sprite_')
+                              ? `Image layer · #${movie.sp.length - Number(selectedTarget.replace('sprite_', ''))}`
+                              : 'Image layer'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteLayer(selectedTarget)}
+                      title="Delete this layer"
+                      style={{
+                        background: 'rgba(248,113,113,0.12)',
+                        border: '1px solid rgba(248,113,113,0.3)',
+                        color: '#f87171',
+                        borderRadius: '6px',
+                        width: '26px',
+                        height: '26px',
+                        display: 'grid',
+                        placeItems: 'center',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteLayer(selectedTarget)}
-                  title="Delete this layer"
-                  style={{
-                    background: 'rgba(248,113,113,0.12)',
-                    border: '1px solid rgba(248,113,113,0.3)',
-                    color: '#f87171',
-                    borderRadius: '6px',
-                    width: '26px',
-                    height: '26px',
-                    display: 'grid',
-                    placeItems: 'center',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
 
-              {/* QUICK CROP / SELECTION BUTTON FOR SELECTED LAYER */}
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTool((prev) => (prev === 'Crop' ? 'Move' : 'Crop'));
-                  setLastAction(
-                    'اسحب بالماوس على الطبقة في الكانفاس لتحديد جزء معين وقصه أو فصله في طبقة مستقلة متحركة'
-                  );
-                }}
-                style={{
-                  width: '100%',
-                  padding: '8px 10px',
-                  borderRadius: '8px',
-                  border:
-                    activeTool === 'Crop' ? '1px solid #38bdf8' : '1px solid rgba(124,92,255,0.45)',
-                  background:
-                    activeTool === 'Crop'
-                      ? 'rgba(56,189,248,0.18)'
-                      : 'rgba(124,92,255,0.12)',
-                  color: activeTool === 'Crop' ? '#7dd3fc' : '#c4b5fd',
-                  fontWeight: 700,
-                  fontSize: '11px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                }}
-              >
-                <Scissors size={13} />
-                <span>
-                  {activeTool === 'Crop'
-                    ? 'اسحب بالماوس الآن لتحديد الجزء المراد قصه'
-                    : 'تحديد وقص جزء من الطبقة بالماوس'}
-                </span>
-              </button>
+                  {/* QUICK CROP / SELECTION BUTTON FOR SELECTED LAYER */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTool((prev) => (prev === 'Crop' ? 'Move' : 'Crop'));
+                      setLastAction(
+                        'اسحب بالماوس على الطبقة في الكانفاس لتحديد جزء معين وقصه أو فصله في طبقة مستقلة متحركة'
+                      );
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border:
+                        activeTool === 'Crop' ? '1px solid #38bdf8' : '1px solid rgba(124,92,255,0.45)',
+                      background:
+                        activeTool === 'Crop'
+                          ? 'rgba(56,189,248,0.18)'
+                          : 'rgba(124,92,255,0.12)',
+                      color: activeTool === 'Crop' ? '#7dd3fc' : '#c4b5fd',
+                      fontWeight: 700,
+                      fontSize: '11px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <Scissors size={13} />
+                    <span>
+                      {activeTool === 'Crop'
+                        ? 'اسحب بالماوس الآن لتحديد الجزء المراد قصه'
+                        : 'تحديد وقص جزء من الطبقة بالماوس'}
+                    </span>
+                  </button>
+                </>
+              )}
 
               {/* IMAGE ASSET SECTION (for SVGA Sprite Layers) */}
               {selectedAssetStat && (

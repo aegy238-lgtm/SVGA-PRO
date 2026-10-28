@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { initMotionToolsFixed } from './engine/motionTools';
 import SvgaAeEditor from './components/SvgaAeEditor';
-import AdminDashboardModal from './components/AdminDashboardModal';
+import AdminDashboardModal, { AdminDashboardTabId } from './components/AdminDashboardModal';
 import EdgeFeatherModal from './components/EdgeFeatherModal';
 import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
@@ -32,6 +32,10 @@ import {
   savePlatformState,
   getDeletedUserIds,
   addDeletedUserId,
+  canAccessAdminDashboard,
+  isSuperAdminUser,
+  sanitizeUsersList,
+  getEffectiveAdminPermissions,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -51,6 +55,7 @@ import {
   subscribeToFirestoreActivityLogs,
   fetchFirestoreActivityLogs,
   saveActivityLogToFirestore,
+  purgeLegacyAdminsFromFirestore,
   FirebaseConnectionStatus,
 } from './utils/firebase';
 
@@ -70,14 +75,11 @@ export default function App() {
   const { settings, users, currentUserId, notifications, readNotificationIds, adminPreviewRole } =
     platformState;
   const currentUser = users.find((u) => u.id === currentUserId) || null;
-  const isAdminUser =
-    currentUser?.role === 'admin' ||
-    currentUser?.email === 'aegy238@gmail.com';
+  const hasAdminAccess = canAccessAdminDashboard(currentUser);
+  const isSuperAdmin = isSuperAdminUser(currentUser);
 
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminInitialTab, setAdminInitialTab] = useState<
-    'users' | 'pro' | 'branding' | 'notifications' | 'firebase'
-  >('users');
+  const [adminInitialTab, setAdminInitialTab] = useState<AdminDashboardTabId>('users');
   const [firebaseStatus, setFirebaseStatus] = useState<FirebaseConnectionStatus>({
     isConfigured: true,
     isConnected: false,
@@ -110,8 +112,9 @@ export default function App() {
     const unsub = subscribeToFirebaseStatus((status) => {
       setFirebaseStatus(status);
     });
-    // Automatic ping and live connection verification on boot
+    // Automatic ping, live connection verification, and legacy admin purge on boot
     testFirebaseConnection();
+    purgeLegacyAdminsFromFirestore();
     return unsub;
   }, []);
 
@@ -145,21 +148,24 @@ export default function App() {
       }
     });
 
-    // 2. Users Real-Time Listener
+    // 2. Users Real-Time Listener (with automatic legacy admin purging & Super Admin preservation)
     const unsubUsers = subscribeToFirestoreUsers((liveUsers) => {
       if (!liveUsers) return;
       const deletedIds = getDeletedUserIds();
       updatePlatformState((prev) => {
-        const cleanLive = liveUsers.filter(
-          (u) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
-        );
+        const currentSuperAdmin = prev.users.find((u) => isSuperAdminUser(u));
+        const mergedInput = [...liveUsers];
+        if (currentSuperAdmin && !mergedInput.some((u) => u.id === currentSuperAdmin.id)) {
+          mergedInput.unshift(currentSuperAdmin);
+        }
+        const cleanLive = sanitizeUsersList(mergedInput, deletedIds);
         let nextCurrentUserId = prev.currentUserId;
         if (nextCurrentUserId && !cleanLive.some((u) => u.id === nextCurrentUserId)) {
           nextCurrentUserId = null;
         }
         return {
           ...prev,
-          users: cleanLive.length > 0 ? cleanLive : prev.users.filter((u) => !deletedIds.includes(u.id)),
+          users: cleanLive.length > 0 ? cleanLive : sanitizeUsersList(prev.users, deletedIds),
           currentUserId: nextCurrentUserId,
         };
       });
@@ -170,16 +176,19 @@ export default function App() {
       if (fetched && fetched.length > 0) {
         const deletedIds = getDeletedUserIds();
         updatePlatformState((prev) => {
-          const cleanUsers = fetched.filter(
-            (u) => u.email.toLowerCase() !== 'admin@motiontools.com' && !deletedIds.includes(u.id)
-          );
+          const currentSuperAdmin = prev.users.find((u) => isSuperAdminUser(u));
+          const mergedInput = [...fetched];
+          if (currentSuperAdmin && !mergedInput.some((u) => u.id === currentSuperAdmin.id)) {
+            mergedInput.unshift(currentSuperAdmin);
+          }
+          const cleanUsers = sanitizeUsersList(mergedInput, deletedIds);
           let nextCurrentUserId = prev.currentUserId;
           if (nextCurrentUserId && !cleanUsers.some((u) => u.id === nextCurrentUserId)) {
             nextCurrentUserId = null;
           }
           return {
             ...prev,
-            users: cleanUsers.length > 0 ? cleanUsers : prev.users.filter((u) => !deletedIds.includes(u.id)),
+            users: cleanUsers.length > 0 ? cleanUsers : sanitizeUsersList(prev.users, deletedIds),
             currentUserId: nextCurrentUserId,
           };
         });
@@ -264,7 +273,7 @@ export default function App() {
     }
   }, [screenShieldActive, isSecurityEnforced]);
 
-  // Programmatic Security, Anti-Inspection & Anti-Screenshot Protection
+  // Programmatic Security, Anti-Reverse-Engineering, Anti-Inspection & Anti-Screenshot Protection
   useEffect(() => {
     if (!isSecurityEnforced) {
       return;
@@ -294,11 +303,14 @@ export default function App() {
         return;
       }
 
-      // Block DevTools & Save/Source shortcuts silently without showing screen-recording lock
+      // Block DevTools, Console, Network Inspector & Save/Source/Print shortcuts
       if (
         e.key === 'F12' ||
         e.keyCode === 123 ||
-        ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(e.key)) ||
+        ((e.ctrlKey || e.metaKey) &&
+          e.shiftKey &&
+          ['I', 'i', 'J', 'j', 'C', 'c', 'K', 'k', 'E', 'e'].includes(e.key)) ||
+        (e.metaKey && e.altKey && ['I', 'i', 'J', 'j', 'C', 'c', 'U', 'u'].includes(e.key)) ||
         ((e.ctrlKey || e.metaKey) && ['u', 'U', 's', 'S', 'p', 'P'].includes(e.key))
       ) {
         e.preventDefault();
@@ -594,8 +606,9 @@ export default function App() {
   };
 
   const handleUpdateUsers = (nextUsers: UserAccount[]) => {
-    updatePlatformState((prev) => ({ ...prev, users: nextUsers }));
-    syncUsersToFirestore(nextUsers);
+    const clean = sanitizeUsersList(nextUsers, getDeletedUserIds());
+    updatePlatformState((prev) => ({ ...prev, users: clean }));
+    syncUsersToFirestore(clean);
   };
 
   const handleUpdateNotifications = (nextNotifs: BroadcastNotification[]) => {
@@ -631,7 +644,7 @@ export default function App() {
       ? false
       : adminPreviewRole === 'pro_user'
         ? true
-        : !!(currentUser && (currentUser.role === 'admin' || currentUser.isPro));
+        : !!(currentUser && (hasAdminAccess || currentUser.isPro));
 
   const unreadNotifications = notifications.filter((n) => !readNotificationIds.includes(n.id));
   const latestUnreadImportant = unreadNotifications.find((n) => n.important) || unreadNotifications[0];
@@ -697,8 +710,8 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-          {/* Admin Dashboard Button - Strictly visible to Authenticated Administrator */}
-          {currentUser?.role === 'admin' && (
+          {/* Admin Dashboard Button - Strictly visible to Super Admin or Delegated Moderator */}
+          {hasAdminAccess && (
             <button
               type="button"
               id="adminDashBtn"
@@ -709,9 +722,13 @@ export default function App() {
               style={{
                 padding: '4px 11px',
                 borderRadius: '99px',
-                border: '1px solid rgba(124, 92, 255, 0.6)',
-                background: 'rgba(124, 92, 255, 0.18)',
-                color: '#e0d4ff',
+                border: isSuperAdmin
+                  ? '1px solid rgba(124, 92, 255, 0.65)'
+                  : '1px solid rgba(16, 185, 129, 0.65)',
+                background: isSuperAdmin
+                  ? 'rgba(124, 92, 255, 0.18)'
+                  : 'rgba(16, 185, 129, 0.16)',
+                color: isSuperAdmin ? '#e0d4ff' : '#6ee7b7',
                 fontSize: '11px',
                 fontWeight: 700,
                 cursor: 'pointer',
@@ -720,7 +737,7 @@ export default function App() {
                 gap: '4px',
               }}
             >
-              <span>⚙️</span>
+              <span>{isSuperAdmin ? '⚙️' : '🛡️'}</span>
               <span>{t.navAdminDashboard}</span>
             </button>
           )}
@@ -821,25 +838,31 @@ export default function App() {
               padding: '0 12px',
               borderRadius: '99px',
               border: currentUser
-                ? currentUser.role === 'admin'
-                  ? '1px solid rgba(124, 92, 255, 0.6)'
-                  : effectiveIsPro
-                    ? '1px solid #f59e0b'
-                    : '1px solid #2b2b3d'
+                ? isSuperAdmin
+                  ? '1px solid rgba(124, 92, 255, 0.7)'
+                  : hasAdminAccess
+                    ? '1px solid rgba(16, 185, 129, 0.7)'
+                    : effectiveIsPro
+                      ? '1px solid #f59e0b'
+                      : '1px solid #2b2b3d'
                 : '1px solid rgba(124, 92, 255, 0.45)',
               background: currentUser
-                ? currentUser.role === 'admin'
-                  ? 'rgba(124, 92, 255, 0.16)'
-                  : effectiveIsPro
-                    ? 'rgba(245, 158, 11, 0.16)'
-                    : '#161622'
+                ? isSuperAdmin
+                  ? 'rgba(124, 92, 255, 0.18)'
+                  : hasAdminAccess
+                    ? 'rgba(16, 185, 129, 0.16)'
+                    : effectiveIsPro
+                      ? 'rgba(245, 158, 11, 0.16)'
+                      : '#161622'
                 : 'linear-gradient(135deg, rgba(124, 92, 255, 0.22), #14141f)',
               color: currentUser
-                ? currentUser.role === 'admin'
+                ? isSuperAdmin
                   ? '#e0d4ff'
-                  : effectiveIsPro
-                    ? '#fde047'
-                    : '#e2e8f0'
+                  : hasAdminAccess
+                    ? '#6ee7b7'
+                    : effectiveIsPro
+                      ? '#fde047'
+                      : '#e2e8f0'
                 : '#ddd6fe',
               display: 'inline-flex',
               alignItems: 'center',
@@ -849,32 +872,54 @@ export default function App() {
               fontSize: '12px',
             }}
           >
-            <span>{currentUser ? (currentUser.role === 'admin' ? '⚙️' : effectiveIsPro ? '👑' : '👤') : '🔑'}</span>
+            <span>
+              {currentUser
+                ? isSuperAdmin
+                  ? '👑'
+                  : hasAdminAccess
+                    ? '🛡️'
+                    : effectiveIsPro
+                      ? '⚡'
+                      : '👤'
+                : '🔑'}
+            </span>
             <span style={{ maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {currentUser
-                ? currentUser.email.split('@')[0]
+                ? currentUser.name || currentUser.email.split('@')[0]
                 : isAr
                   ? 'تسجيل الدخول'
                   : 'Sign In'}
             </span>
             {currentUser && (
               <span
+                id="navbarUserRoleBadge"
                 style={{
                   fontSize: '9px',
-                  padding: '1px 5px',
-                  borderRadius: '4px',
-                  background: currentUser.role === 'admin' ? '#7c5cff' : effectiveIsPro ? '#f59e0b' : '#2d2d3f',
-                  color: currentUser.role === 'admin' || effectiveIsPro ? '#fff' : '#cbd5e1',
+                  padding: '1px 6px',
+                  borderRadius: '99px',
+                  background: isSuperAdmin
+                    ? 'linear-gradient(135deg, #7c5cff, #6366f1)'
+                    : hasAdminAccess
+                      ? 'linear-gradient(135deg, #10b981, #059669)'
+                      : effectiveIsPro
+                        ? '#f59e0b'
+                        : '#2d2d3f',
+                  color: hasAdminAccess || effectiveIsPro ? '#fff' : '#cbd5e1',
                   fontWeight: 800,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px',
                 }}
               >
-                {currentUser.role === 'admin'
+                {isSuperAdmin
                   ? isAr
-                    ? 'مدير'
-                    : 'Admin'
-                  : effectiveIsPro
-                    ? t.navProBadge
-                    : t.navFreeBadge}
+                    ? '👑 المدير العام'
+                    : '👑 Super Admin'
+                  : hasAdminAccess
+                    ? `🛡️ ${currentUser.adminBadgeTitle || (isAr ? 'مشرف معتمد' : 'Moderator')} (${getEffectiveAdminPermissions(currentUser).length})`
+                    : effectiveIsPro
+                      ? t.navProBadge
+                      : t.navFreeBadge}
               </span>
             )}
           </button>

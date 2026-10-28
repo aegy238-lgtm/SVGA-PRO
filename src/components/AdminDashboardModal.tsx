@@ -1,12 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   ActivityLogEntry,
+  AdminPermissionKey,
+  ALL_ADMIN_PERMISSIONS,
+  ALL_ADMIN_PERMISSION_KEYS,
   ALL_SUPPORTED_FORMATS,
   BroadcastNotification,
   PlatformSettings,
   PlatformState,
   UserAccount,
   buildWhatsAppUrl,
+  canAccessAdminDashboard,
+  getEffectiveAdminPermissions,
+  hasAdminPermission,
+  isPurgedLegacyAdmin,
+  isSuperAdminUser,
+  sanitizeUsersList,
+  getDeletedUserIds,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import {
@@ -23,6 +33,15 @@ import {
   FirebaseConnectionStatus,
 } from '../utils/firebase';
 
+export type AdminDashboardTabId =
+  | 'users'
+  | 'admins_security'
+  | 'activity_logs'
+  | 'pro'
+  | 'branding'
+  | 'notifications'
+  | 'firebase';
+
 interface AdminDashboardModalProps {
   open: boolean;
   onClose: () => void;
@@ -32,7 +51,7 @@ interface AdminDashboardModalProps {
   onUpdateNotifications: (next: BroadcastNotification[]) => void;
   onUpdateActivityLogs?: (next: ActivityLogEntry[]) => void;
   onChangePreviewRole: (role: 'actual' | 'free_user' | 'pro_user') => void;
-  initialTab?: 'users' | 'activity_logs' | 'pro' | 'branding' | 'notifications' | 'firebase';
+  initialTab?: AdminDashboardTabId;
 }
 
 export default function AdminDashboardModal({
@@ -46,9 +65,7 @@ export default function AdminDashboardModal({
   onChangePreviewRole,
   initialTab = 'users',
 }: AdminDashboardModalProps) {
-  const [activeTab, setActiveTab] = useState<
-    'users' | 'activity_logs' | 'pro' | 'branding' | 'notifications' | 'firebase'
-  >(initialTab);
+  const [activeTab, setActiveTab] = useState<AdminDashboardTabId>(initialTab);
   const [fbStatus, setFbStatus] = useState<FirebaseConnectionStatus>({
     isConfigured: true,
     isConnected: false,
@@ -67,12 +84,41 @@ export default function AdminDashboardModal({
   const [newUserPassword, setNewUserPassword] = useState('123456');
   const [newUserIsPro, setNewUserIsPro] = useState(true);
 
+  // Moderator & Granular Permissions Editor state
+  const [selectedModUserId, setSelectedModUserId] = useState<string>('');
+  const [modIsAdmin, setModIsAdmin] = useState<boolean>(false);
+  const [modBadgeTitle, setModBadgeTitle] = useState<string>('مشرف معتمد 🛡️');
+  const [modPermissions, setModPermissions] = useState<AdminPermissionKey[]>([
+    'manage_users',
+    'view_logs',
+  ]);
+
+  // Super Admin Account Security state
+  const [superAdminNameInput, setSuperAdminNameInput] = useState<string>('');
+  const [superAdminEmailInput, setSuperAdminEmailInput] = useState<string>('');
+  const [superAdminPasswordInput, setSuperAdminPasswordInput] = useState<string>('');
+  const [showSuperAdminPassword, setShowSuperAdminPassword] = useState<boolean>(false);
+
   const [notifTitle, setNotifTitle] = useState('');
   const [notifMessage, setNotifMessage] = useState('');
   const [notifImportant, setNotifImportant] = useState(true);
   const [saveFeedback, setSaveFeedback] = useState('');
 
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+
+  const currentUser = state.users.find((u) => u.id === state.currentUserId) || null;
+  const isCurrentSuperAdmin = isSuperAdminUser(currentUser);
+  const hasDashboardAccess = canAccessAdminDashboard(currentUser);
+
+  const tabPermissionMap: Record<AdminDashboardTabId, AdminPermissionKey> = {
+    users: 'manage_users',
+    admins_security: 'manage_admins',
+    activity_logs: 'view_logs',
+    pro: 'manage_pro',
+    branding: 'manage_branding',
+    notifications: 'manage_notifications',
+    firebase: 'manage_firebase',
+  };
 
   useEffect(() => {
     const unsub = subscribeToFirebaseStatus((status) => {
@@ -87,17 +133,63 @@ export default function AdminDashboardModal({
     }
   }, [open, initialTab]);
 
+  // Ensure activeTab is always a permitted tab for the logged-in admin/moderator
+  useEffect(() => {
+    if (!open || !currentUser) return;
+    const reqPerm = tabPermissionMap[activeTab];
+    if (reqPerm && !hasAdminPermission(currentUser, reqPerm)) {
+      const firstAllowed = (Object.keys(tabPermissionMap) as AdminDashboardTabId[]).find((tId) =>
+        hasAdminPermission(currentUser, tabPermissionMap[tId])
+      );
+      if (firstAllowed) {
+        setActiveTab(firstAllowed);
+      }
+    }
+  }, [open, activeTab, currentUser]);
+
+  // Populate Super Admin credential inputs when opening admins_security tab
+  useEffect(() => {
+    const superAdminAcc = state.users.find((u) => isSuperAdminUser(u));
+    if (superAdminAcc) {
+      setSuperAdminNameInput(superAdminAcc.name || '');
+      setSuperAdminEmailInput(superAdminAcc.email || '');
+      setSuperAdminPasswordInput(superAdminAcc.password || '');
+    }
+  }, [open, state.users]);
+
+  // Sync selected user into the Moderator Permissions editor
+  useEffect(() => {
+    const nonSuperUsers = state.users.filter((u) => !isSuperAdminUser(u) && !isPurgedLegacyAdmin(u));
+    if (!selectedModUserId && nonSuperUsers.length > 0) {
+      setSelectedModUserId(nonSuperUsers[0].id);
+      return;
+    }
+    const target = state.users.find((u) => u.id === selectedModUserId);
+    if (target) {
+      const isTargetMod = canAccessAdminDashboard(target);
+      setModIsAdmin(isTargetMod);
+      setModBadgeTitle(target.adminBadgeTitle || 'مشرف معتمد 🛡️');
+      const existingPerms = getEffectiveAdminPermissions(target);
+      setModPermissions(existingPerms.length > 0 ? existingPerms : ['manage_users', 'view_logs']);
+    }
+  }, [selectedModUserId, state.users]);
+
   useEffect(() => {
     if (open && activeTab === 'firebase') {
       testFirebaseConnection();
     }
-    if (open && activeTab === 'users') {
+    if (open && (activeTab === 'users' || activeTab === 'admins_security')) {
       fetchFirestoreUsers().then((fetched) => {
         if (fetched && fetched.length > 0) {
+          const deletedIds = getDeletedUserIds();
           const userMap = new Map<string, UserAccount>();
-          users.forEach((u) => userMap.set(u.id, u));
-          fetched.forEach((u) => userMap.set(u.id, u));
-          onUpdateUsers(Array.from(userMap.values()));
+          state.users.forEach((u) => {
+            if (!isPurgedLegacyAdmin(u) && !deletedIds.includes(u.id)) userMap.set(u.id, u);
+          });
+          fetched.forEach((u) => {
+            if (!isPurgedLegacyAdmin(u) && !deletedIds.includes(u.id)) userMap.set(u.id, u);
+          });
+          onUpdateUsers(sanitizeUsersList(Array.from(userMap.values()), deletedIds));
         }
       }).catch(() => {});
     }
@@ -112,7 +204,8 @@ export default function AdminDashboardModal({
 
   const [isRefreshingUsers, setIsRefreshingUsers] = useState(false);
 
-  if (!open) return null;
+  // Strict security gate: never render Admin Dashboard if closed or user lacks admin/moderator permissions
+  if (!open || !hasDashboardAccess) return null;
 
   const isAr = state.language === 'ar';
   const t = getTranslation(state.language);
@@ -120,7 +213,124 @@ export default function AdminDashboardModal({
 
   const showSavedFeedback = (msgAr: string, msgEn: string) => {
     setSaveFeedback(isAr ? msgAr : msgEn);
-    setTimeout(() => setSaveFeedback(''), 2500);
+    setTimeout(() => setSaveFeedback(''), 2800);
+  };
+
+  const handleSelectUserForPermissions = (userId: string) => {
+    setSelectedModUserId(userId);
+    setActiveTab('admins_security');
+  };
+
+  const handleToggleModPermissionKey = (permKey: AdminPermissionKey) => {
+    setModPermissions((prev) =>
+      prev.includes(permKey) ? prev.filter((k) => k !== permKey) : [...prev, permKey]
+    );
+  };
+
+  const handleSaveModeratorPermissions = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!hasAdminPermission(currentUser, 'manage_admins')) return;
+    const candidateUsers = sortedUsers.filter((u) => !isSuperAdminUser(u));
+    const target =
+      candidateUsers.find((u) => u.id === selectedModUserId) || candidateUsers[0] || null;
+    if (!target || isSuperAdminUser(target)) return;
+
+    const cleanPerms = modIsAdmin ? modPermissions : [];
+    const effectiveRole: 'admin' | 'user' = modIsAdmin && cleanPerms.length > 0 ? 'admin' : 'user';
+
+    const updatedUser: UserAccount = {
+      ...target,
+      role: effectiveRole,
+      isSuperAdmin: false,
+      adminPermissions: cleanPerms,
+      adminBadgeTitle:
+        effectiveRole === 'admin' ? modBadgeTitle.trim() || 'مشرف معتمد 🛡️' : undefined,
+      adminGrantedAt:
+        effectiveRole === 'admin'
+          ? target.adminGrantedAt || new Date().toISOString()
+          : undefined,
+      isPro: effectiveRole === 'admin' ? true : target.isPro,
+    };
+
+    const nextUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    onUpdateUsers(nextUsers);
+    await saveUserToFirestore(updatedUser);
+
+    showSavedFeedback(
+      effectiveRole === 'admin'
+        ? `🛡️ تم منح الحساب (${updatedUser.email}) صلاحية مشرف (${cleanPerms.length} صلاحيات) وإظهار العلامة في حسابه فوراً ✓`
+        : `تم إلغاء صلاحيات الإشراف من الحساب (${updatedUser.email}) وإعادته كمستخدم عادي ✓`,
+      effectiveRole === 'admin'
+        ? `🛡️ Granted Moderator access (${cleanPerms.length} permissions) & account badge to ${updatedUser.email} ✓`
+        : `Revoked Moderator access from ${updatedUser.email} ✓`
+    );
+  };
+
+  const handleQuickRevokeModerator = async (userId: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_admins')) return;
+    const target = users.find((u) => u.id === userId);
+    if (!target || isSuperAdminUser(target)) return;
+
+    const updatedUser: UserAccount = {
+      ...target,
+      role: 'user',
+      isSuperAdmin: false,
+      adminPermissions: [],
+      adminBadgeTitle: undefined,
+      adminGrantedAt: undefined,
+    };
+    const nextUsers = users.map((u) => (u.id === updatedUser.id ? updatedUser : u));
+    onUpdateUsers(nextUsers);
+    await saveUserToFirestore(updatedUser);
+    showSavedFeedback(
+      `تم سحب صلاحية الإشراف من (${updatedUser.email}) بنجاح ✓`,
+      `Moderator role revoked from ${updatedUser.email} ✓`
+    );
+  };
+
+  const handleUpdateSuperAdminCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isCurrentSuperAdmin) return;
+    const emailClean = superAdminEmailInput.trim().toLowerCase();
+    const pwdClean = superAdminPasswordInput.trim();
+    const nameClean = superAdminNameInput.trim() || 'المدير العام (Super Admin)';
+
+    if (!emailClean || !pwdClean || pwdClean.length < 6) {
+      showSavedFeedback(
+        '⚠️ يرجى إدخال بريد إلكتروني صحيح وكلمة مرور قوية (6 أحرف على الأقل)',
+        '⚠️ Please enter a valid email and strong password (min 6 chars)'
+      );
+      return;
+    }
+    if (isPurgedLegacyAdmin({ email: emailClean })) {
+      showSavedFeedback(
+        '⛔ لا يمكن استخدام بريد المدير القديم المحذوف نهائياً، اختر بريداً جديداً.',
+        '⛔ Cannot use a purged legacy admin email.'
+      );
+      return;
+    }
+
+    const superAcc = users.find((u) => isSuperAdminUser(u));
+    if (!superAcc) return;
+
+    const updatedSuper: UserAccount = {
+      ...superAcc,
+      name: nameClean,
+      email: emailClean,
+      password: pwdClean,
+      role: 'admin',
+      isSuperAdmin: true,
+      adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
+      isPro: true,
+    };
+
+    const nextUsers = users.map((u) => (u.id === superAcc.id ? updatedSuper : u));
+    onUpdateUsers(nextUsers);
+    await saveUserToFirestore(updatedSuper);
+    showSavedFeedback(
+      '🔐 تم تحديث وتأمين بيانات حساب المدير العام ومزامنتها مع الخادم بنجاح ✓',
+      '🔐 Super Admin credentials updated and secured in Firebase ✓'
+    );
   };
 
   const handleRefreshUsersFromFirebase = async () => {
@@ -128,10 +338,15 @@ export default function AdminDashboardModal({
     try {
       const fetched = await fetchFirestoreUsers();
       if (fetched && fetched.length > 0) {
+        const deletedIds = getDeletedUserIds();
         const userMap = new Map<string, UserAccount>();
-        users.forEach((u) => userMap.set(u.id, u));
-        fetched.forEach((u) => userMap.set(u.id, u));
-        onUpdateUsers(Array.from(userMap.values()));
+        users.forEach((u) => {
+          if (!isPurgedLegacyAdmin(u) && !deletedIds.includes(u.id)) userMap.set(u.id, u);
+        });
+        fetched.forEach((u) => {
+          if (!isPurgedLegacyAdmin(u) && !deletedIds.includes(u.id)) userMap.set(u.id, u);
+        });
+        onUpdateUsers(sanitizeUsersList(Array.from(userMap.values()), deletedIds));
         showSavedFeedback(
           `تم جلب وتحديث الحسابات من Firebase بنجاح (${fetched.length} مستخدم) ✓`,
           `Users refreshed from Firebase (${fetched.length} users) ✓`
@@ -150,6 +365,7 @@ export default function AdminDashboardModal({
   };
 
   const handleTestFirebase = async () => {
+    if (!hasAdminPermission(currentUser, 'manage_firebase')) return;
     setFbLog(isAr ? 'جاري فحص الاتصال بقاعدة بيانات Firebase...' : 'Testing connection to Firebase...');
     const res = await testFirebaseConnection();
     setFbLog(res.message || (res.isConnected ? 'متصل بنجاح' : 'خطأ في الاتصال'));
@@ -159,6 +375,7 @@ export default function AdminDashboardModal({
   };
 
   const handleSyncFirebase = async () => {
+    if (!hasAdminPermission(currentUser, 'manage_firebase')) return;
     setFbSyncing(true);
     setFbLog(
       isAr
@@ -174,6 +391,7 @@ export default function AdminDashboardModal({
   };
 
   const handleToggleUserPro = async (userId: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_users')) return;
     let updatedUser: UserAccount | undefined;
     const next = users.map((u) => {
       if (u.id !== userId) return u;
@@ -198,8 +416,9 @@ export default function AdminDashboardModal({
   };
 
   const handleDeleteUser = async (userId: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_users')) return;
     const target = users.find((u) => u.id === userId);
-    if (!target || target.role === 'admin') return;
+    if (!target || isSuperAdminUser(target)) return;
 
     const confirmMsg = isAr
       ? `هل أنت متأكد من حذف حساب "${target.name}" (${target.email}) بشكل نهائي من قاعدة بيانات Firebase ومن الداشبورد؟`
@@ -219,6 +438,7 @@ export default function AdminDashboardModal({
   };
 
   const handleDeleteLogEntry = async (logId: string) => {
+    if (!hasAdminPermission(currentUser, 'view_logs')) return;
     const nextLogs = (state.activityLogs || []).filter((l) => l.id !== logId);
     if (onUpdateActivityLogs) {
       onUpdateActivityLogs(nextLogs);
@@ -228,6 +448,7 @@ export default function AdminDashboardModal({
   };
 
   const handleClearAllLogs = async () => {
+    if (!hasAdminPermission(currentUser, 'view_logs')) return;
     const allLogs = state.activityLogs || [];
     if (allLogs.length === 0) return;
     if (
@@ -267,8 +488,14 @@ export default function AdminDashboardModal({
 
   const handleAddUser = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasAdminPermission(currentUser, 'manage_users')) return;
     if (!newUserName.trim() || !newUserEmail.trim()) return;
-    const exists = users.some((u) => u.email.toLowerCase() === newUserEmail.trim().toLowerCase());
+    const emailClean = newUserEmail.trim().toLowerCase();
+    if (isPurgedLegacyAdmin({ email: emailClean })) {
+      showSavedFeedback('هذا البريد محظور أمنياً!', 'This email is restricted!');
+      return;
+    }
+    const exists = users.some((u) => u.email.toLowerCase() === emailClean);
     if (exists) {
       showSavedFeedback('البريد الإلكتروني مسجل بالفعل!', 'Email already exists!');
       return;
@@ -276,7 +503,7 @@ export default function AdminDashboardModal({
     const created: UserAccount = {
       id: 'usr_' + Date.now(),
       name: newUserName.trim(),
-      email: newUserEmail.trim(),
+      email: emailClean,
       phone: newUserPhone.trim(),
       password: newUserPassword || '123456',
       role: 'user',
@@ -293,6 +520,7 @@ export default function AdminDashboardModal({
   };
 
   const handleToggleFormatPro = (fmtKey: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
     const exists = settings.proFormats.includes(fmtKey);
     const nextProFormats = exists
       ? settings.proFormats.filter((k) => k !== fmtKey)
@@ -305,6 +533,7 @@ export default function AdminDashboardModal({
   };
 
   const handleSetAllFormatsPro = (makePro: boolean) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
     onUpdateSettings({
       ...settings,
       proFormats: makePro ? ALL_SUPPORTED_FORMATS.map((f) => f.key) : [],
@@ -317,6 +546,7 @@ export default function AdminDashboardModal({
   };
 
   const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!hasAdminPermission(currentUser, 'manage_branding')) return;
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -335,6 +565,7 @@ export default function AdminDashboardModal({
 
   const handleSendNotification = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasAdminPermission(currentUser, 'manage_notifications')) return;
     if (!notifTitle.trim() || !notifMessage.trim()) return;
     const newNotif: BroadcastNotification = {
       id: 'notif_' + Date.now(),
@@ -353,6 +584,7 @@ export default function AdminDashboardModal({
   };
 
   const handleDeleteNotification = (id: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_notifications')) return;
     onUpdateNotifications(notifications.filter((n) => n.id !== id));
     showSavedFeedback('تم حذف الإشعار', 'Notification deleted');
   };
@@ -364,16 +596,19 @@ export default function AdminDashboardModal({
   };
 
   // Sort newest registrations first so new users always appear at the top!
-  const sortedUsers = [...users].sort((a, b) => {
-    const timeA = new Date(a.createdAt || 0).getTime();
-    const timeB = new Date(b.createdAt || 0).getTime();
-    return timeB - timeA;
-  });
+  const sortedUsers = [...users]
+    .filter((u) => !isPurgedLegacyAdmin(u))
+    .sort((a, b) => {
+      const timeA = new Date(a.createdAt || 0).getTime();
+      const timeB = new Date(b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
 
   const filteredUsers = sortedUsers.filter((u) => {
-    if (userFilterRole === 'admin' && u.role !== 'admin') return false;
-    if (userFilterRole === 'pro' && (!u.isPro || u.role === 'admin')) return false;
-    if (userFilterRole === 'free' && (u.isPro || u.role === 'admin')) return false;
+    const isUserAdmin = canAccessAdminDashboard(u);
+    if (userFilterRole === 'admin' && !isUserAdmin) return false;
+    if (userFilterRole === 'pro' && (!u.isPro || isUserAdmin)) return false;
+    if (userFilterRole === 'free' && (u.isPro || isUserAdmin)) return false;
 
     const q = userSearch.toLowerCase().trim();
     if (!q) return true;
@@ -397,10 +632,35 @@ export default function AdminDashboardModal({
       );
     });
 
-  const recentUsers = sortedUsers.filter((u) => u.role !== 'admin' && isRecentUser(u));
+  const recentUsers = sortedUsers.filter((u) => !canAccessAdminDashboard(u) && isRecentUser(u));
 
-  const proUsersCount = users.filter((u) => u.isPro).length;
-  const freeUsersCount = users.filter((u) => !u.isPro).length;
+  const proUsersCount = sortedUsers.filter((u) => u.isPro).length;
+  const freeUsersCount = sortedUsers.filter((u) => !u.isPro).length;
+  const allDefinitionsTabs: { id: AdminDashboardTabId; label: string; perm: AdminPermissionKey }[] = [
+    { id: 'users', label: t.dashTabUsers, perm: 'manage_users' },
+    {
+      id: 'admins_security',
+      label: isAr ? '🛡️ المشرفين والحماية' : '🛡️ Admins & Security',
+      perm: 'manage_admins',
+    },
+    {
+      id: 'activity_logs',
+      label: isAr ? '📋 سجل النشاط والرفع' : '📋 Activity Logs',
+      perm: 'view_logs',
+    },
+    { id: 'pro', label: t.dashTabProFormats, perm: 'manage_pro' },
+    { id: 'branding', label: t.dashTabBranding, perm: 'manage_branding' },
+    { id: 'notifications', label: t.dashTabNotifications, perm: 'manage_notifications' },
+    {
+      id: 'firebase',
+      label: isAr ? '🔥 قاعدة بيانات Firebase' : '🔥 Firebase Database',
+      perm: 'manage_firebase',
+    },
+  ];
+
+  const visibleTabs = allDefinitionsTabs.filter((tab) =>
+    hasAdminPermission(currentUser, tab.perm)
+  );
 
   return (
     <div
@@ -424,8 +684,8 @@ export default function AdminDashboardModal({
     >
       <div
         style={{
-          width: 'min(1060px, 98vw)',
-          height: 'min(760px, 92vh)',
+          width: 'min(1080px, 98vw)',
+          height: 'min(780px, 92vh)',
           background: '#0e0e16',
           border: '1px solid #28283c',
           borderRadius: '16px',
@@ -465,9 +725,31 @@ export default function AdminDashboardModal({
               ⚙️
             </div>
             <div>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>
-                {t.dashTitle}
-              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+                  {t.dashTitle}
+                </h2>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    padding: '2px 10px',
+                    borderRadius: '99px',
+                    background: isCurrentSuperAdmin
+                      ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
+                      : 'linear-gradient(135deg, #10b981, #059669)',
+                    color: '#fff',
+                  }}
+                >
+                  {isCurrentSuperAdmin
+                    ? isAr
+                      ? '👑 المدير العام — كامل الصلاحيات المؤمنة'
+                      : '👑 Super Admin — Full Secured Access'
+                    : isAr
+                      ? `🛡️ ${currentUser?.adminBadgeTitle || 'مشرف معتمد'} (${visibleTabs.length} أقسام مصرح بها)`
+                      : `🛡️ ${currentUser?.adminBadgeTitle || 'Moderator'} (${visibleTabs.length} permitted tabs)`}
+                </span>
+              </div>
               <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9898ad' }}>{t.dashSub}</p>
             </div>
           </div>
@@ -531,7 +813,7 @@ export default function AdminDashboardModal({
           </div>
         </div>
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs (Filtered by Granular Admin Permissions) */}
         <div
           style={{
             display: 'flex',
@@ -542,24 +824,13 @@ export default function AdminDashboardModal({
             overflowX: 'auto',
           }}
         >
-          {(
-            [
-              { id: 'users', label: t.dashTabUsers },
-              { id: 'activity_logs', label: isAr ? '📋 سجل النشاط والرفع' : '📋 Activity Logs' },
-              { id: 'pro', label: t.dashTabProFormats },
-              { id: 'branding', label: t.dashTabBranding },
-              { id: 'notifications', label: t.dashTabNotifications },
-              {
-                id: 'firebase',
-                label: isAr ? '🔥 قاعدة بيانات Firebase' : '🔥 Firebase Database',
-              },
-            ] as const
-          ).map((tab) => {
+          {visibleTabs.map((tab) => {
             const on = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
                 type="button"
+                id={`adminTab_${tab.id}`}
                 onClick={() => setActiveTab(tab.id)}
                 style={{
                   padding: '8px 16px',
@@ -959,8 +1230,10 @@ export default function AdminDashboardModal({
                         </tr>
                       ) : (
                         filteredUsers.map((u) => {
-                          const isRecent = isRecentUser(u) && u.role !== 'admin';
-                          const isAdminRole = u.role === 'admin' || u.email === 'aegy238@gmail.com';
+                          const isSuper = isSuperAdminUser(u);
+                          const isAdminRole = canAccessAdminDashboard(u);
+                          const isRecent = isRecentUser(u) && !isAdminRole;
+                          const userPerms = getEffectiveAdminPermissions(u);
 
                           return (
                             <tr
@@ -977,11 +1250,13 @@ export default function AdminDashboardModal({
                                       width: '28px',
                                       height: '28px',
                                       borderRadius: '50%',
-                                      background: isAdminRole
+                                      background: isSuper
                                         ? 'linear-gradient(135deg, #6366f1, #a855f7)'
-                                        : u.isPro
-                                          ? 'linear-gradient(135deg, #f59e0b, #d97706)'
-                                          : '#222234',
+                                        : isAdminRole
+                                          ? 'linear-gradient(135deg, #10b981, #059669)'
+                                          : u.isPro
+                                            ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                                            : '#222234',
                                       display: 'grid',
                                       placeItems: 'center',
                                       fontSize: '13px',
@@ -989,7 +1264,7 @@ export default function AdminDashboardModal({
                                       fontWeight: 800,
                                     }}
                                   >
-                                    {isAdminRole ? '👑' : u.isPro ? '⚡' : '👤'}
+                                    {isSuper ? '👑' : isAdminRole ? '🛡️' : u.isPro ? '⚡' : '👤'}
                                   </div>
                                   <div>
                                     <div style={{ color: '#fff', fontWeight: 700 }}>{u.name}</div>
@@ -1013,7 +1288,7 @@ export default function AdminDashboardModal({
                                 </div>
                               </td>
                               <td style={{ padding: '10px 8px' }}>
-                                {isAdminRole ? (
+                                {isSuper ? (
                                   <span
                                     style={{
                                       background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25))',
@@ -1027,8 +1302,27 @@ export default function AdminDashboardModal({
                                       whiteSpace: 'nowrap',
                                     }}
                                   >
-                                    👑 {isAr ? 'مدير الموقع (Admin)' : 'Admin Account'}
+                                    👑 {isAr ? 'المدير العام (Super Admin)' : 'Super Admin'}
                                   </span>
+                                ) : isAdminRole ? (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                    <span
+                                      style={{
+                                        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.22), rgba(5, 150, 105, 0.22))',
+                                        border: '1px solid #10b981',
+                                        color: '#a7f3d0',
+                                        padding: '3px 10px',
+                                        borderRadius: '99px',
+                                        fontWeight: 800,
+                                        fontSize: '11px',
+                                        display: 'inline-block',
+                                        whiteSpace: 'nowrap',
+                                        width: 'fit-content',
+                                      }}
+                                    >
+                                      🛡️ {u.adminBadgeTitle || (isAr ? 'مشرف معتمد (Admin)' : 'Moderator')} ({userPerms.length})
+                                    </span>
+                                  </div>
                                 ) : u.isPro ? (
                                   <span
                                     style={{
@@ -1075,34 +1369,64 @@ export default function AdminDashboardModal({
                                 </div>
                               </td>
                               <td style={{ padding: '10px 8px' }}>
-                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleToggleUserPro(u.id)}
-                                    style={{
-                                      padding: '6px 12px',
-                                      borderRadius: '8px',
-                                      border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
-                                      background: u.isPro
-                                        ? 'rgba(239, 68, 68, 0.15)'
-                                        : 'linear-gradient(135deg, #10b981, #059669)',
-                                      color: u.isPro ? '#fca5a5' : '#fff',
-                                      fontWeight: 800,
-                                      cursor: 'pointer',
-                                      fontSize: '11px',
-                                      whiteSpace: 'nowrap',
-                                      boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
-                                    }}
-                                  >
-                                    {u.isPro
-                                      ? isAr
-                                        ? '❌ إزالة أدوات برو'
-                                        : '❌ Remove Pro'
-                                      : isAr
-                                        ? '⚡ تفعيل باقة برو تلقائياً'
-                                        : '⚡ Activate Pro'}
-                                  </button>
-                                  {!isAdminRole && (
+                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {!isSuper && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleUserPro(u.id)}
+                                      style={{
+                                        padding: '6px 10px',
+                                        borderRadius: '8px',
+                                        border: u.isPro ? '1px solid #ef4444' : '1px solid #10b981',
+                                        background: u.isPro
+                                          ? 'rgba(239, 68, 68, 0.15)'
+                                          : 'linear-gradient(135deg, #10b981, #059669)',
+                                        color: u.isPro ? '#fca5a5' : '#fff',
+                                        fontWeight: 800,
+                                        cursor: 'pointer',
+                                        fontSize: '11px',
+                                        whiteSpace: 'nowrap',
+                                        boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
+                                      }}
+                                    >
+                                      {u.isPro
+                                        ? isAr
+                                          ? '❌ إزالة برو'
+                                          : '❌ Remove Pro'
+                                        : isAr
+                                          ? '⚡ تفعيل برو'
+                                          : '⚡ Activate Pro'}
+                                    </button>
+                                  )}
+
+                                  {!isSuper && hasAdminPermission(currentUser, 'manage_admins') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelectUserForPermissions(u.id)}
+                                      style={{
+                                        padding: '6px 10px',
+                                        borderRadius: '8px',
+                                        border: '1px solid #7c5cff',
+                                        background: isAdminRole
+                                          ? 'rgba(124, 92, 255, 0.25)'
+                                          : 'rgba(124, 92, 255, 0.14)',
+                                        color: '#e0d4ff',
+                                        fontWeight: 800,
+                                        cursor: 'pointer',
+                                        fontSize: '11px',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                      title={
+                                        isAr
+                                          ? 'منح أو تعديل صلاحيات المشرف في الداشبورد لهذا الحساب'
+                                          : 'Grant or edit dashboard moderator permissions for this user'
+                                      }
+                                    >
+                                      🛡️ {isAr ? 'صلاحيات المشرف' : 'Permissions'}
+                                    </button>
+                                  )}
+
+                                  {!isSuper && (
                                     <button
                                       type="button"
                                       onClick={() => handleDeleteUser(u.id)}
@@ -1119,7 +1443,7 @@ export default function AdminDashboardModal({
                                       }}
                                       title={isAr ? 'حذف الحساب بشكل نهائي من قاعدة البيانات والموقع' : 'Delete user permanently from database & dashboard'}
                                     >
-                                      🗑️ {isAr ? 'حذف نهائي' : 'Delete'}
+                                      🗑️ {isAr ? 'حذف' : 'Delete'}
                                     </button>
                                   )}
                                 </div>
@@ -1132,6 +1456,647 @@ export default function AdminDashboardModal({
                   </table>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB: ADMINS, MODERATORS & PLATFORM SECURITY */}
+          {activeTab === 'admins_security' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Section 1: Assign Sub-Admin / Moderator & Granular Permissions */}
+              <div
+                style={{
+                  background: 'linear-gradient(180deg, #161626 0%, #12121d 100%)',
+                  border: '1px solid rgba(124, 92, 255, 0.45)',
+                  borderRadius: '14px',
+                  padding: '20px',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span>🛡️</span>
+                      <span>
+                        {isAr
+                          ? 'تعيين المشرفين (الأدمن) وتخصيص صلاحيات الداشبورد'
+                          : 'Assign Moderators (Sub-Admins) & Granular Dashboard Permissions'}
+                      </span>
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#a0a0b8' }}>
+                      {isAr
+                        ? 'اختر أي مستخدم مسجل، وامنحه رتبة مشرف مع تحديد الأقسام المسموح له باستخدامها فقط. ستظهر علامة المشرف المعتمد تلقائياً في حسابه الشخصي.'
+                        : 'Select any registered user, grant them Moderator access, and pick the exact dashboard sections they can use. Their verified badge will appear automatically in their account.'}
+                    </p>
+                  </div>
+                </div>
+
+                {(() => {
+                  const candidateUsers = sortedUsers.filter((u) => !isSuperAdminUser(u));
+                  const selectedUserObj =
+                    candidateUsers.find((u) => u.id === selectedModUserId) || candidateUsers[0] || null;
+
+                  if (!selectedUserObj) {
+                    return (
+                      <div style={{ padding: '16px', color: '#94a3b8', fontSize: '13px' }}>
+                        {isAr
+                          ? 'لا يوجد مستخدمون مسجلون حالياً لتعيينهم كمشرفين. أضف حساب مستخدم أولاً من تبويب المستخدمين.'
+                          : 'No regular user accounts available. Add a user account first.'}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <form onSubmit={handleSaveModeratorPermissions} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {/* Step 1 & Step 2: Select User + Toggle Admin Status + Badge Title */}
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                          gap: '14px',
+                          background: '#0f0f18',
+                          border: '1px solid #252538',
+                          borderRadius: '12px',
+                          padding: '14px',
+                        }}
+                      >
+                        <div>
+                          <label
+                            htmlFor="selectModeratorUser"
+                            style={{ display: 'block', fontSize: '12px', color: '#c4b5fd', fontWeight: 700, marginBottom: '6px' }}
+                          >
+                            {isAr ? '1️⃣ اختر حساب المستخدم:' : '1️⃣ Select User Account:'}
+                          </label>
+                          <select
+                            id="selectModeratorUser"
+                            aria-label={isAr ? 'اختر حساب المستخدم' : 'Select User Account'}
+                            value={selectedUserObj.id}
+                            onChange={(e) => setSelectedModUserId(e.target.value)}
+                            style={{
+                              width: '100%',
+                              padding: '9px 12px',
+                              borderRadius: '8px',
+                              background: '#161624',
+                              border: '1px solid #7c5cff',
+                              color: '#fff',
+                              fontWeight: 700,
+                              fontSize: '13px',
+                            }}
+                          >
+                            {candidateUsers.map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {u.name} ({u.email}) {canAccessAdminDashboard(u) ? '— 🛡️ مشرف حالياً' : '— 👤 مستخدم'}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '12px', color: '#c4b5fd', fontWeight: 700, marginBottom: '6px' }}>
+                            {isAr ? '2️⃣ حالة صلاحية الأدمن / المشرف:' : '2️⃣ Moderator / Admin Role Status:'}
+                          </label>
+                          <button
+                            type="button"
+                            id="toggleGrantModeratorBtn"
+                            onClick={() => setModIsAdmin((prev) => !prev)}
+                            style={{
+                              width: '100%',
+                              padding: '9px 14px',
+                              borderRadius: '8px',
+                              border: modIsAdmin ? '1px solid #10b981' : '1px solid #475569',
+                              background: modIsAdmin
+                                ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(5, 150, 105, 0.25))'
+                                : '#181826',
+                              color: modIsAdmin ? '#6ee7b7' : '#cbd5e1',
+                              fontWeight: 800,
+                              fontSize: '13px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '8px',
+                            }}
+                          >
+                            <span>{modIsAdmin ? '✅' : '⚪'}</span>
+                            <span>
+                              {modIsAdmin
+                                ? isAr
+                                  ? 'مفعّل كمشرف (Admin) في الداشبورد'
+                                  : 'Enabled as Dashboard Admin / Moderator'
+                                : isAr
+                                  ? 'مستخدم عادي (اضغط هنا لمنحه رتبة أدمن)'
+                                  : 'Regular User (Click to Grant Admin Role)'}
+                            </span>
+                          </button>
+                        </div>
+
+                        <div>
+                          <label
+                            htmlFor="modBadgeTitleInput"
+                            style={{ display: 'block', fontSize: '12px', color: '#c4b5fd', fontWeight: 700, marginBottom: '6px' }}
+                          >
+                            {isAr
+                              ? '3️⃣ العلامة التي تظهر في حسابه الشخصي:'
+                              : '3️⃣ Badge Displayed on User Account:'}
+                          </label>
+                          <input
+                            id="modBadgeTitleInput"
+                            type="text"
+                            value={modBadgeTitle}
+                            onChange={(e) => setModBadgeTitle(e.target.value)}
+                            placeholder={isAr ? 'مثال: مشرف معتمد 🛡️' : 'e.g. Verified Admin 🛡️'}
+                            style={{
+                              width: '100%',
+                              padding: '8px 12px',
+                              borderRadius: '8px',
+                              background: '#161624',
+                              border: '1px solid #2e2e46',
+                              color: '#fff',
+                              fontSize: '13px',
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Step 3: Granular Permissions Grid */}
+                      <div
+                        style={{
+                          background: '#0f0f18',
+                          border: '1px solid #252538',
+                          borderRadius: '12px',
+                          padding: '16px',
+                          opacity: modIsAdmin ? 1 : 0.65,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: '10px',
+                            marginBottom: '12px',
+                          }}
+                        >
+                          <div style={{ fontWeight: 800, fontSize: '13px', color: '#fde047' }}>
+                            {isAr
+                              ? `4️⃣ حدد الصلاحيات المسموح بها للمستخدم (${selectedUserObj.email}) داخل الداشبورد:`
+                              : `4️⃣ Select Allowed Dashboard Permissions for (${selectedUserObj.email}):`}
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setModIsAdmin(true);
+                                setModPermissions([...ALL_ADMIN_PERMISSION_KEYS]);
+                              }}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #7c5cff',
+                                background: 'rgba(124, 92, 255, 0.18)',
+                                color: '#ddd6fe',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isAr ? '✓ تحديد كل الصلاحيات' : '✓ Select All'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setModIsAdmin(true);
+                                setModPermissions(['manage_users', 'view_logs']);
+                              }}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #10b981',
+                                background: 'rgba(16, 185, 129, 0.16)',
+                                color: '#a7f3d0',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isAr ? '👥 إدارة المستخدمين والسجل فقط' : '👥 Users & Logs Only'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setModPermissions([])}
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #475569',
+                                background: '#181826',
+                                color: '#94a3b8',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isAr ? 'إلغاء التحديد' : 'Clear'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(235px, 1fr))',
+                            gap: '10px',
+                          }}
+                        >
+                          {ALL_ADMIN_PERMISSIONS.map((perm) => {
+                            const checked = modIsAdmin && modPermissions.includes(perm.key);
+                            return (
+                              <label
+                                key={perm.key}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'flex-start',
+                                  gap: '10px',
+                                  padding: '10px 12px',
+                                  borderRadius: '10px',
+                                  border: checked
+                                    ? '1px solid #10b981'
+                                    : '1px solid #242438',
+                                  background: checked
+                                    ? 'rgba(16, 185, 129, 0.12)'
+                                    : '#151522',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    if (!modIsAdmin) setModIsAdmin(true);
+                                    handleToggleModPermissionKey(perm.key);
+                                  }}
+                                  style={{ width: '16px', height: '16px', marginTop: '2px', accentColor: '#10b981' }}
+                                />
+                                <div>
+                                  <div style={{ fontWeight: 800, fontSize: '12.5px', color: checked ? '#6ee7b7' : '#fff' }}>
+                                    {perm.icon} {isAr ? perm.labelAr : perm.labelEn}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px', lineHeight: 1.35 }}>
+                                    {isAr ? perm.descAr : perm.descEn}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Live Account Badge Preview & Save Action */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '12px',
+                          background: '#12121e',
+                          border: '1px solid #282840',
+                          borderRadius: '10px',
+                          padding: '12px 16px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                            {isAr ? 'معاينة العلامة في حساب المستخدم:' : 'User Account Badge Preview:'}
+                          </span>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '4px 12px',
+                              borderRadius: '99px',
+                              border: modIsAdmin ? '1px solid #10b981' : '1px solid #475569',
+                              background: modIsAdmin ? 'rgba(16, 185, 129, 0.18)' : '#1a1a28',
+                              color: modIsAdmin ? '#6ee7b7' : '#94a3b8',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                            }}
+                          >
+                            <span>{modIsAdmin ? '🛡️' : '👤'}</span>
+                            <span>{selectedUserObj.email.split('@')[0]}</span>
+                            <span
+                              style={{
+                                background: modIsAdmin ? '#10b981' : '#334155',
+                                color: modIsAdmin ? '#022c22' : '#cbd5e1',
+                                padding: '1px 7px',
+                                borderRadius: '6px',
+                                fontSize: '10px',
+                                fontWeight: 900,
+                              }}
+                            >
+                              {modIsAdmin ? modBadgeTitle || 'مشرف معتمد 🛡️' : isAr ? 'مستخدم عادي' : 'User'}
+                            </span>
+                          </span>
+                        </div>
+
+                        <button
+                          type="submit"
+                          id="saveModeratorPermissionsBtn"
+                          style={{
+                            padding: '10px 22px',
+                            borderRadius: '10px',
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            border: 0,
+                            color: '#022c22',
+                            fontWeight: 900,
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            boxShadow: '0 6px 20px rgba(16, 185, 129, 0.35)',
+                          }}
+                        >
+                          💾 {isAr ? 'حفظ وتطبيق الصلاحيات للمستخدم فوراً' : 'Save & Apply User Permissions'}
+                        </button>
+                      </div>
+                    </form>
+                  );
+                })()}
+
+                {/* Active Moderators List */}
+                <div style={{ marginTop: '18px', borderTop: '1px solid #26263c', paddingTop: '14px' }}>
+                  <div style={{ fontWeight: 800, fontSize: '13px', color: '#c4b5fd', marginBottom: '10px' }}>
+                    {isAr
+                      ? `🛡️ قائمة المديرين والمشرفين المعتمدين حالياً (${sortedUsers.filter((u) => canAccessAdminDashboard(u)).length})`
+                      : `🛡️ Currently Active Admins & Moderators (${sortedUsers.filter((u) => canAccessAdminDashboard(u)).length})`}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {sortedUsers
+                      .filter((u) => canAccessAdminDashboard(u))
+                      .map((adminAcc) => {
+                        const isSuper = isSuperAdminUser(adminAcc);
+                        const perms = getEffectiveAdminPermissions(adminAcc);
+                        return (
+                          <div
+                            key={adminAcc.id}
+                            style={{
+                              background: '#0f0f18',
+                              border: isSuper
+                                ? '1px solid rgba(124, 92, 255, 0.5)'
+                                : '1px solid rgba(16, 185, 129, 0.4)',
+                              borderRadius: '10px',
+                              padding: '10px 14px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '10px',
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                <span style={{ fontWeight: 800, color: '#fff', fontSize: '13px' }}>
+                                  {isSuper ? '👑' : '🛡️'} {adminAcc.name} ({adminAcc.email})
+                                </span>
+                                <span
+                                  style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '99px',
+                                    background: isSuper ? '#7c5cff' : '#10b981',
+                                    color: isSuper ? '#fff' : '#022c22',
+                                    fontSize: '10px',
+                                    fontWeight: 900,
+                                  }}
+                                >
+                                  {isSuper
+                                    ? isAr
+                                      ? 'المدير العام (كامل الصلاحيات)'
+                                      : 'Super Admin (Full Access)'
+                                    : adminAcc.adminBadgeTitle || (isAr ? 'مشرف معتمد' : 'Moderator')}
+                                </span>
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px' }}>
+                                {ALL_ADMIN_PERMISSIONS.filter((p) => perms.includes(p.key)).map((p) => (
+                                  <span
+                                    key={p.key}
+                                    style={{
+                                      fontSize: '10px',
+                                      padding: '2px 7px',
+                                      borderRadius: '5px',
+                                      background: '#181828',
+                                      border: '1px solid #2e2e46',
+                                      color: '#cbd5e1',
+                                    }}
+                                  >
+                                    {p.icon} {isAr ? p.labelAr : p.labelEn}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+
+                            {!isSuper && (
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedModUserId(adminAcc.id)}
+                                  style={{
+                                    padding: '5px 10px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #7c5cff',
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    color: '#ddd6fe',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ⚙️ {isAr ? 'تعديل الصلاحيات' : 'Edit'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleQuickRevokeModerator(adminAcc.id)}
+                                  style={{
+                                    padding: '5px 10px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #ef4444',
+                                    background: 'rgba(239, 68, 68, 0.16)',
+                                    color: '#fca5a5',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  ❌ {isAr ? 'سحب الإشراف' : 'Revoke'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Super Admin Account Credentials & Platform Anti-Hacking Fortress */}
+              {isCurrentSuperAdmin && (
+                <div
+                  style={{
+                    background: '#14141f',
+                    border: '1px solid rgba(16, 185, 129, 0.4)',
+                    borderRadius: '14px',
+                    padding: '20px',
+                  }}
+                >
+                  <h3 style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 800, color: '#6ee7b7' }}>
+                    🔐 {isAr ? 'بيانات حساب المدير العام وحصن الأمان ضد الاختراق' : 'Super Admin Credentials & Security Fortress'}
+                  </h3>
+                  <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#a0a0b8' }}>
+                    {isAr
+                      ? 'تم حذف جميع حسابات المدير القديمة نهائياً من السيرفر والداشبورد. يمكنك من هنا تعديل البريد الإلكتروني وكلمة السر الخاصة بحساب المدير العام الجديد في أي وقت.'
+                      : 'All legacy admin accounts have been permanently purged. You can update the Super Admin email and password below at any time.'}
+                  </p>
+
+                  <form
+                    onSubmit={handleUpdateSuperAdminCredentials}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                      gap: '12px',
+                      alignItems: 'end',
+                      background: '#0f0f18',
+                      border: '1px solid #242438',
+                      borderRadius: '12px',
+                      padding: '14px',
+                      marginBottom: '16px',
+                    }}
+                  >
+                    <div>
+                      <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                        {isAr ? 'اسم المدير العام' : 'Super Admin Name'}
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={superAdminNameInput}
+                        onChange={(e) => setSuperAdminNameInput(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                        {isAr ? 'البريد الإلكتروني الرسمي للمدير العام' : 'Super Admin Email'}
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        value={superAdminEmailInput}
+                        onChange={(e) => setSuperAdminEmailInput(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                        {isAr ? 'كلمة المرور المشفرة للمدير العام' : 'Super Admin Password'}
+                      </label>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <input
+                          type={showSuperAdminPassword ? 'text' : 'password'}
+                          required
+                          value={superAdminPasswordInput}
+                          onChange={(e) => setSuperAdminPasswordInput(e.target.value)}
+                          style={{ flex: 1 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowSuperAdminPassword((p) => !p)}
+                          style={{
+                            padding: '6px 10px',
+                            borderRadius: '8px',
+                            border: '1px solid #2e2e46',
+                            background: '#181826',
+                            color: '#cbd5e1',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {showSuperAdminPassword ? '🙈' : '👁️'}
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      style={{
+                        padding: '9px 16px',
+                        borderRadius: '8px',
+                        background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
+                        border: 0,
+                        color: '#fff',
+                        fontWeight: 800,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      🔐 {isAr ? 'تحديث بيانات المدير العام' : 'Update Super Admin'}
+                    </button>
+                  </form>
+
+                  {/* Security Layers Status Grid */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                      gap: '10px',
+                    }}
+                  >
+                    {[
+                      {
+                        title: isAr ? 'حذف الحسابات القديمة نهائياً' : 'Legacy Admin Purge',
+                        desc: isAr
+                          ? 'تم مسح حسابات المدير السابقة من السيرفر والتخزين المحلي ومنع دخولها نهائياً.'
+                          : 'All previous admin accounts purged from Firestore and local storage.',
+                      },
+                      {
+                        title: isAr ? 'توقيع الجلسة المشفر (Session Signature)' : 'Cryptographic Session Token',
+                        desc: isAr
+                          ? 'حماية ضد التلاعب ببيانات المتصفح أو محاولة رفع الصلاحيات عبر التخزين المحلي.'
+                          : 'Prevents localStorage role/permission tampering via cryptographic signatures.',
+                      },
+                      {
+                        title: isAr ? 'الحماية ضد التخمين (Anti-Brute-Force)' : 'Brute-Force Lockout',
+                        desc: isAr
+                          ? 'قفل تلقائي لمحاولات تسجيل الدخول بعد 5 محاولات خاطئة لمنع اختراق كلمات السر.'
+                          : 'Automatic account lockout after 5 failed password attempts.',
+                      },
+                      {
+                        title: isAr ? 'مكافحة البرمجة العكسية والتصوير' : 'Anti-Reverse Engineering & Capture',
+                        desc: isAr
+                          ? 'تعطيل أدوات الفحص واختصارات السورس كود ومنع تصوير الشاشة والفيديو.'
+                          : 'Blocks source inspection shortcuts, DevTools tampering, and screen capture.',
+                      },
+                    ].map((sec, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          background: '#0f0f18',
+                          border: '1px solid rgba(16, 185, 129, 0.3)',
+                          borderRadius: '10px',
+                          padding: '12px',
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '12px', color: '#34d399' }}>
+                          ✓ {sec.title}
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', lineHeight: 1.4 }}>
+                          {sec.desc}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

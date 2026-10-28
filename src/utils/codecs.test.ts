@@ -12,6 +12,7 @@ import {
   metaFrom,
   readMeta,
   lotJson,
+  SvgaMovie,
 } from './codecs.ts';
 import {
   composeAffineTransform,
@@ -344,5 +345,50 @@ describe('MotionTools Core Codecs & Binary Helpers', () => {
     assert.equal(parsed.sp[0].fr[2].a, 1);
     assert.equal(parsed.sp[0].fr[4].a, 1);
     assert.equal(parsed.sp[0].fr[5].a, 0);
+  });
+
+  it('virtual group all layers: exports clean native decomposed SVGA without raster baking', () => {
+    const rawAsset = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const audioTrack = new Uint8Array([10, 20, 30, 40]);
+    const sourceMovie: SvgaMovie = {
+      w: 400,
+      h: 400,
+      fps: 30,
+      n: 5,
+      im: { img_head: rawAsset },
+      sp: [
+        {
+          key: 'img_head',
+          fr: Array.from({ length: 5 }, () => ({
+            a: 1,
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+            t: [1, 0, 0, 1, 50, 50],
+          })),
+        },
+      ],
+      audiosRaw: [audioTrack],
+    };
+
+    // Virtual Group All Layers applies docTransform { x: 30, y: -20, sx: 120, sy: 120 }
+    const exportedRaw = serializeDecomposedSvga(sourceMovie, {
+      docTransform: { x: 30, y: -20, sx: 120, sy: 120, rotation: 0, opacity: 100 },
+    });
+
+    const parsed = parseMovie(exportedRaw);
+    // Preserves native format:
+    assert.equal(parsed.w, 400);
+    assert.equal(parsed.h, 400);
+    assert.equal(parsed.sp.length, 1);
+    assert.equal(parsed.sp[0].key, 'img_head');
+    assert.deepEqual(parsed.im['img_head'], rawAsset);
+    assert.equal(parsed.audiosRaw?.length, 1);
+    assert.deepEqual(parsed.audiosRaw?.[0], audioTrack);
+
+    // Sprite affine matrix has group scale (1.2) and group translation applied
+    assert.ok(Math.abs(parsed.sp[0].fr[0].t[0] - 1.2) < 0.01);
+    assert.ok(Math.abs(parsed.sp[0].fr[0].t[3] - 1.2) < 0.01);
   });
 });
