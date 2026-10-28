@@ -32,6 +32,12 @@ import {
   sanitizeSiteName,
   savePermanentBranding,
   loadPermanentBranding,
+  PRO_TOOLS_DEFINITIONS,
+  ProToolDefinition,
+  ProFeatureRule,
+  ProFeatureScope,
+  normalizeProFeatureRules,
+  resetFeatureFreeAttempts,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import {
@@ -707,6 +713,41 @@ export default function AdminDashboardModal({
     showSavedFeedback(
       makePro ? 'تم تعيين جميع الصيغ ضمن باقة أدوات برو ✓' : 'تم جعل جميع الصيغ مجانية ✓',
       makePro ? 'All formats set to Pro ✓' : 'All formats set to Free ✓'
+    );
+  };
+
+  const normalizedFeatureRules = normalizeProFeatureRules(settings.proFeatureRules);
+
+  const handleUpdateProFeatureRule = (featureKey: string, patch: Partial<ProFeatureRule>) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
+    const currentRule = normalizedFeatureRules[featureKey] || {
+      isPro: true,
+      scope: 'export',
+      allowFreeAttempts: true,
+      freeAttemptsCount: 3,
+    };
+    const nextRules = {
+      ...normalizedFeatureRules,
+      [featureKey]: {
+        ...currentRule,
+        ...patch,
+      },
+    };
+    onUpdateSettings({
+      ...settings,
+      proFeatureRules: nextRules,
+    });
+    showSavedFeedback(
+      'تم تحديث إعدادات ميزة برو والمحاولات المجانية ✓',
+      'Pro feature & free attempts settings updated ✓'
+    );
+  };
+
+  const handleResetFeatureAttemptsForTesting = (featureKey: string) => {
+    resetFeatureFreeAttempts(featureKey);
+    showSavedFeedback(
+      'تمت إعادة تصفير المحاولات المجانية بنجاح للتجربة ✓',
+      'Free attempts reset for testing ✓'
     );
   };
 
@@ -3396,6 +3437,392 @@ export default function AdminDashboardModal({
                       showSavedFeedback('تم تحديث الوصف', 'Description updated');
                     }}
                   />
+                </div>
+              </div>
+
+              {/* SECTION: PRO TOOLS & FREE TRIAL ATTEMPTS CONFIGURATION */}
+              <div
+                id="adminProToolsSection"
+                style={{
+                  background: 'linear-gradient(180deg, #131224 0%, #0d0d17 100%)',
+                  border: '1px solid rgba(168, 85, 247, 0.45)',
+                  borderRadius: '14px',
+                  padding: '18px',
+                  boxShadow: '0 8px 24px rgba(168, 85, 247, 0.1)',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <div>
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: '16px',
+                        fontWeight: 800,
+                        color: '#c084fc',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span>💎</span>
+                      <span>
+                        {isAr
+                          ? 'تخصيص وظائف وميزات برو ومحاولات التجربة المجانية'
+                          : 'Configure Pro Tools & Free Trial Attempts'}
+                      </span>
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#a0a0b8' }}>
+                      {isAr
+                        ? 'حدد الوظائف المشمولة في باقة برو (مثل: استوديو الهدايا، أداة إنشاء الصور)، واختر نطاق القفل (الدخول للوظيفة بالكامل أم زر التصدير والتحميل فقط)، مع إمكانية منح المستخدمين غير المشتركين عدد محدد من المحاولات المجانية وتظهر شارتها على الأزرار.'
+                        : 'Select tools included in Pro, choose lock scope (feature access vs export only), and grant non-subscribers a configurable number of free trial attempts with live UI badges.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {PRO_TOOLS_DEFINITIONS.map((tool) => {
+                    const rule = normalizedFeatureRules[tool.key] || {
+                      isPro: tool.defaultIsPro,
+                      scope: tool.defaultScope,
+                      allowFreeAttempts: true,
+                      freeAttemptsCount: tool.defaultFreeAttempts,
+                    };
+
+                    return (
+                      <div
+                        key={tool.key}
+                        id={`proToolCard_${tool.key}`}
+                        style={{
+                          background: rule.isPro ? '#10101c' : 'rgba(16, 16, 28, 0.5)',
+                          border: rule.isPro
+                            ? '1px solid rgba(168, 85, 247, 0.4)'
+                            : '1px solid #26263a',
+                          borderRadius: '12px',
+                          padding: '16px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{ fontSize: '24px' }}>{tool.icon}</span>
+                            <div>
+                              <div style={{ fontWeight: 800, fontSize: '14px', color: '#fff' }}>
+                                {isAr ? tool.labelAr : tool.labelEn}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#9494aa', marginTop: '2px' }}>
+                                {isAr ? tool.descAr : tool.descEn}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Pro Toggle */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateProFeatureRule(tool.key, { isPro: !rule.isPro })
+                            }
+                            style={{
+                              padding: '5px 14px',
+                              borderRadius: '99px',
+                              border: rule.isPro
+                                ? '1px solid #a855f7'
+                                : '1px solid #10b981',
+                              background: rule.isPro
+                                ? 'rgba(168, 85, 247, 0.22)'
+                                : 'rgba(16, 185, 129, 0.18)',
+                              color: rule.isPro ? '#e9d5ff' : '#6ee7b7',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>{rule.isPro ? '👑' : '✅'}</span>
+                            <span>
+                              {rule.isPro
+                                ? isAr
+                                  ? 'ضمن باقة برو (مقيدة)'
+                                  : 'Pro Membership Only'
+                                : isAr
+                                  ? 'مجانية للجميع'
+                                  : 'Free For Everyone'}
+                            </span>
+                          </button>
+                        </div>
+
+                        {rule.isPro && (
+                          <div
+                            style={{
+                              borderTop: '1px solid #1f1f32',
+                              paddingTop: '12px',
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                              gap: '14px',
+                            }}
+                          >
+                            {/* Scope Selector: Access vs Export */}
+                            <div>
+                              <label
+                                style={{
+                                  display: 'block',
+                                  fontSize: '11px',
+                                  color: '#c4b5fd',
+                                  fontWeight: 700,
+                                  marginBottom: '6px',
+                                }}
+                              >
+                                {isAr
+                                  ? '🔒 تحديد موضع قفل برو (الميزة أم زر التصدير):'
+                                  : '🔒 Lock Scope (Feature Access vs Export Button):'}
+                              </label>
+                              <select
+                                value={rule.scope}
+                                onChange={(e) =>
+                                  handleUpdateProFeatureRule(tool.key, {
+                                    scope: e.target.value as ProFeatureScope,
+                                  })
+                                }
+                                style={{
+                                  width: '100%',
+                                  padding: '7px 10px',
+                                  borderRadius: '8px',
+                                  background: '#161625',
+                                  border: '1px solid #3d3d5c',
+                                  color: '#fff',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <option value="export">
+                                  {isAr
+                                    ? '⬇ قفل زر التصدير والتحميل فقط (المعاينة والتجربة متاحة)'
+                                    : '⬇ Lock Export & Download Button Only (Free Preview)'}
+                                </option>
+                                <option value="access">
+                                  {isAr
+                                    ? '🔒 قفل الدخول واستخدام الوظيفة بالكامل'
+                                    : '🔒 Lock Entire Feature Access'}
+                                </option>
+                              </select>
+                            </div>
+
+                            {/* Free Attempts Configuration */}
+                            <div>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  marginBottom: '6px',
+                                }}
+                              >
+                                <label
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    fontSize: '11px',
+                                    color: '#fde047',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={rule.allowFreeAttempts}
+                                    onChange={(e) =>
+                                      handleUpdateProFeatureRule(tool.key, {
+                                        allowFreeAttempts: e.target.checked,
+                                      })
+                                    }
+                                    style={{
+                                      width: '14px',
+                                      height: '14px',
+                                      accentColor: '#f59e0b',
+                                    }}
+                                  />
+                                  <span>
+                                    {isAr
+                                      ? '🎁 إتاحة محاولات تجربة مجانية لغير المشتركين'
+                                      : '🎁 Allow Free Trial Attempts'}
+                                  </span>
+                                </label>
+
+                                {rule.allowFreeAttempts && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleResetFeatureAttemptsForTesting(tool.key)
+                                    }
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: '6px',
+                                      border: '1px solid #475569',
+                                      background: '#1a1a2a',
+                                      color: '#cbd5e1',
+                                      fontSize: '10px',
+                                      cursor: 'pointer',
+                                    }}
+                                    title={
+                                      isAr
+                                        ? 'إعادة تصفير محاولات جهازك للتجربة'
+                                        : 'Reset trial attempts on this device for testing'
+                                    }
+                                  >
+                                    🔄 {isAr ? 'تصفير للتجربة' : 'Reset'}
+                                  </button>
+                                )}
+                              </div>
+
+                              {rule.allowFreeAttempts ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="50"
+                                    value={rule.freeAttemptsCount}
+                                    onChange={(e) =>
+                                      handleUpdateProFeatureRule(tool.key, {
+                                        freeAttemptsCount: Math.max(
+                                          1,
+                                          Number(e.target.value) || 1
+                                        ),
+                                      })
+                                    }
+                                    style={{
+                                      width: '70px',
+                                      padding: '6px 8px',
+                                      borderRadius: '8px',
+                                      background: '#161625',
+                                      border: '1px solid #f59e0b',
+                                      color: '#fde047',
+                                      fontSize: '13px',
+                                      fontWeight: 800,
+                                      textAlign: 'center',
+                                    }}
+                                  />
+                                  <span style={{ fontSize: '11px', color: '#9494aa' }}>
+                                    {isAr ? 'محاولات مجانية' : 'free attempts'}
+                                  </span>
+
+                                  {/* Quick chips */}
+                                  <div style={{ display: 'flex', gap: '4px', marginInlineStart: 'auto' }}>
+                                    {[1, 2, 3, 5, 10].map((num) => (
+                                      <button
+                                        key={num}
+                                        type="button"
+                                        onClick={() =>
+                                          handleUpdateProFeatureRule(tool.key, {
+                                            freeAttemptsCount: num,
+                                          })
+                                        }
+                                        style={{
+                                          padding: '3px 7px',
+                                          borderRadius: '5px',
+                                          border:
+                                            rule.freeAttemptsCount === num
+                                              ? '1px solid #f59e0b'
+                                              : '1px solid #2e2e42',
+                                          background:
+                                            rule.freeAttemptsCount === num
+                                              ? 'rgba(245, 158, 11, 0.25)'
+                                              : '#161624',
+                                          color:
+                                            rule.freeAttemptsCount === num
+                                              ? '#fde047'
+                                              : '#cbd5e1',
+                                          fontSize: '10px',
+                                          fontWeight: 700,
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        {num}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: '11px', color: '#ef4444' }}>
+                                  {isAr
+                                    ? '🚫 لا توجد محاولات مجانية (مطلوب اشتراك فوري)'
+                                    : '🚫 No free attempts (Immediate subscription required)'}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Live Badge Preview */}
+                            <div
+                              style={{
+                                gridColumn: '1 / -1',
+                                background: '#0b0b14',
+                                border: '1px dashed #2d2d46',
+                                borderRadius: '8px',
+                                padding: '8px 12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                flexWrap: 'wrap',
+                                gap: '8px',
+                              }}
+                            >
+                              <span style={{ fontSize: '11px', color: '#9494aa' }}>
+                                {isAr ? 'معاينة شكل الشارة في الموقع:' : 'Live Button Badge Preview:'}
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '3px 8px',
+                                    borderRadius: '99px',
+                                    fontSize: '11px',
+                                    fontWeight: 800,
+                                    background: rule.allowFreeAttempts
+                                      ? 'linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(16, 185, 129, 0.22))'
+                                      : 'rgba(245, 158, 11, 0.2)',
+                                    border: rule.allowFreeAttempts
+                                      ? '1px solid #10b981'
+                                      : '1px solid #f59e0b',
+                                    color: rule.allowFreeAttempts ? '#6ee7b7' : '#fde047',
+                                  }}
+                                >
+                                  <span>👑 PRO</span>
+                                  {rule.allowFreeAttempts && (
+                                    <span>
+                                      · {rule.freeAttemptsCount}{' '}
+                                      {isAr ? 'محاولات مجانية' : 'Free Trials'}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

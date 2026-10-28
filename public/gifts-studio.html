@@ -60,11 +60,11 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
 </head>
 <body>
 <header>
- <div class="brand"><i class="lg">🎁</i><div><b>استوديو الهدايا</b><small>شغّل وصدّر كل صيغ الهدايا</small></div></div>
+ <div class="brand"><i class="lg">🎁</i><div><b id="brandTitle">استوديو الهدايا</b><small id="brandSubtitle">شغّل وصدّر كل صيغ الهدايا</small></div></div>
  <div class="act">
-  <button id="up">➕ رفع هدايا</button>
-  <button id="bgb">🖼 الخلفية</button>
-  <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> 💧 العلامة المائية</button>
+  <button id="up"><span id="upTxt">➕ رفع هدايا</span></button>
+  <button id="bgb"><span id="bgTxt">🖼 الخلفية</span></button>
+  <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> <span id="wmTxt">💧 العلامة المائية</span></button>
   <button id="durBtn" title="تفعيل وضع تحديد مدة الفيديو لعرض التأثير وتصدير الفيديو بالمدة التي تختارها في أي صيغة هدية"><span class="wm-dot" id="durdot"></span> <span id="durBtnTxt">⏱️ مدة الفيديو: الأصلية</span></button>
   <button id="pwb" title="اختر ملف libpag.wasm" style="display:none">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
   <div class="pop" id="pop">
@@ -74,15 +74,15 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
   </div>
   <div class="wmpop" id="wmpop">
    <div class="r" style="justify-content:space-between">
-    <b style="font-size:13px">💧 العلامة المائية الشبكية</b>
-    <label style="cursor:pointer;font-size:12px;font-weight:700;color:#c084fc"><input type="checkbox" id="wmen" style="accent-color:#a855f7"> تفعيل على الهدايا</label>
+    <b id="wmTitle" style="font-size:13px">💧 العلامة المائية الشبكية</b>
+    <label style="cursor:pointer;font-size:12px;font-weight:700;color:#c084fc"><input type="checkbox" id="wmen" style="accent-color:#a855f7"> <span id="wmEnLbl">تفعيل على الهدايا</span></label>
    </div>
    <div>
-    <small style="color:var(--mu);display:block;margin-bottom:4px">الاسم داخل المربعات والخطوط:</small>
+    <small id="wmTxtLbl" style="color:var(--mu);display:block;margin-bottom:4px">الاسم داخل المربعات والخطوط:</small>
     <input type="text" id="wmtxt" class="wm-in" value="SVGA PRO Ahmed" placeholder="اكتب الاسم هنا...">
    </div>
    <div class="r" style="justify-content:space-between;flex-wrap:nowrap;gap:6px">
-    <label style="font-size:12px;flex:1;min-width:0">المربعات
+    <label style="font-size:12px;flex:1;min-width:0"><span id="wmColsLbl">المربعات</span>
      <select id="wmcols" style="flex:1;min-width:0;padding:5px 6px;font-size:12px">
       <option value="2">2×2 كبيرة</option>
       <option value="3" selected>3×3 متوسطة</option>
@@ -90,25 +90,25 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
       <option value="5">5×5 دقيقة</option>
      </select>
     </label>
-    <label style="font-size:12px;flex-shrink:0">اللون <input type="color" id="wmc1" value="#ffffff" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
-    <label style="font-size:12px;flex-shrink:0">الخط <input type="color" id="wmc2" value="#a855f7" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
+    <label style="font-size:12px;flex-shrink:0"><span id="wmC1Lbl">اللون</span> <input type="color" id="wmc1" value="#ffffff" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
+    <label style="font-size:12px;flex-shrink:0"><span id="wmC2Lbl">الخط</span> <input type="color" id="wmc2" value="#a855f7" style="width:26px;height:26px;border:0;background:none;cursor:pointer;padding:0"></label>
    </div>
    <div class="r" style="justify-content:space-between">
-    <small style="color:var(--mu)">الشفافية: <b id="wmopv">38%</b></small>
+    <small style="color:var(--mu)"><span id="wmOpLbl">الشفافية:</span> <b id="wmopv">38%</b></small>
     <input type="range" id="wmop" min="10" max="90" value="38" style="flex:1;accent-color:#a855f7">
    </div>
    <div class="wm-pv" title="معاينة شكل العلامة المائية على حجم الهدية"><canvas id="wmpvc" width="280" height="110"></canvas></div>
   </div>
   <div class="durpop" id="durpop">
    <div class="r" style="justify-content:space-between">
-    <b style="font-size:13.5px">⏱️ وضع تحديد مدة الفيديو</b>
-    <label style="cursor:pointer;font-size:12.5px;font-weight:800;color:#c084fc"><input type="checkbox" id="duren" style="accent-color:#a855f7;width:16px;height:16px"> تفعيل المدة</label>
+    <b id="durTitle" style="font-size:13.5px">⏱️ وضع تحديد مدة الفيديو</b>
+    <label style="cursor:pointer;font-size:12.5px;font-weight:800;color:#c084fc"><input type="checkbox" id="duren" style="accent-color:#a855f7;width:16px;height:16px"> <span id="durEnLbl">تفعيل المدة</span></label>
    </div>
    <div id="durStateHint" style="font-size:11.5px;padding:8px 10px;border-radius:10px;background:#0b0e1a;border:1px solid var(--bd);color:var(--mu);line-height:1.5">
     ⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.
    </div>
    <div>
-    <small style="color:var(--mu);display:block;margin-bottom:6px">اختر المدة السريعة (بالثواني) لعرض وتصدير التأثير:</small>
+    <small id="durChipsLbl" style="color:var(--mu);display:block;margin-bottom:6px">اختر المدة السريعة (بالثواني) لعرض وتصدير التأثير:</small>
     <div class="dur-pgrid" id="durPopChips">
      <button type="button" data-dsec="2">2 ث</button>
      <button type="button" data-dsec="3">3 ث</button>
@@ -121,11 +121,11 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
     </div>
    </div>
    <div class="r" style="justify-content:space-between;gap:10px">
-    <small style="color:var(--mu)">شريط المدة: <b id="durslv" style="color:#e9d5ff">5 ث</b></small>
+    <small style="color:var(--mu)"><span id="durSlLbl">شريط المدة:</span> <b id="durslv" style="color:#e9d5ff">5 ث</b></small>
     <input type="range" id="dursl" min="1" max="30" step="0.5" value="5" style="flex:1;accent-color:#a855f7">
    </div>
    <div class="r" style="justify-content:space-between">
-    <small style="color:var(--mu)">تحديد المدة بدقة (ثانية):</small>
+    <small id="durInLbl" style="color:var(--mu)">تحديد المدة بدقة (ثانية):</small>
     <input type="number" id="durin" value="5" min="0.5" max="120" step="0.5" style="width:82px;background:#0b0e1a;border:1px solid #a855f7;border-radius:10px;padding:6px 8px;color:#fff;font-weight:800;text-align:center">
    </div>
    <button type="button" id="durResetBtn" style="width:100%;justify-content:center;padding:7px 10px;font-size:12px;background:#1a1f3a;border-color:var(--bd);color:#cbd5e1">🔄 إيقاف والعودة للمدة الأصلية للهدية</button>
@@ -148,11 +148,11 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
  <button id="pa">▶ تشغيل الكل</button><button id="sa">⏸ إيقاف الكل</button><button id="ra">🔄 إعادة الكل</button>
  <button id="muBtn" class="pill" style="border:1px solid var(--ac);background:#20183b;color:#f3e8ff;display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 12px;border-radius:10px" title="كتم أو تشغيل صوت المعاينة">🔇 الصوت: مكتوم (اضغط للتشغيل)</button>
  <input type="checkbox" id="mu" checked hidden>
- <label>الحجم <input type="range" id="zm" min="130" max="420" value="200"></label>
- <label>إطارات <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
+ <label><span id="zmLbl">الحجم</span> <input type="range" id="zm" min="130" max="420" value="200"></label>
+ <label><span id="fpsLbl">إطارات</span> <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
  <input type="number" id="sd" value="5" min="0.5" max="120" step="0.5" hidden>
 </div>
-<div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG · ZIP</div><div style="font-size:12px;opacity:.75;margin-top:6px">يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
+<div id="drop"><div style="font-size:46px">📦</div><h2 id="dropTitle">اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG · ZIP</div><div id="dropSub" style="font-size:12px;opacity:.75;margin-top:6px">يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً</div><div id="dropStaticHint" style="font-size:12px;opacity:.7;margin-top:4px">لا يتم رفع الصور الثابتة (PNG / JPG)</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
 <div id="grid"></div>
 <div id="dock"><div class="r"><b id="dt">…</b><span style="margin-inline-start:auto"></span><button id="cx">إلغاء</button><button class="p" id="sv" style="display:none">⬇ حفظ الملف</button></div><div id="pw"><div id="pg"></div></div><small id="ds" style="color:var(--mu)"></small></div>
 <script src="/mp4-muxer.js"></script>
@@ -165,6 +165,291 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const L=u=>new TextDecoder('latin1').decode(u),S=(u,a,b)=>L(u.subarray(a,b)),N=()=>{};
 const MIME={svg:'image/svg+xml',mp4:'video/mp4',vap:'video/mp4',gif:'image/gif',png:'image/png',apng:'image/png',webp:'image/webp',webpa:'image/webp',jpg:'image/jpeg'};
 const NAMES={svga:'SVGA',lottie:'Lottie',gif:'GIF',apng:'APNG',webpa:'WebP',webp:'WebP',png:'PNG',jpg:'JPG',svg:'SVG',mp4:'MP4',vap:'VAP',pag:'PAG'};
+
+/* قاموس الترجمة متعدد اللغات (عربي / إنجليزي) للاستوديو بالكامل */
+const I18N={
+ ar:{
+  dir:'rtl',
+  title:'استوديو الهدايا',
+  brandTitle:'استوديو الهدايا',
+  brandSubtitle:'شغّل وصدّر كل صيغ الهدايا',
+  btnUpload:'➕ رفع هدايا',
+  btnBackground:'🖼 الخلفية',
+  btnWatermark:'💧 العلامة المائية',
+  btnDurationNative:'⏱️ مدة الفيديو: الأصلية',
+  btnDurationActive:s=>`⏱️ مدة الفيديو: ${s}ث ✓`,
+  exportModeTitle:'اختر وضع التصدير أو الاستخراج',
+  exportModes:{
+   gi:{option:'🎁 هدية + 🖼 صورة (مجلد)',button:'⬇ تصدير هدية + صورة'},
+   pack:{option:'🎁 هدية + 🎬 فيديو + 🖼 صورة',button:'⬇ تصدير الحزمة الشاملة'},
+   sep:{option:'🎬 فيديو لكل هدية (منفصل)',button:'⬇ تصدير الفيديوهات'},
+   one:{option:'🎞️ جميع الهدايا في فيديو واحد (جنب بعض)',button:'🎞️ تصدير في فيديو واحد'},
+   extract:{option:'📦 استخراج الهدايا في فولدرات + الصور (SVGA / VAP)',button:'📦 استخراج الفولدرات + الصور'}
+  },
+  resTitle:'دقة التصدير',
+  resOriginal:'الحجم الأصلي',
+  popBgColor:'لون',
+  popBgGrad:'تدرّج',
+  popBgImg:'صورة',
+  popBgTr:'شفافة',
+  popBgUploadBtn:'رفع صورة خلفية',
+  popBgCover:'تغطية',
+  popBgContain:'احتواء',
+  popBgFill:'تمديد',
+  popWmTitle:'💧 العلامة المائية الشبكية',
+  popWmEnable:'تفعيل على الهدايا',
+  popWmNameLabel:'الاسم داخل المربعات والخطوط:',
+  popWmPlaceholder:'اكتب الاسم هنا...',
+  popWmGridLabel:'المربعات',
+  popWmCols:{'2':'2×2 كبيرة','3':'3×3 متوسطة','4':'4×4 كثيفة','5':'5×5 دقيقة'},
+  popWmColor:'اللون',
+  popWmAccent:'الخط',
+  popWmOpacity:'الشفافية:',
+  popWmPreviewTitle:'معاينة شكل العلامة المائية على حجم الهدية',
+  popDurTitle:'⏱️ وضع تحديد مدة الفيديو',
+  popDurEnable:'تفعيل المدة',
+  popDurHintDisabled:'⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.',
+  popDurHintActive:s=>`🟢 <b>مفعّل الآن (${s} ثانية):</b> يتم عرض التأثير وتصدير الفيديو في جميع صيغ الهدايا حسب المدة المختارة بالضبط.`,
+  popDurPresetsTitle:'اختر المدة السريعة (بالثواني) لعرض وتصدير التأثير:',
+  popDurUnit:'ث',
+  popDurSliderLabel:'شريط المدة:',
+  popDurExactLabel:'تحديد المدة بدقة (ثانية):',
+  popDurResetBtn:'🔄 إيقاف والعودة للمدة الأصلية للهدية',
+  barSelectAll:'☑ تحديد الكل',
+  barDeleteSelected:'🗑 حذف المحدد',
+  barCount:n=>`${n} هدية`,
+  barPlayAll:'▶ تشغيل الكل',
+  barPauseAll:'⏸ إيقاف الكل',
+  barRestartAll:'🔄 إعادة الكل',
+  barMuteBtn:m=>(m?'🔇 الصوت: مكتوم (اضغط للتشغيل)':'🔊 الصوت: يعمل (اضغط للكتم)'),
+  barSizeLabel:'الحجم',
+  barFpsLabel:'إطارات',
+  dropTitle:'اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع',
+  dropSubtitle:'يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً',
+  dropNoStaticHint:'لا يتم رفع الصور الثابتة (PNG / JPG)',
+  alphaOptions:{N:'بدون قناة ألفا',L:'ألفا: يسار',R:'ألفا: يمين',T:'ألفا: أعلى',B:'ألفا: أسفل'},
+  cardPlay:'تشغيل',
+  cardPause:'إيقاف مؤقت',
+  cardRestart:'إعادة التشغيل',
+  cardDownloadGift:'تنزيل ملف الهدية الأصلي',
+  cardSnapImage:'التقاط صورة واضحة ومقصوصة بدقة للهدية',
+  cardDelete:'حذف هذه الهدية',
+  cardAudioMute:'كتم صوت هذه الهدية',
+  cardAudioUnmute:'تشغيل صوت هذه الهدية',
+  dockCancel:'إلغاء',
+  dockSave:'⬇ حفظ الملف',
+  toastUploadFirst:'يرجى رفع ملفات الهدايا أولاً',
+  toastNoRecorder:'المتصفح لا يدعم التسجيل',
+  toastSorting:'جارٍ فرز ملفات SVGA في فولدر والملفات الأخرى في فولدر مع تصدير صور الهدايا فائقة الوضوح…',
+  toastMerging:'جارٍ ترتيب ودمج جميع الهدايا جنب بعض في ملف فيديو واحد بدقة عالية…',
+  toastProcessing:'جارٍ معالجة وتصدير الفريمات بدقة عالية بدون تقطيع…',
+  toastCompleted:'اكتمل ✓',
+  toastDownloadStarted:'تم بدء التنزيل: ',
+  toastSnapping:'جارٍ التقاط صورة فائقة الوضوح للهدية…',
+  toastSnapFailed:'تعذر إنشاء الصورة',
+  toastIgnoredStatic:n=>`تم تجاهل ${n} صورة ثابتة — لا يتم رفع الصور`,
+  toastUnpackedArchives:(a,g)=>`📦 تم فتح ${a===1?'الملف المغلق':a+' ملفات مغلقة'} واستخراج ${g} هدية للعرض بنجاح`,
+  toastNoGiftsInArchive:'⚠️ لم يتم العثور على ملفات هدايا مدعومة داخل الملف المغلق'
+ },
+ en:{
+  dir:'ltr',
+  title:'Gift Files Studio',
+  brandTitle:'Gift Files Studio',
+  brandSubtitle:'Play and export all gift formats',
+  btnUpload:'➕ Upload Gifts',
+  btnBackground:'🖼 Background',
+  btnWatermark:'💧 Watermark',
+  btnDurationNative:'⏱️ Video Duration: Native',
+  btnDurationActive:s=>`⏱️ Video Duration: ${s}s ✓`,
+  exportModeTitle:'Choose export or extraction mode',
+  exportModes:{
+   gi:{option:'🎁 Gift + 🖼 Image (Folder)',button:'⬇ Export Gift + Image'},
+   pack:{option:'🎁 Gift + 🎬 Video + 🖼 Image',button:'⬇ Export Full Pack'},
+   sep:{option:'🎬 Video per Gift (Separate)',button:'⬇ Export Videos'},
+   one:{option:'🎞️ All Gifts in One Video (Side-by-Side)',button:'🎞️ Export All in One Video'},
+   extract:{option:'📦 Extract Gifts in Folders + Images (SVGA / VAP)',button:'📦 Extract Folders + Images'}
+  },
+  resTitle:'Export Resolution',
+  resOriginal:'Original Size',
+  popBgColor:'Color',
+  popBgGrad:'Gradient',
+  popBgImg:'Image',
+  popBgTr:'Transparent',
+  popBgUploadBtn:'Upload BG Image',
+  popBgCover:'Cover',
+  popBgContain:'Contain',
+  popBgFill:'Stretch',
+  popWmTitle:'💧 Grid Watermark',
+  popWmEnable:'Enable on gifts',
+  popWmNameLabel:'Name inside grid & lines:',
+  popWmPlaceholder:'Type name here...',
+  popWmGridLabel:'Grid',
+  popWmCols:{'2':'2×2 Large','3':'3×3 Medium','4':'4×4 Dense','5':'5×5 Fine'},
+  popWmColor:'Color',
+  popWmAccent:'Accent',
+  popWmOpacity:'Opacity:',
+  popWmPreviewTitle:'Watermark preview on gift size',
+  popDurTitle:'⏱️ Custom Video Duration',
+  popDurEnable:'Enable Duration',
+  popDurHintDisabled:'⚪ <b>Current status (Disabled):</b> Each gift plays and exports at its native original duration.',
+  popDurHintActive:s=>`🟢 <b>Active now (${s}s):</b> Live preview effect and video export for all gift formats match this exact duration.`,
+  popDurPresetsTitle:'Choose quick duration (seconds) for preview & export:',
+  popDurUnit:'s',
+  popDurSliderLabel:'Duration Slider:',
+  popDurExactLabel:'Exact duration (seconds):',
+  popDurResetBtn:'🔄 Disable & return to native duration',
+  barSelectAll:'☑ Select All',
+  barDeleteSelected:'🗑 Delete Selected',
+  barCount:n=>`${n} gift${n===1?'':'s'}`,
+  barPlayAll:'▶ Play All',
+  barPauseAll:'⏸ Pause All',
+  barRestartAll:'🔄 Restart All',
+  barMuteBtn:m=>(m?'🔇 Audio: Muted (Click to play)':'🔊 Audio: On (Click to mute)'),
+  barSizeLabel:'Size',
+  barFpsLabel:'FPS',
+  dropTitle:'Drag gifts or closed archives here or click to upload',
+  dropSubtitle:'Supports opening closed & compressed files (ZIP / Folders) and automatically extracting & displaying all inner gifts',
+  dropNoStaticHint:'Static images (PNG / JPG) are not uploaded',
+  alphaOptions:{N:'No Alpha Channel',L:'Alpha: Left',R:'Alpha: Right',T:'Alpha: Top',B:'Alpha: Bottom'},
+  cardPlay:'Play',
+  cardPause:'Pause',
+  cardRestart:'Restart',
+  cardDownloadGift:'Download original gift file',
+  cardSnapImage:'Capture high-clarity cropped gift snapshot',
+  cardDelete:'Delete this gift',
+  cardAudioMute:'Mute this gift audio',
+  cardAudioUnmute:'Unmute this gift audio',
+  dockCancel:'Cancel',
+  dockSave:'⬇ Save File',
+  toastUploadFirst:'Please upload gift files first',
+  toastNoRecorder:'Browser does not support recording',
+  toastSorting:'Sorting SVGA and other gifts into folders with ultra-clear snapshot images…',
+  toastMerging:'Arranging and merging all gifts side-by-side into a single high-res video…',
+  toastProcessing:'Processing and exporting frames at high resolution without stutter…',
+  toastCompleted:'Completed ✓',
+  toastDownloadStarted:'Download started: ',
+  toastSnapping:'Capturing ultra-clear gift snapshot…',
+  toastSnapFailed:'Failed to create image snapshot',
+  toastIgnoredStatic:n=>`Ignored ${n} static image(s) — static images are not uploaded`,
+  toastUnpackedArchives:(a,g)=>`📦 Opened ${a===1?'closed archive':a+' closed archives'} and extracted ${g} gift(s) for display successfully`,
+  toastNoGiftsInArchive:'⚠️ No supported gift files found inside the closed archive'
+ }
+};
+
+let currentLang='ar';
+const ALIASES={
+ durBtnNative:'btnDurationNative',
+ durBtnActive:'btnDurationActive',
+ durHintInactive:'popDurHintDisabled',
+ durHintActive:'popDurHintActive',
+ durBarInactive:'btnDurationNative',
+ durBarActive:'btnDurationActive',
+ barAudioMuted:()=>(currentLang==='en'?'🔇 Audio: Muted (Click to play)':'🔇 الصوت: مكتوم (اضغط للتشغيل)'),
+ barAudioActive:()=>(currentLang==='en'?'🔊 Audio: On (Click to mute)':'🔊 الصوت: يعمل (اضغط للكتم)'),
+ barItemCount:(n)=>(currentLang==='en'?`${n} gift${n===1?'':'s'}`:`${n} هدية`),
+ barSelectedCount:(n)=>(currentLang==='en'?`Selected ${n}`:`محدد ${n}`),
+ durSecShort:()=>(currentLang==='en'?'s':'ث'),
+ durStatic:()=>(currentLang==='en'?'Static':'ثابتة'),
+ durBadgeHint:(c,o)=>(currentLang==='en'?`Custom duration mode active: displays & exports effect in ${c}s instead of ${o}`:`وضع المدة المخصصة مفعّل: يتم عرض وتصدير التأثير في ${c}ث بدلاً من ${o}`)
+};
+function t(k,...args){
+ const key=ALIASES[k]&&(typeof ALIASES[k]==='string')?ALIASES[k]:k;
+ if(ALIASES[k]&&typeof ALIASES[k]==='function')return ALIASES[k](...args);
+ const dict=I18N[currentLang]||I18N.ar;
+ const val=dict[key]!==undefined?dict[key]:(I18N.ar&&I18N.ar[key]);
+ if(typeof val==='function')return val(...args);
+ return val||'';
+}
+
+function applyLanguage(lang){
+ currentLang=(lang==='en'?'en':'ar');
+ const dict=I18N[currentLang];
+ document.documentElement.lang=currentLang;
+ document.documentElement.dir=dict.dir;
+ document.title=dict.title;
+
+ if($('#brandTitle'))$('#brandTitle').textContent=dict.brandTitle;
+ if($('#brandSubtitle'))$('#brandSubtitle').textContent=dict.brandSubtitle;
+ if($('#upTxt'))$('#upTxt').textContent=dict.btnUpload;
+ if($('#bgTxt'))$('#bgTxt').textContent=dict.btnBackground;
+ if($('#wmTxt'))$('#wmTxt').textContent=dict.btnWatermark;
+
+ const modeSel=$('#mode');
+ if(modeSel){
+  modeSel.title=dict.exportModeTitle;
+  Array.from(modeSel.options).forEach(opt=>{
+   const info=dict.exportModes[opt.value];
+   if(info)opt.textContent=info.option;
+  });
+ }
+ const qSel=$('#q');
+ if(qSel){
+  qSel.title=dict.resTitle;
+  const origOpt=qSel.querySelector('option[value="0"]');
+  if(origOpt)origOpt.textContent=dict.resOriginal;
+ }
+
+ const bmSel=$('#bm');
+ if(bmSel){
+  const map={color:dict.popBgColor,grad:dict.popBgGrad,img:dict.popBgImg,tr:dict.popBgTr};
+  Array.from(bmSel.options).forEach(o=>{if(map[o.value])o.textContent=map[o.value]});
+ }
+ if($('#bi'))$('#bi').textContent=dict.popBgUploadBtn;
+ const bfSel=$('#bf');
+ if(bfSel){
+  const map={cover:dict.popBgCover,contain:dict.popBgContain,fill:dict.popBgFill};
+  Array.from(bfSel.options).forEach(o=>{if(map[o.value])o.textContent=map[o.value]});
+ }
+
+ if($('#wmTitle'))$('#wmTitle').textContent=dict.popWmTitle;
+ if($('#wmEnLbl'))$('#wmEnLbl').textContent=dict.popWmEnable;
+ if($('#wmTxtLbl'))$('#wmTxtLbl').textContent=dict.popWmNameLabel;
+ if($('#wmtxt'))$('#wmtxt').placeholder=dict.popWmPlaceholder;
+ if($('#wmColsLbl'))$('#wmColsLbl').textContent=dict.popWmGridLabel;
+ const wmcolsSel=$('#wmcols');
+ if(wmcolsSel){
+  Array.from(wmcolsSel.options).forEach(o=>{if(dict.popWmCols[o.value])o.textContent=dict.popWmCols[o.value]});
+ }
+ if($('#wmC1Lbl'))$('#wmC1Lbl').textContent=dict.popWmColor;
+ if($('#wmC2Lbl'))$('#wmC2Lbl').textContent=dict.popWmAccent;
+ if($('#wmOpLbl'))$('#wmOpLbl').textContent=dict.popWmOpacity;
+ if($('#wmpvc'))$('#wmpvc').parentElement.title=dict.popWmPreviewTitle;
+
+ if($('#durTitle'))$('#durTitle').textContent=dict.popDurTitle;
+ if($('#durEnLbl'))$('#durEnLbl').textContent=dict.popDurEnable;
+ if($('#durChipsLbl'))$('#durChipsLbl').textContent=dict.popDurPresetsTitle;
+ if($('#durSlLbl'))$('#durSlLbl').textContent=dict.popDurSliderLabel;
+ if($('#durInLbl'))$('#durInLbl').textContent=dict.popDurExactLabel;
+ if($('#durResetBtn'))$('#durResetBtn').textContent=dict.popDurResetBtn;
+ document.querySelectorAll('#durPopChips [data-dsec]').forEach(b=>{
+  const sec=b.getAttribute('data-dsec');
+  b.textContent=`${sec} ${dict.popDurUnit}`;
+ });
+
+ if($('#all'))$('#all').textContent=dict.barSelectAll;
+ if($('#del'))$('#del').textContent=dict.barDeleteSelected;
+ if($('#pa'))$('#pa').textContent=dict.barPlayAll;
+ if($('#sa'))$('#sa').textContent=dict.barPauseAll;
+ if($('#ra'))$('#ra').textContent=dict.barRestartAll;
+ if($('#zmLbl'))$('#zmLbl').textContent=dict.barSizeLabel;
+ if($('#fpsLbl'))$('#fpsLbl').textContent=dict.barFpsLabel;
+
+ if($('#dropTitle'))$('#dropTitle').textContent=dict.dropTitle;
+ if($('#dropSub'))$('#dropSub').textContent=dict.dropSubtitle;
+ if($('#dropStaticHint'))$('#dropStaticHint').textContent=dict.dropNoStaticHint;
+
+ if($('#cx'))$('#cx').textContent=dict.dockCancel;
+ if($('#sv'))$('#sv').textContent=dict.dockSave;
+
+ syncModeUi();
+ updateMuteUi();
+ refreshCustomDurationUi();
+ updateBar();
+ render();
+}
+window.__setGiftStudioLanguage=applyLanguage;
+window.__getGiftStudioLanguage=()=>currentLang;
+
 let items=[],nid=1,muted=true,playing=true,isExporting=false,players=new Map(),sig={stop:false},out=null,dl=null,dragId=0;
 const bg={mode:'color',c1:'#141a30',c2:'#4b2f8a',img:null,url:'',fit:'cover'};
 
@@ -482,7 +767,11 @@ function yyevaInfo(T){
 }
 const lay=(l,W,H)=>{const w=W>>1,h=H>>1;return{a:l=='L'?[0,0,w,H]:l=='R'?[w,0,w,H]:l=='T'?[0,0,W,h]:[0,h,W,h],c:l=='L'?[w,0,w,H]:l=='R'?[0,0,w,H]:l=='T'?[0,h,W,h]:[0,0,W,h]}};
 function setAlpha(it,l){it.alpha=l;if(l=='N'||!it.vw){it.rects=null;it.w=it.vw;it.h=it.vh;return}it.rects=lay(l,l=='V'?it.vw:it.vw,it.vh);it.w=it.rects.c[2];it.h=it.rects.c[3]}
-const alSel=it=>it.fmt!='mp4'||!it.vw?'':'<select data-al="1">'+[['N','بدون قناة ألفا'],['L','ألفا: يسار'],['R','ألفا: يمين'],['T','ألفا: أعلى'],['B','ألفا: أسفل']].map(([v,t])=>`<option value="${v}" ${(it.alpha||'N')==v?'selected':''}>${t}</option>`).join('')+'</select>';
+const alSel=it=>{
+ if(it.fmt!='mp4'||!it.vw)return '';
+ const opts=t('alphaOptions')||{};
+ return '<select data-al="1">'+[['N',opts.N||'بدون قناة ألفا'],['L',opts.L||'ألفا: يسار'],['R',opts.R||'ألفا: يمين'],['T',opts.T||'ألفا: أعلى'],['B',opts.B||'ألفا: أسفل']].map(([v,label])=>`<option value="${v}" ${(it.alpha||'N')==v?'selected':''}>${label}</option>`).join('')+'</select>';
+};
 function evalL(d,cw,ch,l){const r=lay(l,cw,ch),[ax,ay,aw,ah]=r.a,[cx,cy]=r.c;let na=0,ga=0,nc=0,gc=0,i=0,u=0;
  for(let y=0;y<ah;y+=2)for(let x=0;x<aw;x+=2){const p=((ay+y)*cw+ax+x)*4,q=((cy+y)*cw+cx+x)*4,A=(d[p]+d[p+1]+d[p+2])/3>24,C=(d[q]+d[q+1]+d[q+2])/3>24;
   if(A){na++;if(Math.abs(d[p]-d[p+1])<14&&Math.abs(d[p+1]-d[p+2])<14)ga++}
@@ -659,9 +948,9 @@ async function addFiles(fl){
  const effectiveFiles=unpacked.files;
  if(unpacked.unpackedArchiveCount>0){
   if(unpacked.extractedGiftCount>0){
-   toast(`📦 تم فتح ${unpacked.unpackedArchiveCount===1?'الملف المغلق':unpacked.unpackedArchiveCount+' ملفات مغلقة'} واستخراج ${unpacked.extractedGiftCount} هدية للعرض بنجاح`);
+   toast(t('toastUnpackedArchives', unpacked.unpackedArchiveCount, unpacked.extractedGiftCount));
   }else{
-   toast('⚠️ لم يتم العثور على ملفات هدايا مدعومة داخل الملف المغلق');
+   toast(t('toastNoGiftsInArchive'));
   }
  }
  const a=[...effectiveFiles].map(f=>({id:nid++,file:f,name:f.name,fmt:'',sel:false,dur:0,vis:true,userPaused:false}));
@@ -679,9 +968,9 @@ async function addFiles(fl){
  });
  await Promise.all(workers);
  const rj=a.filter(x=>x.rej);
- if(rj.length){items=items.filter(x=>!x.rej);updateBar();toast('تم تجاهل '+rj.length+' صورة ثابتة — لا يتم رفع الصور')}
+ if(rj.length){items=items.filter(x=>!x.rej);updateBar();toast(t('toastIgnoredStatic', rj.length))}
 }
-function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2547;color:#fff;padding:10px 18px;border-radius:12px;z-index:99;border:1px solid #fff3';document.body.append(d);setTimeout(()=>d.remove(),4000)}
+function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2547;color:#fff;padding:10px 18px;border-radius:12px;z-index:99;border:1px solid #fff3;font-family:system-ui,sans-serif;direction:'+(document.documentElement.dir||'rtl');document.body.append(d);setTimeout(()=>d.remove(),4000)}
 
 /* المشغلات مع دعم الرسم الفوري والتدرج الدقيق للفريمات أثناء التصدير بجودة عالية */
 let _pag=null;
@@ -957,22 +1246,24 @@ setInterval(()=>{
 },700);
 
 function formatDurBadge(it){
- const orig=it&&it.dur?it.dur.toFixed(1)+'ث':'ثابتة';
+ const orig=it&&it.dur?it.dur.toFixed(1)+(t('durSecShort')||'ث'):t('durStatic');
  if(!customDur.enabled)return orig;
  const cSec=Number(customDur.seconds||5).toFixed(1).replace(/\.0$/,'');
- return `<span style="color:#c084fc;font-weight:700" title="وضع المدة المخصصة مفعّل: يتم عرض وتصدير التأثير في ${cSec}ث بدلاً من ${orig}">⏱️ ${cSec}ث <s style="opacity:.6;font-weight:400">${it&&it.dur?orig:''}</s></span>`;
+ const hint=t('durBadgeHint', cSec, orig);
+ return `<span style="color:#c084fc;font-weight:700" title="${hint}">⏱️ ${cSec}${t('durSecShort')||'ث'} <s style="opacity:.6;font-weight:400">${it&&it.dur?orig:''}</s></span>`;
 }
 
 /* الواجهة التفاعلية بدون إعادة بناء الشبكة أو إيقاف المشغلات */
 function cardInnerHtml(it){
  const itMuted=it.muted!==undefined?it.muted:muted;
- const soundBtn=it.audio?`<button data-a="m" title="${itMuted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية'}">${itMuted?'🔇':'🔊'}</button>`:'';
- return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="تشغيل">▶</button><button data-a="s" title="إيقاف">⏸</button><button data-a="r" title="إعادة">🔄</button>${soundBtn}<button data-a="df" title="تنزيل ملف الهدية">📁</button><button data-a="di" title="تنزيل صورة الهدية">🖼</button><button data-a="x" title="حذف" style="margin-inline-start:auto">✖</button></div>`;
+ const soundBtn=it.audio?`<button data-a="m" title="${itMuted?t('cardAudioUnmute'):t('cardAudioMute')}">${itMuted?'🔇':'🔊'}</button>`:'';
+ return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="${t('cardPlay')}">▶</button><button data-a="s" title="${t('cardPause')}">⏸</button><button data-a="r" title="${t('cardRestart')}">🔄</button>${soundBtn}<button data-a="df" title="${t('cardDownloadGift')}">📁</button><button data-a="di" title="${t('cardDownloadImage')}">🖼</button><button data-a="x" title="${t('cardDelete')}" style="margin-inline-start:auto">✖</button></div>`;
 }
 function updateBar(){
  $('#drop').style.display=items.length?'none':'block';
  $('#bar').style.display=items.length?'flex':'none';
- $('#cnt').textContent=items.length+' هدية'+(items.some(i=>i.sel)?' · محدد '+items.filter(i=>i.sel).length:'');
+ const selCount=items.filter(i=>i.sel).length;
+ $('#cnt').textContent=t('barItemCount', items.length)+(selCount?' · '+t('barSelectedCount', selCount):'');
 }
 function appendCards(list){
  const g=$('#grid'),frag=document.createDocumentFragment();
@@ -1060,7 +1351,7 @@ function refreshCustomDurationUi(){
  const durBtn=$('#durBtn');
  if(durBtn)durBtn.classList.toggle('wm-on',en);
  const durBtnTxt=$('#durBtnTxt');
- if(durBtnTxt)durBtnTxt.textContent=en?`⏱️ مدة الفيديو: ${secLabel}ث ✓`:'⏱️ مدة الفيديو: الأصلية';
+ if(durBtnTxt)durBtnTxt.textContent=en?t('durBtnActive', secLabel):t('durBtnNative');
 
  const duren=$('#duren');
  if(duren)duren.checked=en;
@@ -1069,7 +1360,7 @@ function refreshCustomDurationUi(){
  const dursl=$('#dursl');
  if(dursl)dursl.value=String(Math.min(30,Math.max(1,sec)));
  const durslv=$('#durslv');
- if(durslv)durslv.textContent=`${secLabel} ث`;
+ if(durslv)durslv.textContent=`${secLabel} ${t('popDurUnit')}`;
  const sd=$('#sd');
  if(sd&&document.activeElement!==sd)sd.value=String(sec);
 
@@ -1079,19 +1370,19 @@ function refreshCustomDurationUi(){
    hint.style.borderColor='#a855f7';
    hint.style.background='rgba(168,85,247,0.12)';
    hint.style.color='#f3e8ff';
-   hint.innerHTML=`🟢 <b>مفعّل الآن (${secLabel} ثانية):</b> يتم عرض التأثير وتصدير الفيديو في جميع صيغ الهدايا حسب المدة المختارة بالضبط.`;
+   hint.innerHTML=t('durHintActive', secLabel);
   }else{
    hint.style.borderColor='var(--bd)';
    hint.style.background='#0b0e1a';
    hint.style.color='var(--mu)';
-   hint.innerHTML=`⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.`;
+   hint.innerHTML=t('durHintInactive');
   }
  }
 
  const inlineBox=$('#durInlineBox');
  if(inlineBox)inlineBox.classList.toggle('on',en);
  const barLbl=$('#durBarLbl');
- if(barLbl)barLbl.textContent=en?`⏱️ مدة الفيديو مفعّلة (${secLabel}ث) ✓`:'⏱️ تحديد مدة الفيديو: متوقف (الأصلية)';
+ if(barLbl)barLbl.textContent=en?t('durBarActive', secLabel):t('durBarInactive');
  const barCtrls=$('#durBarControls');
  if(barCtrls)barCtrls.style.display=en?'inline-flex':'none';
 
@@ -1237,7 +1528,7 @@ $('#ra').onclick=()=>{playing=true;items.forEach(it=>{it.userPaused=false;ensure
 function updateMuteUi(){
  const mb=$('#muBtn');
  if(mb){
-  mb.textContent=muted?'🔇 الصوت: مكتوم (اضغط للتشغيل)':'🔊 الصوت: يعمل (اضغط للكتم)';
+  mb.textContent=muted?t('barAudioMuted'):t('barAudioActive');
   mb.style.background=muted?'#20183b':'#164e32';
   mb.style.borderColor=muted?'var(--ac)':'#22c55e';
  }
@@ -1252,7 +1543,7 @@ $('#muBtn').onclick=()=>{
   const mBtn=c.querySelector('button[data-a="m"]');
   if(mBtn){
    mBtn.textContent=muted?'🔇':'🔊';
-   mBtn.title=muted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية';
+   mBtn.title=muted?t('cardAudioUnmute'):t('cardAudioMute');
   }
  });
 };
@@ -2062,9 +2353,41 @@ const MODE_LABELS={
  one:'🎞️ تصدير في فيديو واحد',
  extract:'📦 استخراج الفولدرات + الصور'
 };
+let latestProStatus = null;
+let isParentPro = false;
+window.addEventListener('message', e => {
+ if (e.data && e.data.type === 'MOTIONTOOLS_PRO_ATTEMPTS_UPDATE') {
+  latestProStatus = e.data.status;
+  isParentPro = !!e.data.effectiveIsPro;
+  syncModeUi();
+ }
+});
+
 function syncModeUi(){
  const m=$('#mode').value;
- if($('#ex'))$('#ex').textContent=MODE_LABELS[m]||'⬇ تصدير';
+ const dict=I18N[currentLang]||I18N.ar;
+ const modeInfo=dict.exportModes&&dict.exportModes[m];
+ const label=modeInfo?(modeInfo.button||modeInfo.btn||modeInfo.option):(currentLang==='en'?'⬇ Export':'⬇ تصدير');
+ let exText = label;
+ try {
+  const parentStatus = window.parent && typeof window.parent.__getFeatureFreeAttemptsStatus === 'function'
+    ? window.parent.__getFeatureFreeAttemptsStatus('gifts_studio')
+    : latestProStatus;
+  const proCheck = window.parent && typeof window.parent.__checkFeatureProAccess === 'function'
+    ? window.parent.__checkFeatureProAccess('gifts_studio', 'export')
+    : null;
+  const isPro = isParentPro || (proCheck && proCheck.effectiveIsPro);
+  if (parentStatus && parentStatus.rule && parentStatus.rule.isPro) {
+   if (!isPro) {
+    if (parentStatus.rule.allowFreeAttempts && parentStatus.remainingAttempts > 0) {
+     exText = `${label} (${parentStatus.remainingAttempts} ${currentLang === 'en' ? 'Free' : 'مجاناً'})`;
+    } else if (parentStatus.remainingAttempts <= 0) {
+     exText = `${label} 🔒 (PRO)`;
+    }
+   }
+  }
+ } catch(e){}
+ if($('#ex'))$('#ex').textContent=exText;
  const qEl=$('#q');
  if(qEl){
   qEl.style.opacity='1';
@@ -2081,7 +2404,26 @@ function isSvgaItem(it){
 $('#cx').onclick=()=>{sig.stop=true;$('#dock').style.display='none'};$('#sv').onclick=()=>out&&save(out.name,out.blob);
 $('#ex').onclick=async()=>{
  const ok=items.filter(i=>!i.err&&i.fmt),sel=ok.filter(i=>i.sel),mode=$('#mode').value;
- if(!ok.length)return toast('يرجى رفع ملفات الهدايا أولاً');
+ if(!ok.length)return toast(t('toastUploadFirst'));
+
+ // Pro permission and free trial attempts check
+ let proAccess = null;
+ try {
+  if (window.parent && typeof window.parent.__checkFeatureProAccess === 'function') {
+   proAccess = window.parent.__checkFeatureProAccess('gifts_studio', 'export');
+  }
+ } catch(e) {}
+
+ if (proAccess && !proAccess.allowed) {
+  if (window.parent && typeof window.parent.__openProModal === 'function') {
+   window.parent.__openProModal('gifts_studio');
+  }
+  toast(currentLang === 'en'
+   ? '🔒 Pro Membership required for export (Free trials exhausted)'
+   : '🔒 يتطلب التصدير الاشتراك في باقة برو (استنفدت المحاولات المجانية)'
+  );
+  return;
+ }
 
  let list=sel.length?sel:ok;
  if(mode==='one'){
@@ -2089,13 +2431,13 @@ $('#ex').onclick=async()=>{
  }
 
  const needsVideoRec=(mode==='pack'||mode==='sep'||mode==='one');
- if(needsVideoRec&&!window.MediaRecorder&&!window.VideoEncoder)return toast('المتصفح لا يدعم التسجيل');
+ if(needsVideoRec&&!window.MediaRecorder&&!window.VideoEncoder)return toast(t('toastNoRecorder'));
 
  sig={stop:false};out=null;const H0=+$('#q').value,fps=+$('#fps').value,mt=pickMime(list.some(i=>i.audio));
  const sz=it=>{const h=Math.min(2160,Math.max(64,Math.round((H0||it.h||720)/2)*2)),w=Math.min(4096,Math.max(64,Math.round(h*((it.w/it.h)||1)/2)*2));return[w,h]};
  $('#dock').style.display='block';$('#sv').style.display='none';$('#cx').style.display='';$('#ex').disabled=true;
  const pg=v=>$('#pg').style.width=Math.min(100,v*100)+'%',ds=$('#ds');
- ds.textContent=mode==='extract'?'جارٍ فرز ملفات SVGA في فولدر والملفات الأخرى في فولدر مع تصدير صور الهدايا فائقة الوضوح…':mode==='one'?'جارٍ ترتيب ودمج جميع الهدايا جنب بعض في ملف فيديو واحد بدقة عالية…':'جارٍ معالجة وتصدير الفريمات بدقة عالية بدون تقطيع…';
+ ds.textContent=mode==='extract'?t('toastSorting'):mode==='one'?t('toastMerging'):t('toastProcessing');
 
  // تحرير جميع مشغلات الشبكة الخلفية مؤقتاً لتفريغ كامل موارد المعالج وكرت الشاشة للتصدير
  isExporting=true;
@@ -2172,7 +2514,27 @@ $('#ex').onclick=async()=>{
   items.forEach(it=>{if(!it.err&&it.fmt&&it.vis!==false)ensure(it.id)});
  }
  $('#ex').disabled=false;
- if(out){pg(1);$('#dt').textContent='اكتمل ✓ ('+(out.blob.size/1048576).toFixed(2)+' MB)';$('#sv').style.display='';$('#cx').style.display='none';save(out.name,out.blob)}else if(!sig.stop)$('#dt').textContent='لم يكتمل التصدير'};
+ if(out){
+  pg(1);
+  $('#dt').textContent=t('toastCompleted')+' ('+(out.blob.size/1048576).toFixed(2)+' MB)';
+  $('#sv').style.display='';
+  $('#cx').style.display='none';
+  save(out.name,out.blob);
+
+  // Consume free trial attempt if applicable
+  try {
+   if (proAccess && proAccess.usesFreeAttempt && window.parent && typeof window.parent.__consumeFeatureAttempt === 'function') {
+    const consumeRes = window.parent.__consumeFeatureAttempt('gifts_studio');
+    if (consumeRes && consumeRes.success && consumeRes.remainingAttempts !== undefined) {
+     toast(currentLang === 'en'
+      ? `🎉 Free trial attempt used (${consumeRes.remainingAttempts} left)`
+      : `🎉 تم استخدام محاولة مجانية (متبقي لديك: ${consumeRes.remainingAttempts} محاولة)`
+     );
+    }
+   }
+  } catch(e) {}
+  syncModeUi();
+ }else if(!sig.stop)$('#dt').textContent='لم يكتمل التصدير'};
 $('#pwb').onclick=()=>$('#pwi').click();
 $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;window.__pagWasm=await f.arrayBuffer();_pag=null;toast('تم تحميل ملف المحرك — جارٍ إعادة المحاولة');for(const it of items.filter(i=>i.fmt=='pag'&&i.err)){delete it.err;await analyze(it);render()}};
 
@@ -2265,6 +2627,42 @@ $('#pwi').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)r
 
 applyBg();
 refreshAllWatermarks();
+
+function getInitialLanguage(){
+ try{
+  const params=new URLSearchParams(window.location.search);
+  const qLang=params.get('lang');
+  if(qLang==='ar'||qLang==='en')return qLang;
+ }catch(e){}
+ try{
+  const raw=localStorage.getItem('motiontools_platform_state_v2');
+  if(raw){
+   const st=JSON.parse(raw);
+   if(st&&st.language==='en')return 'en';
+  }
+ }catch(e){}
+ return 'ar';
+}
+
+addEventListener('message',e=>{
+ if(e.data&&e.data.type==='MOTIONTOOLS_LANGUAGE_CHANGE'&&e.data.language){
+  applyLanguage(e.data.language);
+ }
+});
+
+addEventListener('storage',e=>{
+ if(e.key==='motiontools_platform_state_v2'&&e.newValue){
+  try{
+   const st=JSON.parse(e.newValue);
+   if(st&&st.language&&st.language!==currentLang){
+    applyLanguage(st.language);
+   }
+  }catch(err){}
+ }
+});
+
+applyLanguage(getInitialLanguage());
+
 const FB=[['SVGA','https://cdn.jsdelivr.net/npm/svgaplayerweb@2.3.1/build/svga.min.js'],['lottie','https://cdn.jsdelivr.net/npm/lottie-web@5.12.2/build/player/lottie.min.js'],['JSZip','https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js']];
 addEventListener('load',()=>FB.forEach(([n,u])=>{if(!window[n])document.head.append(Object.assign(document.createElement('script'),{src:u}))}));
 </script>

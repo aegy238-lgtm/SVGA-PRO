@@ -19,6 +19,7 @@ import {
   generatePresetOverlayFrameDataUrl,
   buildExportFileName,
 } from '../utils/giftImageCreator';
+import { FeatureFreeAttemptsStatus } from '../utils/platformStore';
 
 export interface GiftImageItem {
   id: string;
@@ -34,9 +35,19 @@ export interface GiftImageItem {
 
 interface GiftImageCreatorProps {
   isAr: boolean;
+  attemptStatus?: FeatureFreeAttemptsStatus;
+  isPro?: boolean;
+  onRequirePro?: (key?: string) => void;
+  onConsumeAttempt?: () => { success: boolean; remainingAttempts?: number };
 }
 
-export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
+export default function GiftImageCreator({
+  isAr,
+  attemptStatus,
+  isPro = false,
+  onRequirePro,
+  onConsumeAttempt,
+}: GiftImageCreatorProps) {
   const [items, setItems] = useState<GiftImageItem[]>([]);
   const [settings, setSettings] = useState<GiftCreatorGlobalSettings>(DEFAULT_GIFT_CREATOR_SETTINGS);
   const [overlay, setOverlay] = useState<GiftOverlayConfig>(DEFAULT_GIFT_OVERLAY_CONFIG);
@@ -625,8 +636,64 @@ export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
+  const checkExportPermission = (): boolean => {
+    let res: any = null;
+    try {
+      if (typeof (window as any).__checkFeatureProAccess === 'function') {
+        res = (window as any).__checkFeatureProAccess('gift_image', 'export');
+      }
+    } catch (e) {}
+
+    if (res) {
+      if (!res.allowed) {
+        if (typeof onRequirePro === 'function') {
+          onRequirePro('gift_image');
+        } else if (typeof (window as any).__openProModal === 'function') {
+          (window as any).__openProModal('gift_image');
+        }
+        showToast(
+          isAr
+            ? '🔒 يتطلب تحميل وتصدير صور الهدايا الاشتراك في باقة برو (استنفدت المحاولات المجانية)'
+            : '🔒 Pro Membership required for export (Free trials exhausted)'
+        );
+        return false;
+      }
+      return true;
+    }
+
+    if (attemptStatus && attemptStatus.rule.isPro) {
+      if (isPro) return true;
+      if (attemptStatus.remainingAttempts > 0) return true;
+      if (typeof onRequirePro === 'function') {
+        onRequirePro('gift_image');
+      }
+      return false;
+    }
+
+    return true;
+  };
+
+  const consumeAttemptIfApplicable = () => {
+    try {
+      let consumeRes: any = null;
+      if (typeof onConsumeAttempt === 'function') {
+        consumeRes = onConsumeAttempt();
+      } else if (typeof (window as any).__consumeFeatureAttempt === 'function') {
+        consumeRes = (window as any).__consumeFeatureAttempt('gift_image');
+      }
+      if (consumeRes && consumeRes.success && consumeRes.remainingAttempts !== undefined) {
+        showToast(
+          isAr
+            ? `🎉 تم استخدام محاولة مجانية (المتبقي لديك: ${consumeRes.remainingAttempts} محاولة)`
+            : `🎉 Free trial attempt used (${consumeRes.remainingAttempts} left)`
+        );
+      }
+    } catch (e) {}
+  };
+
   // Export a single image immediately
   const handleDownloadSingleItem = async (item: GiftImageItem) => {
+    if (!checkExportPermission()) return;
     const blob = await renderItemToBlob(item);
     if (!blob) {
       showToast(isAr ? 'تعذر تصدير الصورة' : 'Failed to export image');
@@ -635,6 +702,7 @@ export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
     const used = new Set<string>();
     const fileName = buildExportFileName(item.name, settings.exportFormat, used);
     triggerBlobDownload(blob, fileName);
+    consumeAttemptIfApplicable();
     showToast(isAr ? `تم تنزيل: ${fileName}` : `Downloaded: ${fileName}`);
   };
 
@@ -649,6 +717,8 @@ export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
       );
       return;
     }
+
+    if (!checkExportPermission()) return;
 
     if (targetList.length === 1) {
       await handleDownloadSingleItem(targetList[0]);
@@ -698,6 +768,7 @@ export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
         blob: zipBlob,
       };
       triggerBlobDownload(zipBlob, `Gift_Images_${settings.shapeId}_${targetList.length}.zip`);
+      consumeAttemptIfApplicable();
       showToast(
         isAr
           ? `تم تصدير وتنزيل ${targetList.length} صورة هدية في ملف ZIP بنجاح!`
@@ -1097,6 +1168,80 @@ export default function GiftImageCreator({ isAr }: GiftImageCreatorProps) {
           </button>
         </div>
       </header>
+
+      {/* Pro Feature & Free Trial Status Bar */}
+      {attemptStatus?.rule?.isPro && (
+        <div
+          id="giftCreatorProBanner"
+          style={{
+            padding: '7px 18px',
+            background: isPro
+              ? 'linear-gradient(90deg, rgba(245, 158, 11, 0.16) 0%, rgba(124, 92, 255, 0.12) 100%)'
+              : attemptStatus.remainingAttempts > 0
+                ? 'linear-gradient(90deg, rgba(16, 185, 129, 0.16) 0%, rgba(59, 130, 246, 0.12) 100%)'
+                : 'linear-gradient(90deg, rgba(239, 68, 68, 0.18) 0%, rgba(220, 38, 38, 0.12) 100%)',
+            borderBottom: isPro
+              ? '1px solid rgba(245, 158, 11, 0.35)'
+              : attemptStatus.remainingAttempts > 0
+                ? '1px solid rgba(16, 185, 129, 0.35)'
+                : '1px solid rgba(239, 68, 68, 0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '12px',
+            fontWeight: 700,
+            gap: '8px',
+            flexWrap: 'wrap',
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>{isPro ? '👑' : attemptStatus.remainingAttempts > 0 ? '🎁' : '🔒'}</span>
+            <span
+              style={{
+                color: isPro ? '#fde047' : attemptStatus.remainingAttempts > 0 ? '#6ee7b7' : '#fca5a5',
+              }}
+            >
+              {isPro
+                ? isAr
+                  ? 'عضوية برو مفعلة: استخدام وتصدير غير محدود لجميع صور الهدايا'
+                  : 'Pro Membership Active: Unlimited usage & export for all gift images'
+                : attemptStatus.remainingAttempts > 0
+                  ? isAr
+                    ? `ميزة برو متاحة لك تجريبياً: متبقي لديك (${attemptStatus.remainingAttempts}) محاولة مجانية للتصدير والتحميل`
+                    : `Pro Trial: You have (${attemptStatus.remainingAttempts}) free export attempts remaining`
+                  : isAr
+                    ? 'استنفدت جميع محاولاتك المجانية! اشترك الآن في باقة برو للتصدير والتحميل غير المحدود'
+                    : 'Free trial attempts exhausted! Subscribe to Pro for unlimited export & downloads'}
+            </span>
+          </div>
+
+          {!isPro && (
+            <button
+              type="button"
+              id="giftCreatorUpgradeProBtn"
+              onClick={() => {
+                if (typeof onRequirePro === 'function') onRequirePro('gift_image');
+                else if (typeof (window as any).__openProModal === 'function')
+                  (window as any).__openProModal('gift_image');
+              }}
+              style={{
+                padding: '3px 12px',
+                borderRadius: '99px',
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                border: 0,
+                color: '#000',
+                fontWeight: 800,
+                fontSize: '11px',
+                cursor: 'pointer',
+                boxShadow: '0 2px 8px rgba(245, 158, 11, 0.3)',
+              }}
+            >
+              👑 {isAr ? 'ترقية إلى برو' : 'Upgrade to Pro'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Batch Progress Bar Banner when active */}
       {batchProgress.active && (

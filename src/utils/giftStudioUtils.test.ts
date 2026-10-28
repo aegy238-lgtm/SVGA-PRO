@@ -28,6 +28,7 @@ import {
   filterExtractableArchiveEntries,
   deriveCleanGiftNameFromArchivePath,
   unwrapLockedGiftPayload,
+  getGiftStudioTranslations,
   type GiftStudioExportItemLike,
 } from './giftStudioUtils.ts';
 
@@ -325,5 +326,37 @@ test('unwrapLockedGiftPayload detects and extracts embedded gift bytes from head
   assert.equal(res.detectedSignature, 'svga_zlib');
   assert.equal(res.bytes[0], 0x78);
   assert.equal(res.bytes[1], 0x9c);
+});
+
+test('getGiftStudioTranslations provides complete coordinated Arabic and English UI strings', () => {
+  const ar = getGiftStudioTranslations('ar');
+  const en = getGiftStudioTranslations('en');
+
+  // Direction and branding
+  assert.equal(ar.dir, 'rtl');
+  assert.equal(en.dir, 'ltr');
+  assert.equal(ar.brandTitle, 'استوديو الهدايا');
+  assert.equal(en.brandTitle, 'Gift Files Studio');
+
+  // Top action buttons
+  assert.equal(ar.btnUpload, '➕ رفع هدايا');
+  assert.equal(en.btnUpload, '➕ Upload Gifts');
+  assert.equal(ar.btnDurationNative, '⏱️ مدة الفيديو: الأصلية');
+  assert.equal(en.btnDurationNative, '⏱️ Video Duration: Native');
+  assert.equal(ar.btnDurationActive(8), '⏱️ مدة الفيديو: 8ث ✓');
+  assert.equal(en.btnDurationActive(8), '⏱️ Video Duration: 8s ✓');
+
+  // All 5 coordinated export modes
+  const modes = ['gi', 'pack', 'sep', 'one', 'extract'] as const;
+  for (const m of modes) {
+    assert.ok(ar.exportModes[m].option && ar.exportModes[m].button);
+    assert.ok(en.exportModes[m].option && en.exportModes[m].button);
+  }
+
+  // Popover hints & unit
+  assert.equal(ar.popDurUnit, 'ث');
+  assert.equal(en.popDurUnit, 's');
+  assert.ok(ar.popDurHintActive(5).includes('مفعّل'));
+  assert.ok(en.popDurHintActive(5).includes('Active'));
 });
 

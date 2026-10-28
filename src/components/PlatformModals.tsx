@@ -18,6 +18,7 @@ import {
   verifyUserPassword,
   getUserProSubscriptionInfo,
   resolveAuthenticatedUserOnLogin,
+  PRO_TOOLS_DEFINITIONS,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import { fetchFirestoreUsers } from '../utils/firebase';
@@ -62,12 +63,17 @@ export function ProSubscriptionModal({
     displayPlans.find((p) => p.id === 'month') ||
     displayPlans[0];
 
+  const toolDef = PRO_TOOLS_DEFINITIONS.find((t) => t.key === blockedFormatKey);
   const fmtDef = ALL_SUPPORTED_FORMATS.find((f) => f.key === blockedFormatKey);
-  const fmtDisplay = fmtDef
+  const fmtDisplay = toolDef
     ? isAr
-      ? fmtDef.labelAr
-      : fmtDef.labelEn
-    : blockedFormatKey.toUpperCase();
+      ? toolDef.labelAr
+      : toolDef.labelEn
+    : fmtDef
+      ? isAr
+        ? fmtDef.labelAr
+        : fmtDef.labelEn
+      : blockedFormatKey.toUpperCase();
 
   const packageTitle = isAr ? settings.proPackageNameAr : settings.proPackageNameEn;
   const packageDesc = isAr ? settings.proDescriptionAr : settings.proDescriptionEn;
@@ -167,6 +173,32 @@ export function ProSubscriptionModal({
               : 'Choose your preferred subscription duration (1 Week / 1 Month / 3 Months / 1 Year) to unlock all Pro tools'}
           </p>
         </div>
+
+        {toolDef && (
+          <div
+            id="proModalToolExhaustedAlert"
+            style={{
+              background: 'rgba(239, 68, 68, 0.16)',
+              border: '1px solid rgba(239, 68, 68, 0.45)',
+              borderRadius: '11px',
+              padding: '10px 14px',
+              marginBottom: '14px',
+              fontSize: '12px',
+              color: '#fca5a5',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span style={{ fontSize: '16px' }}>🔒</span>
+            <span>
+              {isAr
+                ? `ميزة "${toolDef.labelAr}" تتطلب اشتراكاً في باقة برو (أو استنفدت محاولات التجربة المجانية المتاحة لها). اشترك الآن للوصول غير المحدود!`
+                : `The feature "${toolDef.labelEn}" requires a Pro subscription (or free trial attempts have been exhausted). Subscribe now for unlimited access!`}
+            </span>
+          </div>
+        )}
 
         {/* If user is logged in and has an active Pro subscription, show their current duration & expiration */}
         {currentUser && (() => {

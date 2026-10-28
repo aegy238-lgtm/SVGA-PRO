@@ -44,6 +44,10 @@ import {
   savePermanentBranding,
   loadPermanentBranding,
   mergeBrandingSettingsSafely,
+  getFeatureFreeAttemptsStatus,
+  consumeFeatureFreeAttempt,
+  normalizeProFeatureRules,
+  PRO_TOOLS_DEFINITIONS,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -92,6 +96,7 @@ export default function App() {
   const [blockedFormatKey, setBlockedFormatKey] = useState('svga');
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [screenShieldActive, setScreenShieldActive] = useState(false);
+  const [guestAttemptTrigger, setGuestAttemptTrigger] = useState(0);
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
@@ -125,6 +130,22 @@ export default function App() {
     testFirebaseConnection();
     purgeLegacyAdminsFromFirestore();
   }, []);
+
+  // Sync active language to Gift Studio embedded iframe
+  useEffect(() => {
+    const frame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
+    if (frame && frame.contentWindow) {
+      try {
+        frame.contentWindow.postMessage(
+          {
+            type: 'MOTIONTOOLS_LANGUAGE_CHANGE',
+            language: platformState.language,
+          },
+          '*'
+        );
+      } catch (e) {}
+    }
+  }, [platformState.language]);
 
   // Full real-time synchronization with Firebase Firestore (Settings, Users, Notifications)
   useEffect(() => {
@@ -318,6 +339,26 @@ export default function App() {
       } catch {}
     }
   }, [canCaptureScreen, screenShieldActive]);
+
+  // Sync language with embedded Gifts Studio iframe whenever user toggles language
+  useEffect(() => {
+    const giftsFrame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
+    if (giftsFrame && giftsFrame.contentWindow) {
+      try {
+        giftsFrame.contentWindow.postMessage(
+          {
+            type: 'MOTIONTOOLS_LANGUAGE_CHANGE',
+            language: platformState.language,
+          },
+          '*'
+        );
+        const win = giftsFrame.contentWindow as any;
+        if (typeof win.__setGiftStudioLanguage === 'function') {
+          win.__setGiftStudioLanguage(platformState.language);
+        }
+      } catch {}
+    }
+  }, [platformState.language]);
 
   // Toggle Admin / Screen-Capture Attribute and Style on Body for Unrestricted Selection vs Enforced Protection
   useEffect(() => {
@@ -581,6 +622,126 @@ export default function App() {
       return true;
     };
 
+    (window as any).__checkNavViewAccess = (viewKey: string) => {
+      const st = stateRef.current;
+      const curr = st.users.find((u) => u.id === st.currentUserId) || null;
+      let targetKey: string | null = null;
+      if (viewKey === 'gifts') targetKey = 'gifts_studio';
+      else if (viewKey === 'gift-image') targetKey = 'gift_image';
+
+      if (targetKey) {
+        const status = getFeatureFreeAttemptsStatus(
+          targetKey,
+          curr,
+          st.settings,
+          st.adminPreviewRole
+        );
+        if (status.rule.isPro && status.rule.scope === 'access') {
+          if (!status.effectiveIsPro && status.remainingAttempts <= 0) {
+            setBlockedFormatKey(targetKey);
+            setProModalOpen(true);
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    (window as any).__checkFeatureProAccess = (
+      featureKey: string,
+      action: 'access' | 'export' = 'access'
+    ) => {
+      const st = stateRef.current;
+      const curr = st.users.find((u) => u.id === st.currentUserId) || null;
+      const status = getFeatureFreeAttemptsStatus(
+        featureKey,
+        curr,
+        st.settings,
+        st.adminPreviewRole
+      );
+      if (!status.rule.isPro) {
+        return {
+          allowed: true,
+          effectiveIsPro: status.effectiveIsPro,
+          remainingAttempts: Infinity,
+          usesFreeAttempt: false,
+        };
+      }
+      if (status.effectiveIsPro) {
+        return {
+          allowed: true,
+          effectiveIsPro: true,
+          remainingAttempts: Infinity,
+          usesFreeAttempt: false,
+        };
+      }
+      if (status.rule.scope === 'export' && action === 'access') {
+        return {
+          allowed: true,
+          effectiveIsPro: false,
+          remainingAttempts: status.remainingAttempts,
+          usesFreeAttempt: false,
+        };
+      }
+      if (status.remainingAttempts > 0) {
+        return {
+          allowed: true,
+          effectiveIsPro: false,
+          remainingAttempts: status.remainingAttempts,
+          usesFreeAttempt: true,
+        };
+      }
+      return {
+        allowed: false,
+        effectiveIsPro: false,
+        remainingAttempts: 0,
+        usesFreeAttempt: false,
+      };
+    };
+
+    (window as any).__consumeFeatureAttempt = (featureKey: string) => {
+      const st = stateRef.current;
+      const curr = st.users.find((u) => u.id === st.currentUserId) || null;
+      const res = consumeFeatureFreeAttempt(
+        featureKey,
+        curr,
+        st.settings,
+        st.adminPreviewRole
+      );
+      if (res.success) {
+        if (curr) {
+          updatePlatformState((prev) => ({
+            ...prev,
+            users: prev.users.map((u) => {
+              if (u.id !== curr.id) return u;
+              const used = { ...(u.freeAttemptsUsed || {}) };
+              used[featureKey] = (used[featureKey] || 0) + 1;
+              return { ...u, freeAttemptsUsed: used };
+            }),
+          }));
+        } else {
+          setGuestAttemptTrigger((v) => v + 1);
+        }
+      }
+      return res;
+    };
+
+    (window as any).__openProModal = (toolOrFormatKey?: string) => {
+      setBlockedFormatKey(toolOrFormatKey || 'pro');
+      setProModalOpen(true);
+    };
+
+    (window as any).__getFeatureFreeAttemptsStatus = (featureKey: string) => {
+      const st = stateRef.current;
+      const curr = st.users.find((u) => u.id === st.currentUserId) || null;
+      return getFeatureFreeAttemptsStatus(
+        featureKey,
+        curr,
+        st.settings,
+        st.adminPreviewRole
+      );
+    };
+
     (window as any).__recordUploadActivity = (fileName: string, fileSizeStr?: string, formatStr?: string) => {
       const st = stateRef.current;
       const currUser = st.users.find((u) => u.id === st.currentUserId) || null;
@@ -768,6 +929,103 @@ export default function App() {
         ? true
         : !!(currentUser && (hasAdminAccess || currentUser.isPro));
 
+  const giftStudioAttemptStatus = getFeatureFreeAttemptsStatus(
+    'gifts_studio',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
+  const giftImageAttemptStatus = getFeatureFreeAttemptsStatus(
+    'gift_image',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
+
+  // Sync Pro Feature Attempt status to Gift Studio iframe
+  useEffect(() => {
+    const frame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
+    if (frame && frame.contentWindow) {
+      try {
+        frame.contentWindow.postMessage(
+          {
+            type: 'MOTIONTOOLS_PRO_ATTEMPTS_UPDATE',
+            featureKey: 'gifts_studio',
+            status: giftStudioAttemptStatus,
+            effectiveIsPro,
+          },
+          '*'
+        );
+      } catch (e) {}
+    }
+  }, [giftStudioAttemptStatus, effectiveIsPro]);
+
+  const renderNavProBadge = (status: ReturnType<typeof getFeatureFreeAttemptsStatus>) => {
+    if (!status.rule.isPro) return null;
+    if (status.effectiveIsPro) {
+      return (
+        <span
+          style={{
+            fontSize: '9px',
+            fontWeight: 800,
+            padding: '1px 5px',
+            borderRadius: '99px',
+            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.35), rgba(217, 119, 6, 0.25))',
+            border: '1px solid #f59e0b',
+            color: '#fde047',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          👑 PRO
+        </span>
+      );
+    }
+    if (status.rule.allowFreeAttempts && status.remainingAttempts > 0) {
+      return (
+        <span
+          style={{
+            fontSize: '9px',
+            fontWeight: 800,
+            padding: '1px 6px',
+            borderRadius: '99px',
+            background: 'linear-gradient(135deg, #10b981, #059669)',
+            color: '#ffffff',
+            boxShadow: '0 1px 6px rgba(16, 185, 129, 0.35)',
+            whiteSpace: 'nowrap',
+          }}
+          title={
+            isAr
+              ? `يوجد ${status.remainingAttempts} محاولة مجانية متاحة`
+              : `${status.remainingAttempts} free trial attempts remaining`
+          }
+        >
+          {isAr ? `${status.remainingAttempts} مجاناً` : `${status.remainingAttempts} Free`}
+        </span>
+      );
+    }
+    return (
+      <span
+        style={{
+          fontSize: '9px',
+          fontWeight: 800,
+          padding: '1px 5px',
+          borderRadius: '99px',
+          background: 'rgba(239, 68, 68, 0.2)',
+          border: '1px solid rgba(239, 68, 68, 0.6)',
+          color: '#fca5a5',
+          whiteSpace: 'nowrap',
+        }}
+        title={
+          isAr
+            ? 'ميزة برو (استنفدت المحاولات المجانية)'
+            : 'Pro Feature (Trial exhausted)'
+        }
+      >
+        🔒 {isAr ? 'برو' : 'PRO'}
+      </span>
+    );
+  };
+
   const unreadNotifications = notifications.filter((n) => !readNotificationIds.includes(n.id));
   const latestUnreadImportant = unreadNotifications.find((n) => n.important) || unreadNotifications[0];
 
@@ -833,6 +1091,7 @@ export default function App() {
           >
             <span>🎁</span>
             <span>{t.navGiftsStudio}</span>
+            {renderNavProBadge(giftStudioAttemptStatus)}
           </a>
           <a
             data-v="gift-image"
@@ -851,6 +1110,7 @@ export default function App() {
           >
             <span>🖼️</span>
             <span>{t.navGiftImageCreator}</span>
+            {renderNavProBadge(giftImageAttemptStatus)}
           </a>
         </div>
 
@@ -1763,9 +2023,23 @@ export default function App() {
 
         <section className="view" id="gifts" style={{ height: '100%', overflow: 'hidden' }}>
           <iframe
-            src="/gifts-studio.html"
+            src={`/gifts-studio.html?lang=${platformState.language}`}
             id="giftsStudioFrame"
-            title="استوديو الهدايا"
+            title={isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
+            onLoad={(e) => {
+              const frame = e.currentTarget;
+              if (frame && frame.contentWindow) {
+                try {
+                  frame.contentWindow.postMessage(
+                    {
+                      type: 'MOTIONTOOLS_LANGUAGE_CHANGE',
+                      language: platformState.language,
+                    },
+                    '*'
+                  );
+                } catch (err) {}
+              }
+            }}
             style={{
               width: '100%',
               height: '100%',
@@ -1777,7 +2051,18 @@ export default function App() {
         </section>
 
         <section className="view" id="gift-image" style={{ height: '100%', overflow: 'hidden' }}>
-          <GiftImageCreator isAr={isAr} />
+          <GiftImageCreator
+            isAr={isAr}
+            attemptStatus={giftImageAttemptStatus}
+            isPro={effectiveIsPro}
+            onRequirePro={(key) => {
+              setBlockedFormatKey(key || 'gift_image');
+              setProModalOpen(true);
+            }}
+            onConsumeAttempt={() => {
+              return (window as any).__consumeFeatureAttempt?.('gift_image');
+            }}
+          />
         </section>
       </main>
 

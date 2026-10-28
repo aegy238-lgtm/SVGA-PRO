@@ -1083,3 +1083,282 @@ export function unwrapLockedGiftPayload(bytes: Uint8Array): {
 
   return { bytes, unwrapped: false, detectedSignature: null };
 }
+
+export interface GiftStudioI18n {
+  dir: 'rtl' | 'ltr';
+  brandTitle: string;
+  brandSubtitle: string;
+  btnUpload: string;
+  btnBackground: string;
+  btnWatermark: string;
+  btnDurationNative: string;
+  btnDurationActive: (sec: string | number) => string;
+  exportModeTitle: string;
+  exportModes: Record<GiftStudioExportMode, { option: string; button: string }>;
+  resolutionTitle: string;
+  resolutions: Record<string, string>;
+  popBgColor: string;
+  popBgGrad: string;
+  popBgImg: string;
+  popBgTr: string;
+  popBgUploadBtn: string;
+  popBgCover: string;
+  popBgContain: string;
+  popBgStretch: string;
+  popWmTitle: string;
+  popWmEnable: string;
+  popWmNameLabel: string;
+  popWmPlaceholder: string;
+  popWmGridLabel: string;
+  popWmCols: Record<string, string>;
+  popWmColor: string;
+  popWmAccent: string;
+  popWmOpacity: string;
+  popWmPreviewTitle: string;
+  popDurTitle: string;
+  popDurEnable: string;
+  popDurHintDisabled: string;
+  popDurHintActive: (sec: string | number) => string;
+  popDurPresetsTitle: string;
+  popDurUnit: string;
+  popDurSliderLabel: string;
+  popDurExactLabel: string;
+  popDurResetBtn: string;
+  barSelectAll: string;
+  barDeleteSelected: string;
+  barCount: (count: number) => string;
+  barPlayAll: string;
+  barPauseAll: string;
+  barRestartAll: string;
+  barMuteBtn: (muted: boolean) => string;
+  barSizeLabel: string;
+  barFpsLabel: string;
+  dropTitle: string;
+  dropSubtitle: string;
+  alphaOptions: Record<string, string>;
+  cardPlay: string;
+  cardPause: string;
+  cardRestart: string;
+  cardDownloadGift: string;
+  cardSnapImage: string;
+  cardDelete: string;
+  cardAudioMute: string;
+  cardAudioUnmute: string;
+  dockCancel: string;
+  dockSave: string;
+  toastUploadFirst: string;
+  toastNoRecorder: string;
+  toastSorting: string;
+  toastMerging: string;
+  toastProcessing: string;
+  toastCompleted: string;
+  toastDownloadStarted: string;
+  toastSnapping: string;
+  toastSnapFailed: string;
+  toastIgnoredStatic: (count: number) => string;
+  toastUnpackedArchives: (archiveCount: number, giftCount: number) => string;
+}
+
+export const GIFT_STUDIO_I18N_AR: GiftStudioI18n = {
+  dir: 'rtl',
+  brandTitle: 'استوديو الهدايا',
+  brandSubtitle: 'شغّل وصدّر كل صيغ الهدايا',
+  btnUpload: '➕ رفع هدايا',
+  btnBackground: '🖼 الخلفية',
+  btnWatermark: '💧 العلامة المائية',
+  btnDurationNative: '⏱️ مدة الفيديو: الأصلية',
+  btnDurationActive: (sec) => `⏱️ مدة الفيديو: ${sec}ث ✓`,
+  exportModeTitle: 'اختر وضع التصدير أو الاستخراج',
+  exportModes: {
+    gi: { option: '🎁 هدية + 🖼 صورة (مجلد)', button: '⬇ تصدير هدية + صورة' },
+    pack: { option: '🎁 هدية + 🎬 فيديو + 🖼 صورة', button: '⬇ تصدير الحزمة الشاملة' },
+    sep: { option: '🎬 فيديو لكل هدية (منفصل)', button: '⬇ تصدير الفيديوهات' },
+    one: { option: '🎞️ جميع الهدايا في فيديو واحد (جنب بعض)', button: '🎞️ تصدير في فيديو واحد' },
+    extract: { option: '📦 استخراج الهدايا في فولدرات + الصور (SVGA / VAP)', button: '📦 استخراج الفولدرات + الصور' },
+  },
+  resolutionTitle: 'دقة التصدير',
+  resolutions: {
+    '480': '480p',
+    '720': '720p',
+    '1080': '1080p',
+    '1440': '1440p (2K)',
+    '2160': '2160p (4K)',
+    '0': 'الحجم الأصلي',
+  },
+  popBgColor: 'لون',
+  popBgGrad: 'تدرّج',
+  popBgImg: 'صورة',
+  popBgTr: 'شفافة',
+  popBgUploadBtn: 'رفع صورة خلفية',
+  popBgCover: 'تغطية',
+  popBgContain: 'احتواء',
+  popBgStretch: 'تمديد',
+  popWmTitle: '💧 العلامة المائية الشبكية',
+  popWmEnable: 'تفعيل على الهدايا',
+  popWmNameLabel: 'الاسم داخل المربعات والخطوط:',
+  popWmPlaceholder: 'اكتب الاسم هنا...',
+  popWmGridLabel: 'المربعات',
+  popWmCols: {
+    '2': '2×2 كبيرة',
+    '3': '3×3 متوسطة',
+    '4': '4×4 كثيفة',
+    '5': '5×5 دقيقة',
+  },
+  popWmColor: 'اللون',
+  popWmAccent: 'الخط',
+  popWmOpacity: 'الشفافية:',
+  popWmPreviewTitle: 'معاينة شكل العلامة المائية على حجم الهدية',
+  popDurTitle: '⏱️ وضع تحديد مدة الفيديو',
+  popDurEnable: 'تفعيل المدة',
+  popDurHintDisabled: '⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.',
+  popDurHintActive: (sec) => `🟢 <b>مفعّل الآن (${sec} ثانية):</b> يتم عرض التأثير وتصدير الفيديو في جميع صيغ الهدايا حسب المدة المختارة بالضبط.`,
+  popDurPresetsTitle: 'اختر المدة السريعة (بالثواني) لعرض وتصدير التأثير:',
+  popDurUnit: 'ث',
+  popDurSliderLabel: 'شريط المدة:',
+  popDurExactLabel: 'تحديد المدة بدقة (ثانية):',
+  popDurResetBtn: '🔄 إيقاف والعودة للمدة الأصلية للهدية',
+  barSelectAll: '☑ تحديد الكل',
+  barDeleteSelected: '🗑 حذف المحدد',
+  barCount: (count) => `${count} هدية`,
+  barPlayAll: '▶ تشغيل الكل',
+  barPauseAll: '⏸ إيقاف الكل',
+  barRestartAll: '🔄 إعادة الكل',
+  barMuteBtn: (muted) => (muted ? '🔇 الصوت: مكتوم (اضغط للتشغيل)' : '🔊 الصوت: يعمل (اضغط للكتم)'),
+  barSizeLabel: 'الحجم',
+  barFpsLabel: 'إطارات',
+  dropTitle: 'اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع',
+  dropSubtitle: 'يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً',
+  alphaOptions: {
+    N: 'بدون قناة ألفا',
+    L: 'ألفا: يسار',
+    R: 'ألفا: يمين',
+    T: 'ألفا: أعلى',
+    B: 'ألفا: أسفل',
+  },
+  cardPlay: 'تشغيل',
+  cardPause: 'إيقاف مؤقت',
+  cardRestart: 'إعادة التشغيل',
+  cardDownloadGift: 'تنزيل ملف الهدية الأصلي',
+  cardSnapImage: 'التقاط صورة واضحة ومقصوصة بدقة للهدية',
+  cardDelete: 'حذف هذه الهدية',
+  cardAudioMute: 'كتم صوت هذه الهدية',
+  cardAudioUnmute: 'تشغيل صوت هذه الهدية',
+  dockCancel: 'إلغاء',
+  dockSave: '⬇ حفظ الملف',
+  toastUploadFirst: 'يرجى رفع ملفات الهدايا أولاً',
+  toastNoRecorder: 'المتصفح لا يدعم التسجيل',
+  toastSorting: 'جارٍ فرز ملفات SVGA في فولدر والملفات الأخرى في فولدر مع تصدير صور الهدايا فائقة الوضوح…',
+  toastMerging: 'جارٍ ترتيب ودمج جميع الهدايا جنب بعض في ملف فيديو واحد بدقة عالية…',
+  toastProcessing: 'جارٍ معالجة وتصدير الفريمات بدقة عالية بدون تقطيع…',
+  toastCompleted: 'اكتمل ✓',
+  toastDownloadStarted: 'تم بدء التنزيل: ',
+  toastSnapping: 'جارٍ التقاط صورة فائقة الوضوح للهدية…',
+  toastSnapFailed: 'تعذر إنشاء الصورة',
+  toastIgnoredStatic: (count) => `تم تجاهل ${count} صورة ثابتة — لا يتم رفع الصور`,
+  toastUnpackedArchives: (archiveCount, giftCount) =>
+    `📦 تم فتح ${archiveCount === 1 ? 'الملف المغلق' : archiveCount + ' ملفات مغلقة'} واستخراج ${giftCount} هدية للعرض بنجاح`,
+};
+
+export const GIFT_STUDIO_I18N_EN: GiftStudioI18n = {
+  dir: 'ltr',
+  brandTitle: 'Gift Files Studio',
+  brandSubtitle: 'Play and export all gift formats',
+  btnUpload: '➕ Upload Gifts',
+  btnBackground: '🖼 Background',
+  btnWatermark: '💧 Watermark',
+  btnDurationNative: '⏱️ Video Duration: Native',
+  btnDurationActive: (sec) => `⏱️ Video Duration: ${sec}s ✓`,
+  exportModeTitle: 'Choose export or extraction mode',
+  exportModes: {
+    gi: { option: '🎁 Gift + 🖼 Image (Folder)', button: '⬇ Export Gift + Image' },
+    pack: { option: '🎁 Gift + 🎬 Video + 🖼 Image', button: '⬇ Export Full Pack' },
+    sep: { option: '🎬 Video per Gift (Separate)', button: '⬇ Export Videos' },
+    one: { option: '🎞️ All Gifts in One Video (Side-by-Side)', button: '🎞️ Export All in One Video' },
+    extract: { option: '📦 Extract Gifts in Folders + Images (SVGA / VAP)', button: '📦 Extract Folders + Images' },
+  },
+  resolutionTitle: 'Export Resolution',
+  resolutions: {
+    '480': '480p',
+    '720': '720p',
+    '1080': '1080p',
+    '1440': '1440p (2K)',
+    '2160': '2160p (4K)',
+    '0': 'Original Size',
+  },
+  popBgColor: 'Color',
+  popBgGrad: 'Gradient',
+  popBgImg: 'Image',
+  popBgTr: 'Transparent',
+  popBgUploadBtn: 'Upload BG Image',
+  popBgCover: 'Cover',
+  popBgContain: 'Contain',
+  popBgStretch: 'Stretch',
+  popWmTitle: '💧 Grid Watermark',
+  popWmEnable: 'Enable on gifts',
+  popWmNameLabel: 'Name inside grid & lines:',
+  popWmPlaceholder: 'Type watermark name...',
+  popWmGridLabel: 'Grid Size',
+  popWmCols: {
+    '2': '2×2 Large',
+    '3': '3×3 Medium',
+    '4': '4×4 Dense',
+    '5': '5×5 Fine',
+  },
+  popWmColor: 'Color',
+  popWmAccent: 'Accent',
+  popWmOpacity: 'Opacity:',
+  popWmPreviewTitle: 'Watermark preview on gift size',
+  popDurTitle: '⏱️ Custom Video Duration',
+  popDurEnable: 'Enable Duration',
+  popDurHintDisabled: '⚪ <b>Current status (Disabled):</b> Each gift plays and exports at its native original duration.',
+  popDurHintActive: (sec) => `🟢 <b>Active now (${sec}s):</b> Live preview effect and video export for all gift formats match this exact duration.`,
+  popDurPresetsTitle: 'Choose quick duration (seconds) for preview & export:',
+  popDurUnit: 's',
+  popDurSliderLabel: 'Duration Slider:',
+  popDurExactLabel: 'Exact duration (seconds):',
+  popDurResetBtn: '🔄 Disable & return to native duration',
+  barSelectAll: '☑ Select All',
+  barDeleteSelected: '🗑 Delete Selected',
+  barCount: (count) => `${count} gift${count === 1 ? '' : 's'}`,
+  barPlayAll: '▶ Play All',
+  barPauseAll: '⏸ Pause All',
+  barRestartAll: '🔄 Restart All',
+  barMuteBtn: (muted) => (muted ? '🔇 Audio: Muted (Click to play)' : '🔊 Audio: On (Click to mute)'),
+  barSizeLabel: 'Size',
+  barFpsLabel: 'FPS',
+  dropTitle: 'Drag gifts or closed archives here or click to upload',
+  dropSubtitle: 'Supports opening closed & compressed files (ZIP / Folders) and automatically extracting & displaying all inner gifts',
+  alphaOptions: {
+    N: 'No Alpha Channel',
+    L: 'Alpha: Left',
+    R: 'Alpha: Right',
+    T: 'Alpha: Top',
+    B: 'Alpha: Bottom',
+  },
+  cardPlay: 'Play',
+  cardPause: 'Pause',
+  cardRestart: 'Restart',
+  cardDownloadGift: 'Download original gift file',
+  cardSnapImage: 'Capture high-clarity cropped gift snapshot',
+  cardDelete: 'Delete this gift',
+  cardAudioMute: 'Mute this gift audio',
+  cardAudioUnmute: 'Unmute this gift audio',
+  dockCancel: 'Cancel',
+  dockSave: '⬇ Save File',
+  toastUploadFirst: 'Please upload gift files first',
+  toastNoRecorder: 'Browser does not support recording',
+  toastSorting: 'Sorting SVGA and other gifts into folders with ultra-clear snapshot images…',
+  toastMerging: 'Arranging and merging all gifts side-by-side into a single high-res video…',
+  toastProcessing: 'Processing and exporting frames at high resolution without stutter…',
+  toastCompleted: 'Completed ✓',
+  toastDownloadStarted: 'Download started: ',
+  toastSnapping: 'Capturing ultra-clear gift snapshot…',
+  toastSnapFailed: 'Failed to create image snapshot',
+  toastIgnoredStatic: (count) => `Ignored ${count} static image(s) — static images are not uploaded`,
+  toastUnpackedArchives: (archiveCount, giftCount) =>
+    `📦 Opened ${archiveCount === 1 ? 'closed archive' : archiveCount + ' closed archives'} and extracted ${giftCount} gift(s) for display successfully`,
+};
+
+export function getGiftStudioTranslations(lang: 'ar' | 'en' | string): GiftStudioI18n {
+  return lang === 'en' ? GIFT_STUDIO_I18N_EN : GIFT_STUDIO_I18N_AR;
+}

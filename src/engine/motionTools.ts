@@ -105,10 +105,22 @@ export function initMotionToolsFixed() {
       history.replaceState(null, '', '#' + v);
     } catch (e) {}
   }
+  (window as any).__showNavView = show;
   document.addEventListener('click', (e) => {
-    const a = e.target.closest('[data-v]');
-    if (a) show(a.dataset.v);
-    const t = e.target.closest('[data-t]');
+    const a = (e.target as HTMLElement | null)?.closest?.('[data-v]') as HTMLElement | null;
+    if (a) {
+      const v = a.dataset.v;
+      if (v && typeof (window as any).__checkNavViewAccess === 'function') {
+        const allowed = (window as any).__checkNavViewAccess(v);
+        if (!allowed) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
+      if (v) show(v);
+    }
+    const t = (e.target as HTMLElement | null)?.closest?.('[data-t]') as HTMLElement | null;
     if (t) toast(t.dataset.t);
   });
 

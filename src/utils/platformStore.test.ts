@@ -29,6 +29,12 @@ import {
   sanitizeSiteName,
   mergeBrandingSettingsSafely,
   resolveAuthenticatedUserOnLogin,
+  normalizeProFeatureRules,
+  getFeatureFreeAttemptsStatus,
+  consumeFeatureFreeAttempt,
+  resetFeatureFreeAttempts,
+  PRO_TOOLS_DEFINITIONS,
+  DEFAULT_PRO_FEATURE_RULES,
   type UserAccount,
 } from './platformStore.ts';
 
@@ -432,5 +438,118 @@ test('canDeleteUserAccount strictly prevents any delegated admin from deleting u
   // Regular users and guests cannot delete accounts
   assert.equal(canDeleteUserAccount(regularUser, regularUser), false);
   assert.equal(canDeleteUserAccount(null, regularUser), false);
+});
+
+test('Pro feature rules and free trial attempts track consumption and grant unlimited access to Pro members', () => {
+  const freeUser: UserAccount = {
+    id: 'usr_free_trial',
+    name: 'مستخدم تجريبي',
+    email: 'trial@example.com',
+    role: 'user',
+    isPro: false,
+    createdAt: '2026-10-28T00:00:00.000Z',
+    freeAttemptsUsed: {},
+  };
+
+  const proUser: UserAccount = {
+    id: 'usr_pro_member',
+    name: 'مشترك برو',
+    email: 'pro@example.com',
+    role: 'user',
+    isPro: true,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
+
+  const customSettings = {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    proFeatureRules: {
+      gifts_studio: {
+        isPro: true,
+        scope: 'export' as const,
+        allowFreeAttempts: true,
+        freeAttemptsCount: 3,
+      },
+      gift_image: {
+        isPro: true,
+        scope: 'access' as const,
+        allowFreeAttempts: true,
+        freeAttemptsCount: 2,
+      },
+    },
+  };
+
+  // 1. Pro user has unlimited access and 0 consumed
+  const proStatus = getFeatureFreeAttemptsStatus('gifts_studio', proUser, customSettings);
+  assert.equal(proStatus.isUnlimited, true);
+  assert.equal(proStatus.hasAccess, true);
+  assert.equal(proStatus.remaining, Infinity);
+
+  // 2. Super Admin also has unlimited access
+  const adminStatus = getFeatureFreeAttemptsStatus('gifts_studio', INITIAL_SUPER_ADMIN_ACCOUNT, customSettings);
+  assert.equal(adminStatus.isUnlimited, true);
+  assert.equal(adminStatus.hasAccess, true);
+
+  // 3. Free user starts with 3 attempts for gifts_studio
+  const initialStatus = getFeatureFreeAttemptsStatus('gifts_studio', freeUser, customSettings);
+  assert.equal(initialStatus.isUnlimited, false);
+  assert.equal(initialStatus.hasAccess, true);
+  assert.equal(initialStatus.remaining, 3);
+  assert.equal(initialStatus.scope, 'export');
+
+  // 4. Consume 1 attempt
+  const firstUse = consumeFeatureFreeAttempt('gifts_studio', freeUser, customSettings);
+  assert.equal(firstUse.consumed, true);
+  assert.equal(firstUse.allowed, true);
+  assert.equal(firstUse.remaining, 2);
+  const updatedUser1 = firstUse.updatedUser!;
+
+  // Status now reflects 2 remaining
+  const statusAfter1 = getFeatureFreeAttemptsStatus('gifts_studio', updatedUser1, customSettings);
+  assert.equal(statusAfter1.remaining, 2);
+  assert.equal(statusAfter1.hasAccess, true);
+
+  // Consume second attempt
+  const secondUse = consumeFeatureFreeAttempt('gifts_studio', updatedUser1, customSettings);
+  assert.equal(secondUse.remaining, 1);
+  const updatedUser2 = secondUse.updatedUser!;
+
+  // Consume third attempt (last one)
+  const thirdUse = consumeFeatureFreeAttempt('gifts_studio', updatedUser2, customSettings);
+  assert.equal(thirdUse.remaining, 0);
+  assert.equal(thirdUse.allowed, true);
+  const updatedUser3 = thirdUse.updatedUser!;
+
+  // Fourth attempt should be BLOCKED because attempts are exhausted!
+  const fourthUse = consumeFeatureFreeAttempt('gifts_studio', updatedUser3, customSettings);
+  assert.equal(fourthUse.allowed, false);
+  assert.equal(fourthUse.consumed, false);
+  assert.equal(fourthUse.remaining, 0);
+
+  const blockedStatus = getFeatureFreeAttemptsStatus('gifts_studio', updatedUser3, customSettings);
+  assert.equal(blockedStatus.hasAccess, false);
+  assert.equal(blockedStatus.remaining, 0);
+
+  // 5. Test when allowFreeAttempts is FALSE
+  const noFreeSettings = {
+    ...customSettings,
+    proFeatureRules: {
+      ...customSettings.proFeatureRules,
+      gift_image: {
+        isPro: true,
+        scope: 'access' as const,
+        allowFreeAttempts: false,
+        freeAttemptsCount: 0,
+      },
+    },
+  };
+  const noFreeStatus = getFeatureFreeAttemptsStatus('gift_image', freeUser, noFreeSettings);
+  assert.equal(noFreeStatus.hasAccess, false);
+  assert.equal(noFreeStatus.remaining, 0);
+
+  // 6. Test resetFeatureFreeAttempts for user
+  const resetUser = resetFeatureFreeAttempts('gifts_studio', updatedUser3)!;
+  const statusAfterReset = getFeatureFreeAttemptsStatus('gifts_studio', resetUser, customSettings);
+  assert.equal(statusAfterReset.remaining, 3);
+  assert.equal(statusAfterReset.hasAccess, true);
 });
 

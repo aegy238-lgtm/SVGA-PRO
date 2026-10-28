@@ -202,6 +202,7 @@ export interface UserAccount {
   proExpiresAt?: string;
   createdAt: string;
   proActivatedAt?: string;
+  freeAttemptsUsed?: Record<string, number>;
 }
 
 export interface BroadcastNotification {
@@ -236,6 +237,99 @@ export const ALL_SUPPORTED_FORMATS: FormatDefinition[] = [
   { key: 'zip', labelEn: 'PNG Sequence ZIP', labelAr: 'تسلسل صور PNG ZIP', ext: ['zip', 'png', 'apng'] },
 ];
 
+export type ProFeatureScope = 'access' | 'export';
+
+export interface ProFeatureRule {
+  isPro: boolean;                 // Whether this tool/feature is locked behind Pro
+  scope: ProFeatureScope;         // 'access' = lock navigating into feature; 'export' = lock export/download button only
+  allowFreeAttempts: boolean;     // Whether free/unsubscribed users get trial attempts
+  freeAttemptsCount: number;      // Number of free trial attempts granted (e.g. 1, 2, 3, 5, 10)
+}
+
+export interface ProToolDefinition {
+  key: string;
+  labelAr: string;
+  labelEn: string;
+  icon: string;
+  descAr: string;
+  descEn: string;
+  defaultScope: ProFeatureScope;
+  defaultIsPro: boolean;
+  defaultFreeAttempts: number;
+}
+
+export const PRO_TOOLS_DEFINITIONS: ProToolDefinition[] = [
+  {
+    key: 'gifts_studio',
+    labelAr: 'استوديو وعرض ملفات الهدايا',
+    labelEn: 'Gift Files Studio & Preview',
+    icon: '🎁',
+    descAr: 'عرض ومعاينة ملفات الهدايا والرسوم المتحركة (SVGA, VAP, YYEVA, PAG) وتصديرها.',
+    descEn: 'Preview, play, inspect, and export multi-format gift animations.',
+    defaultScope: 'export',
+    defaultIsPro: true,
+    defaultFreeAttempts: 3,
+  },
+  {
+    key: 'gift_image',
+    labelAr: 'أداة إنشاء صور الهدايا',
+    labelEn: 'Gift Image Creator',
+    icon: '🖼️',
+    descAr: 'توليد وقص وتصدير صور الهدايا والبنرات الدائرية والشعارات المفرغة فائقة الدقة.',
+    descEn: 'Generate, crop, fit, and export high-clarity framed gift images.',
+    defaultScope: 'access',
+    defaultIsPro: true,
+    defaultFreeAttempts: 3,
+  },
+];
+
+export const DEFAULT_PRO_FEATURE_RULES: Record<string, ProFeatureRule> = {
+  gifts_studio: {
+    isPro: true,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+  },
+  gift_image: {
+    isPro: true,
+    scope: 'access',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+  },
+};
+
+export function normalizeProFeatureRules(
+  rules?: Record<string, Partial<ProFeatureRule>> | null
+): Record<string, ProFeatureRule> {
+  const result: Record<string, ProFeatureRule> = { ...DEFAULT_PRO_FEATURE_RULES };
+  if (rules && typeof rules === 'object') {
+    Object.keys(rules).forEach((key) => {
+      const candidate = rules[key];
+      if (candidate && typeof candidate === 'object') {
+        const def = DEFAULT_PRO_FEATURE_RULES[key] || {
+          isPro: true,
+          scope: 'export' as ProFeatureScope,
+          allowFreeAttempts: true,
+          freeAttemptsCount: 3,
+        };
+        result[key] = {
+          isPro: typeof candidate.isPro === 'boolean' ? candidate.isPro : def.isPro,
+          scope: candidate.scope === 'access' || candidate.scope === 'export' ? candidate.scope : def.scope,
+          allowFreeAttempts:
+            typeof candidate.allowFreeAttempts === 'boolean'
+              ? candidate.allowFreeAttempts
+              : def.allowFreeAttempts,
+          freeAttemptsCount:
+            typeof candidate.freeAttemptsCount === 'number' && candidate.freeAttemptsCount >= 0
+              ? Math.max(0, Math.min(100, Math.round(candidate.freeAttemptsCount)))
+              : def.freeAttemptsCount,
+        };
+      }
+    });
+  }
+  return result;
+}
+
 export interface PlatformSettings {
   siteName: string;
   siteLogoUrl: string; // empty string = default gradient dot logo, or DataURL / https URL
@@ -252,6 +346,7 @@ export interface PlatformSettings {
   proDescriptionEn: string;
   proFormats: string[]; // array of format keys that require Pro subscription
   requireProForAllConversions: boolean; // if true, any conversion requires Pro regardless of format
+  proFeatureRules?: Record<string, ProFeatureRule>; // custom rules and free trial attempts per feature/tool
   whatsappNumber: string;
   whatsappDefaultMsgAr: string;
   whatsappDefaultMsgEn: string;
@@ -296,6 +391,7 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
     'Get full access to convert and export all professional formats (SVGA, VAP, YYEVA, PAG, Lottie, MP4) with lossless compression, audio editing, and full layer control.',
   proFormats: ['svga', 'vap', 'yyeva', 'dual', 'pag', 'lottie', 'dotlottie', 'svga_editor'],
   requireProForAllConversions: false,
+  proFeatureRules: { ...DEFAULT_PRO_FEATURE_RULES },
   whatsappNumber: '201000000000',
   whatsappDefaultMsgAr: 'مرحباً، أريد الاشتراك في باقة أدوات برو (Pro Tools) وتفعيل حسابي.',
   whatsappDefaultMsgEn: 'Hello, I would like to subscribe to the Pro Tools package and activate my account.',
@@ -1113,6 +1209,7 @@ export function mergeBrandingSettingsSafely(
     logoExplicitlyRemoved: resolvedLogoRemoved,
   };
   merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+  merged.proFeatureRules = normalizeProFeatureRules(merged.proFeatureRules);
   return merged;
 }
 
@@ -1388,6 +1485,220 @@ export function savePlatformState(state: PlatformState): void {
   } catch (e) {
     console.warn('Could not persist platform state to localStorage:', e);
   }
+}
+
+export const GUEST_FREE_ATTEMPTS_STORAGE_KEY = 'motiontools_free_attempts_v1';
+
+export function getGuestFreeAttemptsMap(): Record<string, number> {
+  if (typeof window === 'undefined' || !window.localStorage) return {};
+  try {
+    const raw = window.localStorage.getItem(GUEST_FREE_ATTEMPTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveGuestFreeAttemptsMap(map: Record<string, number>): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(GUEST_FREE_ATTEMPTS_STORAGE_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+export interface FeatureFreeAttemptsStatus {
+  isPro: boolean;
+  isUnlimited: boolean;
+  allowFreeAttempts: boolean;
+  totalAllowed: number;
+  used: number;
+  remaining: number;
+  hasAccess: boolean;
+  scope: ProFeatureScope;
+  effectiveIsPro: boolean;
+  remainingAttempts: number;
+  rule: ProFeatureRule;
+}
+
+export interface FeatureAttemptConsumeResult {
+  remaining: number;
+  consumed: boolean;
+  allowed: boolean;
+  success: boolean;
+  remainingAttempts: number;
+  updatedUser?: UserAccount;
+}
+
+export function getFeatureFreeAttemptsStatus(
+  featureKey: string,
+  user: UserAccount | null | undefined,
+  settings: PlatformSettings,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual',
+  nowMs: number = Date.now()
+): FeatureFreeAttemptsStatus {
+  const rules = normalizeProFeatureRules(settings?.proFeatureRules);
+  const rule = rules[featureKey] || {
+    isPro: false,
+    scope: 'export' as ProFeatureScope,
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+  };
+
+  // Determine if user has unlimited Pro access
+  let isProUser = false;
+  if (adminPreviewRole === 'free_user') {
+    isProUser = false;
+  } else if (adminPreviewRole === 'pro_user') {
+    isProUser = true;
+  } else if (user && !isPurgedLegacyAdmin(user)) {
+    if (canAccessAdminDashboard(user)) {
+      isProUser = true;
+    } else if (user.isPro === true) {
+      if (user.proExpiresAt) {
+        isProUser = new Date(user.proExpiresAt).getTime() > nowMs;
+      } else {
+        isProUser = true;
+      }
+    }
+  }
+
+  if (!rule.isPro || isProUser) {
+    return {
+      isPro: rule.isPro,
+      isUnlimited: true,
+      allowFreeAttempts: rule.allowFreeAttempts,
+      totalAllowed: rule.freeAttemptsCount,
+      used: 0,
+      remaining: Infinity,
+      hasAccess: true,
+      scope: rule.scope,
+      effectiveIsPro: isProUser,
+      remainingAttempts: Infinity,
+      rule,
+    };
+  }
+
+  // User is free/unsubscribed
+  if (!rule.allowFreeAttempts || rule.freeAttemptsCount <= 0) {
+    return {
+      isPro: true,
+      isUnlimited: false,
+      allowFreeAttempts: false,
+      totalAllowed: 0,
+      used: 0,
+      remaining: 0,
+      hasAccess: false,
+      scope: rule.scope,
+      effectiveIsPro: false,
+      remainingAttempts: 0,
+      rule,
+    };
+  }
+
+  const guestMap = getGuestFreeAttemptsMap();
+  const used = Math.max(
+    0,
+    Number(user?.freeAttemptsUsed?.[featureKey] ?? guestMap[featureKey] ?? 0)
+  );
+  const remaining = Math.max(0, rule.freeAttemptsCount - used);
+
+  return {
+    isPro: true,
+    isUnlimited: false,
+    allowFreeAttempts: true,
+    totalAllowed: rule.freeAttemptsCount,
+    used,
+    remaining,
+    hasAccess: remaining > 0,
+    scope: rule.scope,
+    effectiveIsPro: false,
+    remainingAttempts: remaining,
+    rule,
+  };
+}
+
+export function consumeFeatureFreeAttempt(
+  featureKey: string,
+  user: UserAccount | null | undefined,
+  settings: PlatformSettings,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual',
+  nowMs: number = Date.now()
+): FeatureAttemptConsumeResult {
+  const status = getFeatureFreeAttemptsStatus(featureKey, user, settings, adminPreviewRole, nowMs);
+  if (status.isUnlimited) {
+    return {
+      remaining: Infinity,
+      consumed: false,
+      allowed: true,
+      success: true,
+      remainingAttempts: Infinity,
+    };
+  }
+  if (!status.hasAccess || status.remaining <= 0) {
+    return {
+      remaining: 0,
+      consumed: false,
+      allowed: false,
+      success: false,
+      remainingAttempts: 0,
+    };
+  }
+
+  const nextUsed = status.used + 1;
+  const nextRemaining = Math.max(0, status.totalAllowed - nextUsed);
+
+  // Update guest localStorage map
+  const guestMap = getGuestFreeAttemptsMap();
+  guestMap[featureKey] = nextUsed;
+  saveGuestFreeAttemptsMap(guestMap);
+
+  let updatedUser: UserAccount | undefined;
+  if (user && !isPurgedLegacyAdmin(user)) {
+    updatedUser = {
+      ...user,
+      freeAttemptsUsed: {
+        ...(user.freeAttemptsUsed || {}),
+        [featureKey]: nextUsed,
+      },
+    };
+  }
+
+  return {
+    remaining: nextRemaining,
+    consumed: true,
+    allowed: true,
+    success: true,
+    remainingAttempts: nextRemaining,
+    updatedUser,
+  };
+}
+
+export function resetFeatureFreeAttempts(
+  featureKey?: string,
+  user?: UserAccount | null
+): UserAccount | undefined {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    if (featureKey) {
+      const guestMap = getGuestFreeAttemptsMap();
+      delete guestMap[featureKey];
+      saveGuestFreeAttemptsMap(guestMap);
+    } else {
+      try {
+        window.localStorage.removeItem(GUEST_FREE_ATTEMPTS_STORAGE_KEY);
+      } catch {}
+    }
+  }
+  if (user) {
+    if (featureKey) {
+      const nextUsed = { ...(user.freeAttemptsUsed || {}) };
+      delete nextUsed[featureKey];
+      return { ...user, freeAttemptsUsed: nextUsed };
+    }
+    return { ...user, freeAttemptsUsed: {} };
+  }
+  return undefined;
 }
 
 
