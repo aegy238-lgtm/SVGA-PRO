@@ -12,6 +12,5 @@ dist/
 .playwright-cli/
 public/assets/aistudio
 public/assets/aistudio/
-bun.lock
 *.log
 
