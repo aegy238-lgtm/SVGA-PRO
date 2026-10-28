@@ -360,6 +360,89 @@ export function computeFrameSeekTime(
   return Math.max(0, Math.min(safeDur - 0.002, raw));
 }
 
+export interface CustomDurationConfig {
+  enabled: boolean;
+  seconds: number;
+}
+
+export const DEFAULT_CUSTOM_DURATION_CONFIG: CustomDurationConfig = {
+  enabled: false,
+  seconds: 5,
+};
+
+/**
+ * Resolves the effective playback & export duration for a gift item.
+ * - When `customConfig.enabled` is true: returns the user-selected custom duration in seconds for ANY gift format.
+ * - When `customConfig.enabled` is false: returns the gift's original native duration (or fallbackStaticSec for static items).
+ */
+export function resolveEffectiveGiftDuration(
+  nativeDurationSec: number | undefined,
+  customConfig: Partial<CustomDurationConfig> = {},
+  fallbackStaticSec = 3
+): number {
+  if (customConfig && customConfig.enabled) {
+    const customSec = Number(customConfig.seconds);
+    const validCustom = Number.isFinite(customSec) && customSec > 0 ? customSec : fallbackStaticSec || 5;
+    return Math.max(0.5, Math.min(120, Math.round(validCustom * 100) / 100));
+  }
+  const nativeSec = Number(nativeDurationSec);
+  if (Number.isFinite(nativeSec) && nativeSec > 0) {
+    return Math.max(0.2, Math.min(120, nativeSec));
+  }
+  const fallback = Number(fallbackStaticSec);
+  return Math.max(0.5, Math.min(120, Number.isFinite(fallback) && fallback > 0 ? fallback : 3));
+}
+
+/**
+ * Computes the live preview playback speed multiplier (`playbackRate`) so the gift effect
+ * is displayed across the chosen custom duration when enabled, or at 1.0x native speed when disabled.
+ */
+export function computeCustomPlaybackRate(
+  nativeDurationSec: number | undefined,
+  customConfig: Partial<CustomDurationConfig> = {}
+): number {
+  if (!customConfig || !customConfig.enabled) return 1;
+  const nativeSec = Number(nativeDurationSec);
+  if (!Number.isFinite(nativeSec) || nativeSec <= 0.05) return 1;
+  const targetSec = resolveEffectiveGiftDuration(nativeSec, customConfig);
+  const ratio = nativeSec / Math.max(0.1, targetSec);
+  return Math.max(0.1, Math.min(8.0, Math.round(ratio * 1000) / 1000));
+}
+
+/**
+ * Maps an export frame index (`0 .. totalFrames - 1`) to the gift's native animation timestamp (`0 .. nativeDurationSec`)
+ * so that when custom duration mode is enabled, the full gift effect stretches/compresses smoothly across the chosen duration.
+ */
+export function mapExportFrameToNativeTime(
+  frameIndex: number,
+  fps: number,
+  exportDurationSec: number,
+  nativeDurationSec: number | undefined,
+  isVideoSeek = false,
+  customDurationEnabled = false
+): number {
+  const safeFps = Math.max(1, fps || 30);
+  const safeExportDur = Math.max(0.05, Number(exportDurationSec) || 3);
+  const rawNative = Number(nativeDurationSec);
+  const safeNativeDur = Number.isFinite(rawNative) && rawNative > 0.05 ? rawNative : safeExportDur;
+
+  if (!customDurationEnabled || Math.abs(safeExportDur - safeNativeDur) < 1e-4) {
+    if (isVideoSeek) {
+      return computeFrameSeekTime(frameIndex, safeFps, safeNativeDur);
+    }
+    const t = Math.max(0, frameIndex) / safeFps;
+    return Math.max(0, Math.min(safeNativeDur - 0.0005, t));
+  }
+
+  const totalFrames = Math.max(1, Math.round(safeExportDur * safeFps));
+  const sampleOffset = isVideoSeek ? 0.35 : 0;
+  const progress = Math.max(0, Math.min(0.9995, (Math.max(0, frameIndex) + sampleOffset) / totalFrames));
+  const mappedSec = progress * safeNativeDur;
+  return isVideoSeek
+    ? Math.max(0, Math.min(safeNativeDur - 0.002, mappedSec))
+    : Math.max(0, Math.min(safeNativeDur - 0.0005, mappedSec));
+}
+
 export interface AudioEncoderCandidate {
   codec: string;
   muxCodec: 'aac' | 'opus';

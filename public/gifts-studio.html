@@ -24,6 +24,16 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;display:flex;
 .act{display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:relative}
 .pop{position:absolute;top:110%;inset-inline-start:0;z-index:30;width:290px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.pop.o{display:flex}
 .wmpop{position:absolute;top:110%;inset-inline-start:90px;z-index:31;width:320px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.wmpop.o{display:flex}
+.durpop{position:absolute;top:110%;inset-inline-start:180px;z-index:32;width:340px;background:var(--sf);border:1px solid var(--bd);border-radius:16px;padding:14px;box-shadow:var(--sh);display:none;flex-direction:column;gap:10px}.durpop.o{display:flex}
+.dur-inline{display:inline-flex;align-items:center;gap:6px;background:rgba(20,25,48,.85);border:1px solid var(--bd);border-radius:12px;padding:3px 6px;transition:.2s}
+.dur-inline.on{border-color:#a855f7;background:linear-gradient(135deg,rgba(138,112,255,.16),rgba(16,185,129,.12));box-shadow:0 0 16px rgba(168,85,247,.25)}
+.dur-tgl{padding:5px 10px!important;border-radius:9px!important;font-size:12.5px!important;font-weight:700;border:1px solid transparent!important;background:transparent!important}
+.dur-inline.on .dur-tgl{background:rgba(168,85,247,.22)!important;border-color:#a855f7!important;color:#f3e8ff}
+.dur-ctrls{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}
+.dur-chips{display:inline-flex;gap:3px;align-items:center;flex-wrap:wrap}
+.dur-chips button,.dur-pgrid button{padding:3px 8px!important;font-size:11.5px!important;border-radius:8px!important;background:#0b0e1a;border:1px solid var(--bd);color:var(--mu);font-weight:700}
+.dur-chips button.act,.dur-pgrid button.act{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;border-color:transparent;box-shadow:0 2px 10px rgba(138,112,255,.4)}
+.dur-pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .sw{display:flex;flex-wrap:wrap;gap:8px}.sw i{width:34px;height:34px;border-radius:10px;cursor:pointer;border:2px solid var(--bd)}.sw i:hover{border-color:var(--ac)}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 18px;color:var(--mu)}
 .bar button{padding:6px 10px;font-size:13px}.bar .sp{margin-inline-end:auto}
@@ -45,7 +55,7 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;display:flex;
 .wm-pv{width:100%;height:110px;border-radius:12px;border:1px solid var(--bd);background:#0b0e1a;position:relative;overflow:hidden;display:grid;place-items:center}
 .wm-pv canvas{width:100%;height:100%;display:block}
 .wm-dot{width:8px;height:8px;border-radius:50%;background:#64748b;display:inline-block}
-button.wm-on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
+button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
 </style>
 </head>
 <body>
@@ -55,6 +65,7 @@ button.wm-on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
   <button id="up">➕ رفع هدايا</button>
   <button id="bgb">🖼 الخلفية</button>
   <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> 💧 العلامة المائية</button>
+  <button id="durBtn" title="تفعيل وضع تحديد مدة الفيديو لعرض التأثير وتصدير الفيديو بالمدة التي تختارها في أي صيغة هدية"><span class="wm-dot" id="durdot"></span> <span id="durBtnTxt">⏱️ مدة الفيديو: الأصلية</span></button>
   <button id="pwb" title="اختر ملف libpag.wasm">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
   <div class="pop" id="pop">
    <div class="sw" id="sw"></div>
@@ -88,6 +99,37 @@ button.wm-on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
    </div>
    <div class="wm-pv" title="معاينة شكل العلامة المائية على حجم الهدية"><canvas id="wmpvc" width="280" height="110"></canvas></div>
   </div>
+  <div class="durpop" id="durpop">
+   <div class="r" style="justify-content:space-between">
+    <b style="font-size:13.5px">⏱️ وضع تحديد مدة الفيديو</b>
+    <label style="cursor:pointer;font-size:12.5px;font-weight:800;color:#c084fc"><input type="checkbox" id="duren" style="accent-color:#a855f7;width:16px;height:16px"> تفعيل المدة</label>
+   </div>
+   <div id="durStateHint" style="font-size:11.5px;padding:8px 10px;border-radius:10px;background:#0b0e1a;border:1px solid var(--bd);color:var(--mu);line-height:1.5">
+    ⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.
+   </div>
+   <div>
+    <small style="color:var(--mu);display:block;margin-bottom:6px">اختر المدة السريعة (بالثواني) لعرض وتصدير التأثير:</small>
+    <div class="dur-pgrid" id="durPopChips">
+     <button type="button" data-dsec="2">2 ث</button>
+     <button type="button" data-dsec="3">3 ث</button>
+     <button type="button" data-dsec="4">4 ث</button>
+     <button type="button" data-dsec="5" class="act">5 ث</button>
+     <button type="button" data-dsec="6">6 ث</button>
+     <button type="button" data-dsec="8">8 ث</button>
+     <button type="button" data-dsec="10">10 ث</button>
+     <button type="button" data-dsec="15">15 ث</button>
+    </div>
+   </div>
+   <div class="r" style="justify-content:space-between;gap:10px">
+    <small style="color:var(--mu)">شريط المدة: <b id="durslv" style="color:#e9d5ff">5 ث</b></small>
+    <input type="range" id="dursl" min="1" max="30" step="0.5" value="5" style="flex:1;accent-color:#a855f7">
+   </div>
+   <div class="r" style="justify-content:space-between">
+    <small style="color:var(--mu)">تحديد المدة بدقة (ثانية):</small>
+    <input type="number" id="durin" value="5" min="0.5" max="120" step="0.5" style="width:82px;background:#0b0e1a;border:1px solid #a855f7;border-radius:10px;padding:6px 8px;color:#fff;font-weight:800;text-align:center">
+   </div>
+   <button type="button" id="durResetBtn" style="width:100%;justify-content:center;padding:7px 10px;font-size:12px;background:#1a1f3a;border-color:var(--bd);color:#cbd5e1">🔄 إيقاف والعودة للمدة الأصلية للهدية</button>
+  </div>
   <select id="mode" title="اختر وضع التصدير أو الاستخراج">
    <option value="gi">🎁 هدية + 🖼 صورة (مجلد)</option>
    <option value="pack">🎁 هدية + 🎬 فيديو + 🖼 صورة</option>
@@ -110,7 +152,22 @@ button.wm-on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
  <input type="checkbox" id="mu" checked hidden>
  <label>الحجم <input type="range" id="zm" min="130" max="420" value="200"></label>
  <label>إطارات <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
- <label>مدة الثابتة <input type="number" id="sd" value="3" min="1" style="width:56px;border:1px solid var(--bd);border-radius:10px;padding:5px;background:var(--sf)"></label>
+ <div class="dur-inline" id="durInlineBox">
+  <button type="button" id="durBarToggle" class="dur-tgl" title="اضغط لتفعيل أو إيقاف تحديد مدة الفيديو (عند الإيقاف يتم التصدير بالمدة الأصلية)">
+   <span class="wm-dot" id="durBarDot"></span>
+   <span id="durBarLbl">⏱️ تحديد مدة الفيديو: متوقف (الأصلية)</span>
+  </button>
+  <div id="durBarControls" class="dur-ctrls" style="display:none">
+   <div class="dur-chips" id="durBarChips">
+    <button type="button" data-dsec="3">3ث</button>
+    <button type="button" data-dsec="5" class="act">5ث</button>
+    <button type="button" data-dsec="8">8ث</button>
+    <button type="button" data-dsec="10">10ث</button>
+    <button type="button" data-dsec="15">15ث</button>
+   </div>
+   <label style="font-size:12px;color:#e9d5ff;font-weight:700">المدة <input type="number" id="sd" value="5" min="0.5" max="120" step="0.5" style="width:58px;border:1px solid #a855f7;border-radius:9px;padding:4px 6px;background:#0b0e1a;color:#fff;font-weight:700;text-align:center"> ث</label>
+  </div>
+ </div>
 </div>
 <div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG</div><div style="font-size:12px;opacity:.7;margin-top:6px">لا يتم رفع الصور الثابتة (PNG / JPG)</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
 <div id="grid"></div>
@@ -127,7 +184,30 @@ const MIME={svg:'image/svg+xml',mp4:'video/mp4',vap:'video/mp4',gif:'image/gif',
 const NAMES={svga:'SVGA',lottie:'Lottie',gif:'GIF',apng:'APNG',webpa:'WebP',webp:'WebP',png:'PNG',jpg:'JPG',svg:'SVG',mp4:'MP4',vap:'VAP',pag:'PAG'};
 let items=[],nid=1,muted=true,playing=true,isExporting=false,players=new Map(),sig={stop:false},out=null,dl=null,dragId=0;
 const bg={mode:'color',c1:'#141a30',c2:'#4b2f8a',img:null,url:'',fit:'cover'};
-const dur=it=>it.dur>0?it.dur:+$('#sd').value||3;
+
+/* إعدادات وضع تحديد مدة الفيديو المخصصة (عند التفعيل يطبق المدة على عرض التأثير وتصدير الفيديو في جميع صيغ الهدايا، وعند الإيقاف يصدّر بالمدة الأصلية) */
+const customDur={
+ enabled:false,
+ seconds:5
+};
+try{
+ const savedDur=JSON.parse(localStorage.getItem('gifts_studio_custom_dur_v1')||'null');
+ if(savedDur&&typeof savedDur==='object'){
+  if(typeof savedDur.seconds==='number'&&savedDur.seconds>=0.5&&savedDur.seconds<=120){
+   customDur.seconds=savedDur.seconds;
+  }
+ }
+}catch(e){}
+function saveCustomDurState(){
+ try{localStorage.setItem('gifts_studio_custom_dur_v1',JSON.stringify({seconds:customDur.seconds}))}catch(e){}
+}
+const dur=it=>{
+ if(customDur.enabled){
+  const c=Number(customDur.seconds);
+  if(Number.isFinite(c)&&c>0)return Math.max(0.5,Math.min(120,Math.round(c*100)/100));
+ }
+ return (it&&it.dur>0)?it.dur:(+($('#sd')&&$('#sd').value)||3);
+};
 
 /* إعدادات ورسم العلامة المائية الشبكية الكاملة (مربعات متصلة + خط احترافي + الاسم على حجم الهدية بالكامل) */
 const wm={
@@ -353,10 +433,14 @@ function drawAlphaFrame(v,rx,ry,rw,rh,ax,ay,aw,ah,cx,dw,dh,tmp){
  cx.putImageData(a,0,0);
 }
 
-/* حلقة التحديث الموحدة لجميع مشغلات الفيديو الشفافة لمنع التقطيع واللاج */
+/* حلقة التحديث الموحدة لجميع مشغلات الفيديو الشفافة ومزامنة عرض التأثير حسب المدة المختارة */
 const alphaTasks=new Set();
+const customPreviewTasks=new Set();
+let _lastMasterNow=performance.now();
 (function masterTick(){
  const now=performance.now();
+ const dtSec=Math.min(0.1,Math.max(0,(now-_lastMasterNow)/1000));
+ _lastMasterNow=now;
  alphaTasks.forEach(tk=>{
   if(!tk.cv.isConnected)return;
   // أثناء التصدير نوقف استهلاك المعالج للبطاقات الخلفية لضمان تصدير الفيديوهات بأعلى جودة بدون أي تقطيع
@@ -365,13 +449,24 @@ const alphaTasks=new Set();
   const v=tk.v;
   if(v.readyState>1){
    const vt=v.currentTime;
-   if(!tk.drawn||(Math.abs(vt-tk.lastT)>0.004&&(tk.hiRes||now-tk.lastNow>=28))){
+   if(!tk.drawn||(Math.abs(vt-tk.lastT)>0.0005&&(tk.hiRes||now-tk.lastNow>=16))){
     tk.lastT=vt;tk.lastNow=now;tk.drawn=true;
     const [rx,ry,rw,rh]=tk.c,[ax,ay,aw,ah]=tk.a;
     drawAlphaFrame(v,rx,ry,rw,rh,ax,ay,aw,ah,tk.cx,tk.dw,tk.dh,tk.tmp);
    }
   }
  });
+ if(customDur.enabled&&playing&&!isExporting){
+  const targetDur=Math.max(0.5,Number(customDur.seconds)||5);
+  customPreviewTasks.forEach(pt=>{
+   if(!pt.host||!pt.host.isConnected)return;
+   if(pt.it&&(pt.it.userPaused||pt.it.vis===false))return;
+   pt.elapsed=(pt.elapsed+dtSec)%targetDur;
+   const nativeDur=Math.max(0.05,(pt.it&&pt.it.dur>0)?pt.it.dur:targetDur);
+   const nativeSec=(pt.elapsed/targetDur)*nativeDur;
+   if(pt.stepTo)pt.stepTo(nativeSec);
+  });
+ }
  requestAnimationFrame(masterTick);
 })();
 
@@ -403,7 +498,7 @@ function yyevaInfo(T){
  return null;
 }
 const lay=(l,W,H)=>{const w=W>>1,h=H>>1;return{a:l=='L'?[0,0,w,H]:l=='R'?[w,0,w,H]:l=='T'?[0,0,W,h]:[0,h,W,h],c:l=='L'?[w,0,w,H]:l=='R'?[0,0,w,H]:l=='T'?[0,h,W,h]:[0,0,W,h]}};
-function setAlpha(it,l){it.alpha=l;if(l=='N'||!it.vw){it.rects=null;it.w=it.vw;it.h=it.vh;return}it.rects=lay(l,it.vw,it.vh);it.w=it.rects.c[2];it.h=it.rects.c[3]}
+function setAlpha(it,l){it.alpha=l;if(l=='N'||!it.vw){it.rects=null;it.w=it.vw;it.h=it.vh;return}it.rects=lay(l,l=='V'?it.vw:it.vw,it.vh);it.w=it.rects.c[2];it.h=it.rects.c[3]}
 const alSel=it=>it.fmt!='mp4'||!it.vw?'':'<select data-al="1">'+[['N','بدون قناة ألفا'],['L','ألفا: يسار'],['R','ألفا: يمين'],['T','ألفا: أعلى'],['B','ألفا: أسفل']].map(([v,t])=>`<option value="${v}" ${(it.alpha||'N')==v?'selected':''}>${t}</option>`).join('')+'</select>';
 function evalL(d,cw,ch,l){const r=lay(l,cw,ch),[ax,ay,aw,ah]=r.a,[cx,cy]=r.c;let na=0,ga=0,nc=0,gc=0,i=0,u=0;
  for(let y=0;y<ah;y+=2)for(let x=0;x<aw;x+=2){const p=((ay+y)*cw+ax+x)*4,q=((cy+y)*cw+cx+x)*4,A=(d[p]+d[p+1]+d[p+2])/3>24,C=(d[q]+d[q+1]+d[q+2])/3>24;
@@ -490,10 +585,18 @@ function waitCompositorTick(){
  });
 }
 
+function getPreviewPlaybackRate(it){
+ if(!customDur.enabled)return 1;
+ const nativeDur=Number(it&&it.dur);
+ if(!Number.isFinite(nativeDur)||nativeDur<=0.05)return 1;
+ const targetSec=Math.max(0.5,Number(customDur.seconds)||5);
+ return Math.max(0.1,Math.min(8.0,nativeDur/targetSec));
+}
+
 async function mkPlayer(it,host,o){
  o=o||{};const loop=o.loop!==false,hiRes=!!o.hiRes,f=it.fmt;let P;
  if(['png','jpg','webp','gif','apng','webpa','svg'].includes(f)){
-  if(o.manual&&window.ImageDecoder&&['gif','apng','webpa'].includes(f)){
+  if(window.ImageDecoder&&['gif','apng','webpa'].includes(f)){
    try{
     const buf=await it.file.arrayBuffer();
     const dec=new ImageDecoder({data:buf,type:MIME[f]||'image/gif'});
@@ -509,27 +612,43 @@ async function mkPlayer(it,host,o){
      if(i===0){cv.width=fr.image.displayWidth||cv.width;cv.height=fr.image.displayHeight||cv.height;cx.clearRect(0,0,cv.width,cv.height);cx.drawImage(fr.image,0,0)}
      fr.image.close();
     }
+    let lastDecodedIdx=-1,decoding=false;
     const stepTo=async(sec)=>{
      let t=(sec%(totalDur||it.dur||1)),acc=0,idx=0;
      for(let i=0;i<durs.length;i++){acc+=durs[i];if(t<=acc){idx=i;break}idx=i}
-     const fr=await dec.decode({frameIndex:idx});
-     cx.clearRect(0,0,cv.width,cv.height);
-     cx.drawImage(fr.image,0,0,cv.width,cv.height);
-     fr.image.close();
+     if(!o.manual&&idx===lastDecodedIdx)return;
+     if(!o.manual&&decoding)return;
+     decoding=true;
+     try{
+      const fr=await dec.decode({frameIndex:idx});
+      lastDecodedIdx=idx;
+      cx.clearRect(0,0,cv.width,cv.height);
+      cx.drawImage(fr.image,0,0,cv.width,cv.height);
+      fr.image.close();
+     }finally{decoding=false}
     };
-    P={src:()=>cv,play:N,pause:N,restart:N,syncNow:N,waitReady:async()=>stepTo(0),stepTo,destroy(){try{dec.close()}catch(e){}cv.remove()}};
+    const pt=!o.manual?{it,host,elapsed:0,stepTo}:null;
+    if(pt)customPreviewTasks.add(pt);
+    P={src:()=>cv,play:N,pause:N,restart(){if(pt)pt.elapsed=0;stepTo(0)},syncNow:N,syncSpeed:N,waitReady:async()=>stepTo(0),stepTo,destroy(){if(pt)customPreviewTasks.delete(pt);try{dec.close()}catch(e){}cv.remove()}};
     P.mute=N;return P;
    }catch(e){}
   }
   const im=new Image();im.src=it.url;await im.decode().catch(N);host.append(im);
-  P={src:()=>im,play:N,pause:N,restart(){im.src='';im.src=it.url},syncNow:N,destroy(){im.remove()}}
+  P={src:()=>im,play:N,pause:N,restart(){im.src='';im.src=it.url},syncNow:N,syncSpeed:N,destroy(){im.remove()}}
  }
  else if(f=='mp4'){
   const v=E('video');v.src=it.url;v.loop=loop;v.playsInline=true;v.preload='auto';v.muted=o.ac?false:muted;
   v.disablePictureInPicture=true;v.disableRemotePlayback=true;
   if(o.ac)o.ac.createMediaElementSource(v).connect(o.dest);
-  const tryPlay=()=>{if(!v.paused)return;v.play().catch(()=>{v.muted=true;v.play().catch(N)})};
-  v.addEventListener('canplay',()=>{if(playing&&!it.userPaused&&!o.manual&&!isExporting)tryPlay()});
+  const syncSpeed=()=>{
+   if(o.manual){try{v.playbackRate=1}catch(e){}return}
+   const rate=getPreviewPlaybackRate(it);
+   try{v.defaultPlaybackRate=rate;v.playbackRate=rate}catch(e){}
+  };
+  syncSpeed();
+  const tryPlay=()=>{syncSpeed();if(!v.paused)return;v.play().catch(()=>{v.muted=true;v.play().catch(N)})};
+  v.addEventListener('loadedmetadata',syncSpeed);
+  v.addEventListener('canplay',()=>{syncSpeed();if(playing&&!it.userPaused&&!o.manual&&!isExporting)tryPlay()});
   let src=v,cv,task=null;
   if(it.rects){
    const [rx,ry,rw,rh]=it.rects.c,[ax,ay,aw,ah]=it.rects.a;
@@ -589,20 +708,26 @@ async function mkPlayer(it,host,o){
     v.pause();
     await seekAccurate(0);
    }else{
+    syncSpeed();
     syncNow();
    }
   };
   const stepTo=async(sec)=>{
    await seekAccurate(sec);
   };
-  P={v,src:()=>src,play(){tryPlay()},pause(){v.pause()},restart(){v.currentTime=0;if(task)task.drawn=false;tryPlay()},mute(m){if(!o.ac)v.muted=m},syncNow,waitReady,stepTo,destroy(){if(task)alphaTasks.delete(task);v.pause();v.removeAttribute('src');v.load();v.remove();cv&&cv.remove()}}
+  P={v,src:()=>src,play(){tryPlay()},pause(){v.pause()},restart(){v.currentTime=0;if(task)task.drawn=false;tryPlay()},mute(m){if(!o.ac)v.muted=m},syncNow,syncSpeed,waitReady,stepTo,destroy(){if(task)alphaTasks.delete(task);v.pause();v.removeAttribute('src');v.load();v.remove();cv&&cv.remove()}}
  }
  else if(f=='lottie'){
   const animData=JSON.parse(it.text);
   const a=lottie.loadAnimation({container:host,renderer:'canvas',loop,autoplay:false,animationData:animData,rendererSettings:{clearCanvas:true,preserveAspectRatio:'xMidYMid meet'}});
+  const syncSpeed=()=>{
+   if(o.manual)return;
+   try{a.setSpeed(getPreviewPlaybackRate(it))}catch(e){}
+  };
   const waitReady=async()=>{
    await new Promise(r=>{if(a.isLoaded)return r();a.addEventListener('DOMLoaded',r,{once:true});a.addEventListener('data_ready',r,{once:true});setTimeout(r,1500)});
    a.goToAndStop(animData.ip||0,true);
+   syncSpeed();
   };
   await waitReady();
   const stepTo=async(sec)=>{
@@ -611,7 +736,7 @@ async function mkPlayer(it,host,o){
    const frame=(animData.ip||0)+p*((animData.op||60)-(animData.ip||0));
    a.goToAndStop(frame,true);
   };
-  P={src:()=>host.querySelector('canvas'),play(){a.play()},pause(){a.pause()},restart(){a.goToAndPlay(0,true)},syncNow:N,waitReady,stepTo,destroy(){a.destroy()}}
+  P={src:()=>host.querySelector('canvas'),play(){syncSpeed();a.play()},pause(){a.pause()},restart(){syncSpeed();a.goToAndPlay(0,true)},syncNow:N,syncSpeed,waitReady,stepTo,destroy(){a.destroy()}}
  }
  else if(f=='pag'){
   const PAG=await getPAG(),pf=await PAG.PAGFile.load(await it.file.arrayBuffer());if(!pf)throw Error('ملف PAG تالف');
@@ -622,8 +747,15 @@ async function mkPlayer(it,host,o){
    pv.setProgress(Math.max(0,Math.min(0.9999,sec/totalDur)));
    await pv.flush();
   };
+  const pt=!o.manual?{it,host,elapsed:0,stepTo}:null;
+  if(pt)customPreviewTasks.add(pt);
+  const syncSpeed=()=>{
+   if(o.manual)return;
+   if(customDur.enabled){pv.pause()}
+   else if(playing&&!it.userPaused&&!isExporting){pv.play().catch(N)}
+  };
   const waitReady=async()=>{await stepTo(0)};
-  P={src:()=>cv,play(){pv.play().catch(N)},pause(){pv.pause()},restart(){pv.setProgress(0);pv.play().catch(N)},syncNow:N,waitReady,stepTo,destroy(){try{pv.destroy()}catch(e){}cv.remove()}}
+  P={src:()=>cv,play(){if(customDur.enabled){if(pt)it.userPaused=false}else pv.play().catch(N)},pause(){pv.pause()},restart(){if(pt)pt.elapsed=0;pv.setProgress(0);if(!customDur.enabled)pv.play().catch(N);else stepTo(0)},syncNow:N,syncSpeed,waitReady,stepTo,destroy(){if(pt)customPreviewTasks.delete(pt);try{pv.destroy()}catch(e){}cv.remove()}}
  }
  else if(f=='svga'){
   if(!window.SVGA)throw Error('محرك SVGA لم يُحمَّل');
@@ -657,6 +789,7 @@ async function mkPlayer(it,host,o){
   const stepTo=async(sec)=>{
    const totalDur=Math.max(0.05,it.dur||(totalFrames/(it.nativeFps||v.FPS||20))||3);
    const idx=Math.min(totalFrames-1,Math.max(0,Math.floor(((sec+0.0001)/totalDur)*totalFrames)));
+   if(!o.manual&&idx===lastIdx)return;
    if(typeof pl.stepToFrame==='function'){
     if(idx===0&&lastIdx===-1&&totalFrames>1)pl.stepToFrame(1,false);
     pl.stepToFrame(idx,false);
@@ -666,10 +799,24 @@ async function mkPlayer(it,host,o){
     try{pl._renderer.drawFrame(idx)}catch(e){}
    }
   };
-  P={pl,src:()=>host.querySelector('canvas'),play(){pl.startAnimation()},pause(){pl.pauseAnimation()},restart(){pl.startAnimation()},syncNow:N,waitReady,stepTo,destroy(){try{pl.stopAnimation();pl.clear()}catch(e){}host.innerHTML=''}}
+  const pt=!o.manual?{it,host,elapsed:0,stepTo}:null;
+  if(pt)customPreviewTasks.add(pt);
+  const syncSpeed=()=>{
+   if(o.manual)return;
+   if(customDur.enabled){
+    try{pl.pauseAnimation()}catch(e){}
+    const nativeDur=Math.max(0.05,it.dur||(totalFrames/(it.nativeFps||v.FPS||20))||3);
+    const tSec=Math.max(0.5,Number(customDur.seconds)||5);
+    stepTo(((pt?pt.elapsed:0)/tSec)*nativeDur);
+   }else if(playing&&!it.userPaused&&!isExporting){
+    lastIdx=-1;
+    try{pl.startAnimation()}catch(e){}
+   }
+  };
+  P={pl,src:()=>host.querySelector('canvas'),play(){if(customDur.enabled){syncSpeed()}else{lastIdx=-1;pl.startAnimation()}},pause(){pl.pauseAnimation()},restart(){if(pt)pt.elapsed=0;lastIdx=-1;if(customDur.enabled){stepTo(0)}else{pl.startAnimation()}},syncNow:N,syncSpeed,waitReady,stepTo,destroy(){if(pt)customPreviewTasks.delete(pt);try{pl.stopAnimation();pl.clear()}catch(e){}host.innerHTML=''}}
  }
  else throw Error('لا يوجد محرك لهذه الصيغة');
- P.mute=P.mute||N;return P}
+ P.mute=P.mute||N;P.syncSpeed=P.syncSpeed||N;return P}
 
 async function ensure(id){
  const it=items.find(x=>x.id==id),c=document.querySelector('.card[data-id="'+id+'"]');if(!it||!c||it.err||!it.fmt)return;
@@ -695,11 +842,18 @@ setInterval(()=>{
  }
 },700);
 
+function formatDurBadge(it){
+ const orig=it&&it.dur?it.dur.toFixed(1)+'ث':'ثابتة';
+ if(!customDur.enabled)return orig;
+ const cSec=Number(customDur.seconds||5).toFixed(1).replace(/\.0$/,'');
+ return `<span style="color:#c084fc;font-weight:700" title="وضع المدة المخصصة مفعّل: يتم عرض وتصدير التأثير في ${cSec}ث بدلاً من ${orig}">⏱️ ${cSec}ث <s style="opacity:.6;font-weight:400">${it&&it.dur?orig:''}</s></span>`;
+}
+
 /* الواجهة التفاعلية بدون إعادة بناء الشبكة أو إيقاف المشغلات */
 function cardInnerHtml(it){
  const itMuted=it.muted!==undefined?it.muted:muted;
  const soundBtn=it.audio?`<button data-a="m" title="${itMuted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية'}">${itMuted?'🔇':'🔊'}</button>`:'';
- return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${it.dur?it.dur.toFixed(1)+'ث':'ثابتة'} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="تشغيل">▶</button><button data-a="s" title="إيقاف">⏸</button><button data-a="r" title="إعادة">🔄</button>${soundBtn}<button data-a="df" title="تنزيل ملف الهدية">📁</button><button data-a="di" title="تنزيل صورة الهدية">🖼</button><button data-a="x" title="حذف" style="margin-inline-start:auto">✖</button></div>`;
+ return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="تشغيل">▶</button><button data-a="s" title="إيقاف">⏸</button><button data-a="r" title="إعادة">🔄</button>${soundBtn}<button data-a="df" title="تنزيل ملف الهدية">📁</button><button data-a="di" title="تنزيل صورة الهدية">🖼</button><button data-a="x" title="حذف" style="margin-inline-start:auto">✖</button></div>`;
 }
 function updateBar(){
  $('#drop').style.display=items.length?'none':'block';
@@ -721,7 +875,7 @@ function appendCards(list){
 function updateCard(it){
  const c=document.querySelector('.card[data-id="'+it.id+'"]');if(!c)return;
  const tag=c.querySelector('.tag');if(tag)tag.textContent=it.kind||NAMES[it.fmt]||'؟';
- const meta=c.querySelector('.meta');if(meta)meta.innerHTML=`<b title="${esc(it.name)}">${esc(it.name)}</b><small>${it.dur?it.dur.toFixed(1)+'ث':'ثابتة'} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}`;
+ const meta=c.querySelector('.meta');if(meta)meta.innerHTML=`<b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}`;
  if(it.audio&&!c.querySelector('button[data-a="m"]')){
   const itMuted=it.muted!==undefined?it.muted:muted;
   const mBtn=E('button','',itMuted?'🔇':'🔊');
@@ -759,13 +913,14 @@ const PRE=[['color','#141a30'],['color','#000000'],['color','#ffffff'],['grad','
 $('#sw').innerHTML=PRE.map((p,i)=>`<i data-i="${i}" style="background:${p[0]=='grad'?`linear-gradient(135deg,${p[1]},${p[2]})`:p[0]=='tr'?'repeating-conic-gradient(#8886 0 25%,transparent 0 50%) 0 0/10px 10px':p[1]}"></i>`).join('');
 $('#sw').onclick=e=>{const p=PRE[e.target.dataset.i];if(!p)return;bg.mode=p[0];if(p[1])bg.c1=p[1];if(p[2])bg.c2=p[2];$('#bm').value=bg.mode;$('#c1').value=bg.c1;$('#c2').value=bg.c2;applyBg()};
 ['bm','c1','c2','bf'].forEach(k=>$('#'+k).oninput=()=>{bg.mode=$('#bm').value;bg.c1=$('#c1').value;bg.c2=$('#c2').value;bg.fit=$('#bf').value;applyBg()});
-$('#bgb').onclick=e=>{e.stopPropagation();$('#wmpop').classList.remove('o');$('#pop').classList.toggle('o')};
+$('#bgb').onclick=e=>{e.stopPropagation();$('#wmpop').classList.remove('o');$('#durpop').classList.remove('o');$('#pop').classList.toggle('o')};
 $('#pop').onclick=e=>e.stopPropagation();
 
 /* تفاعلات زر العلامة المائية في الأعلى */
 $('#wmb').onclick=e=>{
  e.stopPropagation();
  $('#pop').classList.remove('o');
+ $('#durpop').classList.remove('o');
  const isOpen=$('#wmpop').classList.contains('o');
  if(!isOpen&&!wm.enabled){
   wm.enabled=true;
@@ -781,7 +936,140 @@ $('#wmop').oninput=e=>{wm.opacity=(+e.target.value||38)/100;if(!wm.enabled)wm.en
 $('#wmc1').oninput=e=>{wm.color=e.target.value;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
 $('#wmc2').oninput=e=>{wm.accent=e.target.value;if(!wm.enabled)wm.enabled=true;refreshAllWatermarks()};
 
-addEventListener('click',()=>{$('#pop').classList.remove('o');$('#wmpop').classList.remove('o')});
+/* تفاعلات زر تفعيل وضع مدة الفيديو المخصصة وعرض التأثير حسب المدة */
+function refreshCustomDurationUi(){
+ const en=!!customDur.enabled;
+ const sec=Math.max(0.5,Math.min(120,Math.round((Number(customDur.seconds)||5)*10)/10));
+ customDur.seconds=sec;
+ const secLabel=String(sec).replace(/\.0$/,'');
+
+ const durBtn=$('#durBtn');
+ if(durBtn)durBtn.classList.toggle('wm-on',en);
+ const durBtnTxt=$('#durBtnTxt');
+ if(durBtnTxt)durBtnTxt.textContent=en?`⏱️ مدة الفيديو: ${secLabel}ث ✓`:'⏱️ مدة الفيديو: الأصلية';
+
+ const duren=$('#duren');
+ if(duren)duren.checked=en;
+ const durin=$('#durin');
+ if(durin&&document.activeElement!==durin)durin.value=String(sec);
+ const dursl=$('#dursl');
+ if(dursl)dursl.value=String(Math.min(30,Math.max(1,sec)));
+ const durslv=$('#durslv');
+ if(durslv)durslv.textContent=`${secLabel} ث`;
+ const sd=$('#sd');
+ if(sd&&document.activeElement!==sd)sd.value=String(sec);
+
+ const hint=$('#durStateHint');
+ if(hint){
+  if(en){
+   hint.style.borderColor='#a855f7';
+   hint.style.background='rgba(168,85,247,0.12)';
+   hint.style.color='#f3e8ff';
+   hint.innerHTML=`🟢 <b>مفعّل الآن (${secLabel} ثانية):</b> يتم عرض التأثير وتصدير الفيديو في جميع صيغ الهدايا حسب المدة المختارة بالضبط.`;
+  }else{
+   hint.style.borderColor='var(--bd)';
+   hint.style.background='#0b0e1a';
+   hint.style.color='var(--mu)';
+   hint.innerHTML=`⚪ <b>الوضع الحالي (غير مفعّل):</b> يتم تشغيل وتصدير كل هدية بمدتها الأصلية التلقائية.`;
+  }
+ }
+
+ const inlineBox=$('#durInlineBox');
+ if(inlineBox)inlineBox.classList.toggle('on',en);
+ const barLbl=$('#durBarLbl');
+ if(barLbl)barLbl.textContent=en?`⏱️ مدة الفيديو مفعّلة (${secLabel}ث) ✓`:'⏱️ تحديد مدة الفيديو: متوقف (الأصلية)';
+ const barCtrls=$('#durBarControls');
+ if(barCtrls)barCtrls.style.display=en?'inline-flex':'none';
+
+ document.querySelectorAll('[data-dsec]').forEach(b=>{
+  const v=Number(b.dataset.dsec);
+  b.classList.toggle('act',en&&Math.abs(v-sec)<0.05);
+ });
+
+ // تحديث شارة المدة وسرعة عرض التأثير المباشر لكل هدية مرفوعة
+ items.forEach(it=>{
+  const c=document.querySelector('.card[data-id="'+it.id+'"]');
+  if(!c)return;
+  const meta=c.querySelector('.meta');
+  if(meta){
+   const curSel=meta.querySelector('select[data-al]');
+   const curVal=curSel?curSel.value:(it.alpha||'N');
+   meta.innerHTML=`<b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}`;
+   const newSel=meta.querySelector('select[data-al]');
+   if(newSel)newSel.value=curVal;
+  }
+ });
+ each(p=>p.syncSpeed&&p.syncSpeed());
+ saveCustomDurState();
+}
+
+$('#durBtn').onclick=e=>{
+ e.stopPropagation();
+ $('#pop').classList.remove('o');
+ $('#wmpop').classList.remove('o');
+ const isOpen=$('#durpop').classList.contains('o');
+ if(!isOpen&&!customDur.enabled){
+  customDur.enabled=true;
+  refreshCustomDurationUi();
+ }
+ $('#durpop').classList.toggle('o');
+};
+$('#durpop').onclick=e=>e.stopPropagation();
+$('#duren').onchange=e=>{
+ customDur.enabled=!!e.target.checked;
+ refreshCustomDurationUi();
+};
+$('#durResetBtn').onclick=()=>{
+ customDur.enabled=false;
+ refreshCustomDurationUi();
+ $('#durpop').classList.remove('o');
+};
+$('#durBarToggle').onclick=e=>{
+ e.stopPropagation();
+ customDur.enabled=!customDur.enabled;
+ refreshCustomDurationUi();
+};
+$('#dursl').oninput=e=>{
+ customDur.seconds=Math.max(0.5,Math.min(120,Number(e.target.value)||5));
+ customDur.enabled=true;
+ refreshCustomDurationUi();
+};
+$('#durin').oninput=e=>{
+ const v=Number(e.target.value);
+ if(Number.isFinite(v)&&v>=0.5&&v<=120){
+  customDur.seconds=v;
+  customDur.enabled=true;
+  refreshCustomDurationUi();
+ }
+};
+$('#sd').oninput=e=>{
+ const v=Number(e.target.value);
+ if(Number.isFinite(v)&&v>=0.5&&v<=120){
+  customDur.seconds=v;
+  customDur.enabled=true;
+  refreshCustomDurationUi();
+ }
+};
+document.querySelectorAll('[data-dsec]').forEach(btn=>{
+ btn.onclick=e=>{
+  e.stopPropagation();
+  const v=Number(btn.dataset.dsec);
+  if(Number.isFinite(v)&&v>0){
+   customDur.seconds=v;
+   customDur.enabled=true;
+   refreshCustomDurationUi();
+  }
+ };
+});
+window.__getCustomDurationState=()=>({enabled:customDur.enabled,seconds:customDur.seconds});
+window.__setCustomDurationState=(en,sec)=>{
+ if(typeof en==='boolean')customDur.enabled=en;
+ if(typeof sec==='number'&&sec>=0.5)customDur.seconds=sec;
+ refreshCustomDurationUi();
+ return window.__getCustomDurationState();
+};
+
+addEventListener('click',()=>{$('#pop').classList.remove('o');$('#wmpop').classList.remove('o');$('#durpop').classList.remove('o')});
 addEventListener('resize',()=>refreshAllWatermarks());
 
 $('#bi').onclick=()=>$('#bfi').click();
@@ -854,6 +1142,7 @@ $('#mu').onchange=e=>{
  updateMuteUi();
 };
 updateMuteUi();
+refreshCustomDurationUi();
 $('#zm').oninput=e=>{g.style.setProperty('--w',e.target.value+'px');setTimeout(refreshAllWatermarks,30)};
 
 /* التسجيل والتصدير الاحترافي فريم-بفريم بدون أي تقطيع أو تعليق حتى مع عدد كبير من الفيديوهات والجودة العالية */
@@ -916,6 +1205,7 @@ function getOptimalAvcCodecs(W,H){
 
 function getEffectiveFps(reqFps,list){
  const safeReq=Math.max(12,Math.min(60,Math.round(reqFps||30)));
+ if(customDur.enabled)return safeReq;
  if(list&&list.length===1){
   const it=list[0]&&(list[0].it||list[0]);
   const nf=Math.round((it&&it.nativeFps)||0);
@@ -927,6 +1217,27 @@ function getEffectiveFps(reqFps,list){
   }
  }
  return safeReq;
+}
+
+/**
+ * تحويل رقم الفريم أثناء التصدير إلى زمن الهدية الأصلي بحيث:
+ * - عند تفعيل وضع مدة الفيديو المخصصة: يتم عرض وتصدير كامل تأثير الهدية موزّعاً بسلاسة على المدة المختارة لأي صيغة هدية.
+ * - عند إيقاف الوضع: يتم التصدير بالمدة والسرعة الأصلية 1:1.
+ */
+function mapExportSeekSec(it,exportDur,fIdx,safeFps,isSideBySide){
+ const safeExpDur=Math.max(0.05,Number(exportDur)||3);
+ const nativeDur=Math.max(0.05,(it&&it.dur>0)?it.dur:safeExpDur);
+ const isMp4=!!(it&&it.fmt==='mp4');
+ if(customDur.enabled||Math.abs(safeExpDur-nativeDur)>0.005){
+  const totalFrames=Math.max(1,Math.round(safeExpDur*safeFps));
+  const sampleOff=isMp4?0.35:0;
+  const prog=Math.max(0,Math.min(0.9995,(Math.max(0,fIdx)+sampleOff)/totalFrames));
+  const mapped=prog*nativeDur;
+  return isMp4?Math.max(0,Math.min(nativeDur-0.002,mapped)):Math.max(0,Math.min(nativeDur-0.0005,mapped));
+ }
+ const globalSec=Math.max(0,fIdx)/safeFps;
+ const localRaw=isSideBySide?(globalSec<nativeDur?globalSec:(globalSec%nativeDur)):globalSec;
+ return isMp4?Math.min(nativeDur-0.002,localRaw+(0.35/safeFps)):localRaw;
 }
 
 function pickMime(a){
@@ -1217,11 +1528,8 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
    try{
     for(let fIdx=0;fIdx<totalFrames;fIdx++){
      if(sig.stop||encErr)break;
-     const globalSec=fIdx/safeFps;
      await Promise.all(slots.map(async s=>{
-      const itemDur=Math.max(0.1,s.o.dur||3);
-      const localRaw=globalSec<itemDur?globalSec:(globalSec%itemDur);
-      const sec=s.o.it.fmt==='mp4'?Math.min(Math.max(0.05,itemDur)-0.002,localRaw+(0.35/safeFps)):localRaw;
+      const sec=mapExportSeekSec(s.o.it,s.o.dur,fIdx,safeFps,true);
       if(s.P.stepTo)await s.P.stepTo(sec);
       s.P.syncNow&&s.P.syncNow();
      }));
@@ -1280,7 +1588,7 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
 
    for(let fIdx=0;fIdx<totalFrames;fIdx++){
     if(sig.stop||encErr)break;
-    const sec=o.it.fmt==='mp4'?Math.min(Math.max(0.05,o.dur)-0.002,(fIdx+0.35)/safeFps):(fIdx/safeFps);
+    const sec=mapExportSeekSec(o.it,o.dur,fIdx,safeFps,false);
     if(P.stepTo)await P.stepTo(sec);
     P.syncNow&&P.syncNow();
 
@@ -1447,11 +1755,8 @@ async function record(list,W,H,fps,mt,prog,poster){
     for(let fIdx=0;fIdx<totalFrames;fIdx++){
      if(sig.stop)break;
      const tStart=performance.now();
-     const globalSec=fIdx/safeFps;
      await Promise.all(slots.map(async s=>{
-      const itemDur=Math.max(0.1,s.o.dur||3);
-      const localRaw=globalSec<itemDur?globalSec:(globalSec%itemDur);
-      const sec=s.o.it.fmt==='mp4'?Math.min(Math.max(0.05,itemDur)-0.002,localRaw+(0.35/safeFps)):localRaw;
+      const sec=mapExportSeekSec(s.o.it,s.o.dur,fIdx,safeFps,true);
       if(s.P.stepTo)await s.P.stepTo(sec);
       s.P.syncNow&&s.P.syncNow();
      }));
@@ -1499,7 +1804,7 @@ async function record(list,W,H,fps,mt,prog,poster){
    for(let fIdx=0;fIdx<totalFrames;fIdx++){
     if(sig.stop)break;
     const tStart=performance.now();
-    const sec=o.it.fmt==='mp4'?Math.min(Math.max(0.05,o.dur)-0.002,(fIdx+0.35)/safeFps):(fIdx/safeFps);
+    const sec=mapExportSeekSec(o.it,o.dur,fIdx,safeFps,false);
     if(P.stepTo)await P.stepTo(sec);
     drawBg(cx,W,H);
     fit(cx,P.src(),W,H,o.it);
@@ -1566,7 +1871,7 @@ async function snapBlob(it,W,H){
  try{
   P=await mkPlayer(it,h,{loop:false,hiRes:true,manual:true});
   if(P.waitReady)await P.waitReady();
-  const d0=Math.max(0.4,dur(it));
+  const d0=Math.max(0.4,(it&&it.dur>0)?it.dur:3);
   const candidateTimes=P.stepTo?[
    Math.min(d0*0.48,d0-0.04),
    Math.min(d0*0.62,d0-0.04),
