@@ -24,8 +24,8 @@ export const ALL_ADMIN_PERMISSIONS: AdminPermissionDef[] = [
     icon: '👥',
     labelAr: 'إدارة المستخدمين وتفعيل برو',
     labelEn: 'Manage Users & Pro Activation',
-    descAr: 'إضافة حسابات، تفعيل أو إلغاء باقة برو للمستخدمين، وحذف الحسابات العادية.',
-    descEn: 'Add accounts, activate/revoke Pro subscriptions, and delete regular users.',
+    descAr: 'إضافة حسابات وتفعيل أو إلغاء باقة برو للمستخدمين (حذف الحسابات متاح للمدير العام فقط).',
+    descEn: 'Add accounts and activate/revoke Pro subscriptions (deleting accounts is restricted to Super Admin only).',
   },
   {
     key: 'view_logs',
@@ -484,6 +484,23 @@ export function revokeAdminFromUserAccount(user: UserAccount, nowMs: number = Da
     adminGrantedAt: '',
     isPro: hasValidPaidSubscription ? user.isPro : false,
   };
+}
+
+/**
+ * Pure function: Checks whether the logged-in actor is allowed to delete a user account.
+ * Strictly restricted to the primary Super Admin ONLY — any delegated Admin/Moderator granted admin
+ * in the dashboard is NEVER allowed to delete any user account, and the delete button is hidden from them.
+ */
+export function canDeleteUserAccount(
+  actor: UserAccount | null | undefined,
+  target?: UserAccount | null
+): boolean {
+  if (!actor || isPurgedLegacyAdmin(actor)) return false;
+  if (!isSuperAdminUser(actor)) return false;
+  if (target) {
+    if (isSuperAdminUser(target) || target.id === actor.id) return false;
+  }
+  return true;
 }
 
 /**

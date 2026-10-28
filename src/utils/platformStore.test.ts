@@ -12,6 +12,7 @@ import {
   verifyUserPassword,
   isSuperAdminUser,
   canAccessAdminDashboard,
+  canDeleteUserAccount,
   canUserCaptureScreen,
   hasAdminPermission,
   computeSessionToken,
@@ -386,3 +387,50 @@ test('canUserCaptureScreen and setUserScreenCapturePermission manage account scr
   assert.equal(revokedUser.screenCaptureGrantedAt, '');
   assert.equal(canUserCaptureScreen(revokedUser), false);
 });
+
+test('canDeleteUserAccount strictly prevents any delegated admin from deleting user accounts', () => {
+  const regularUser: UserAccount = {
+    id: 'usr_target_1',
+    name: 'مستخدم عادي',
+    email: 'regular@example.com',
+    password: '123456',
+    role: 'user',
+    isPro: false,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
+
+  const delegatedAdmin: UserAccount = {
+    id: 'usr_mod_1',
+    name: 'مشرف في الداشبورد',
+    email: 'mod@example.com',
+    password: '123456',
+    role: 'admin',
+    isSuperAdmin: false,
+    adminPermissions: [
+      'manage_users',
+      'view_logs',
+      'manage_pro',
+      'manage_branding',
+      'manage_notifications',
+      'manage_admins',
+      'manage_firebase',
+    ],
+    isPro: true,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
+
+  // Super Admin can delete regular user and delegated admin, but NOT itself
+  assert.equal(canDeleteUserAccount(INITIAL_SUPER_ADMIN_ACCOUNT, regularUser), true);
+  assert.equal(canDeleteUserAccount(INITIAL_SUPER_ADMIN_ACCOUNT, delegatedAdmin), true);
+  assert.equal(canDeleteUserAccount(INITIAL_SUPER_ADMIN_ACCOUNT, INITIAL_SUPER_ADMIN_ACCOUNT), false);
+
+  // Any delegated admin granted admin in the dashboard CANNOT delete any user account
+  assert.equal(canDeleteUserAccount(delegatedAdmin, regularUser), false);
+  assert.equal(canDeleteUserAccount(delegatedAdmin, delegatedAdmin), false);
+  assert.equal(canDeleteUserAccount(delegatedAdmin), false);
+
+  // Regular users and guests cannot delete accounts
+  assert.equal(canDeleteUserAccount(regularUser, regularUser), false);
+  assert.equal(canDeleteUserAccount(null, regularUser), false);
+});
+

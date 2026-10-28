@@ -14,6 +14,7 @@ import {
   UserAccount,
   buildWhatsAppUrl,
   canAccessAdminDashboard,
+  canDeleteUserAccount,
   canUserCaptureScreen,
   getEffectiveAdminPermissions,
   hasAdminPermission,
@@ -550,9 +551,8 @@ export default function AdminDashboardModal({
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!hasAdminPermission(currentUser, 'manage_users')) return;
     const target = users.find((u) => u.id === userId);
-    if (!target || isSuperAdminUser(target)) return;
+    if (!target || !canDeleteUserAccount(currentUser, target)) return;
 
     const confirmMsg = isAr
       ? `هل أنت متأكد من حذف حساب "${target.name}" (${target.email}) وجميع صلاحياته بشكل نهائي من قاعدة بيانات Firebase ومن الداشبورد؟`
@@ -2000,9 +2000,10 @@ export default function AdminDashboardModal({
                                     </>
                                   )}
 
-                                  {!isSuper && (
+                                  {canDeleteUserAccount(currentUser, u) && (
                                     <button
                                       type="button"
+                                      id={`deleteUserBtn_${u.id}`}
                                       onClick={() => handleDeleteUser(u.id)}
                                       style={{
                                         padding: '6px 10px',
