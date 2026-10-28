@@ -33,12 +33,18 @@ import {
   getDeletedUserIds,
   addDeletedUserId,
   canAccessAdminDashboard,
+  hasAdminPermission,
   isSuperAdminUser,
   sanitizeUsersList,
   getEffectiveAdminPermissions,
   normalizeProPlans,
   checkAndExpireUsersPro,
   getUserProSubscriptionInfo,
+  sanitizeSiteLogoUrl,
+  sanitizeSiteName,
+  savePermanentBranding,
+  loadPermanentBranding,
+  mergeBrandingSettingsSafely,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -98,6 +104,7 @@ export default function App() {
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
+  const lastLocalSettingsEditAtRef = useRef<number>(0);
 
   const updatePlatformState = (updater: (prev: PlatformState) => PlatformState) => {
     setPlatformState((prev) => {
@@ -108,8 +115,19 @@ export default function App() {
   };
 
   useEffect(() => {
-    document.title = `${platformState.settings.siteName || 'MotionTools'} — SVGA, VAP, YYEVA & Motion Converter`;
-  }, [platformState.settings.siteName]);
+    const cleanTitle = sanitizeSiteName(platformState.settings.siteName, 'MotionTools');
+    document.title = `${cleanTitle} — SVGA, VAP, YYEVA & Motion Converter`;
+    const cleanLogo = sanitizeSiteLogoUrl(platformState.settings.siteLogoUrl);
+    if (cleanLogo && typeof document !== 'undefined') {
+      let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = cleanLogo;
+    }
+  }, [platformState.settings.siteName, platformState.settings.siteLogoUrl]);
 
   useEffect(() => {
     const unsub = subscribeToFirebaseStatus((status) => {
@@ -126,12 +144,16 @@ export default function App() {
     // 1. Settings Real-Time Listener (Logo, Site Name, Pro Pricing, Formats, WhatsApp)
     const unsubSettings = subscribeToFirestoreSettings((liveSettings) => {
       if (!liveSettings || !liveSettings.siteName) return;
+      // Avoid overwriting active local branding edits with in-flight stale snapshots
+      const msSinceLocalEdit = Date.now() - lastLocalSettingsEditAtRef.current;
       updatePlatformState((prev) => {
-        const merged = {
-          ...prev.settings,
-          ...liveSettings,
-        };
-        merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+        const merged = mergeBrandingSettingsSafely(prev.settings, liveSettings);
+        if (msSinceLocalEdit < 4000) {
+          merged.siteName = prev.settings.siteName;
+          merged.siteLogoUrl = prev.settings.siteLogoUrl;
+          merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
+          merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+        }
         return {
           ...prev,
           settings: merged,
@@ -142,12 +164,19 @@ export default function App() {
     // Initial fetch of settings from Firestore
     fetchFirestoreSettings().then((remoteSettings) => {
       if (remoteSettings && remoteSettings.siteName) {
+        const msSinceLocalEdit = Date.now() - lastLocalSettingsEditAtRef.current;
         updatePlatformState((prev) => {
-          const merged = {
-            ...prev.settings,
-            ...remoteSettings,
-          };
-          merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+          const merged = mergeBrandingSettingsSafely(prev.settings, remoteSettings);
+          if (msSinceLocalEdit < 4000) {
+            merged.siteName = prev.settings.siteName;
+            merged.siteLogoUrl = prev.settings.siteLogoUrl;
+            merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
+            merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+          }
+          // If local had a saved logo that remote lacked, push it to Firestore so server is in sync
+          if (merged.siteLogoUrl && !remoteSettings.siteLogoUrl && !merged.logoExplicitlyRemoved) {
+            syncSettingsToFirestore(merged);
+          }
           return {
             ...prev,
             settings: merged,
@@ -636,23 +665,71 @@ export default function App() {
   };
 
   const handleUpdateSettings = (nextSettings: PlatformSettings) => {
-    updatePlatformState((prev) => ({ ...prev, settings: nextSettings }));
-    syncSettingsToFirestore(nextSettings);
+    const activeUser =
+      stateRef.current.users.find((u) => u.id === stateRef.current.currentUserId) || null;
+    if (!canAccessAdminDashboard(activeUser)) return;
+
+    lastLocalSettingsEditAtRef.current = Date.now();
+    const nowIso = new Date().toISOString();
+    const prevSettings = stateRef.current.settings;
+    const vault = loadPermanentBranding();
+
+    const safeName = sanitizeSiteName(
+      nextSettings.siteName,
+      prevSettings.siteName || vault?.siteName || 'MotionTools'
+    );
+    const candidateLogo = sanitizeSiteLogoUrl(nextSettings.siteLogoUrl);
+    const explicitlyRemoved = Boolean(nextSettings.logoExplicitlyRemoved);
+
+    // Guarantee: changing siteName or other settings NEVER deletes siteLogoUrl unless explicitlyRemoved is true
+    const finalLogoUrl = candidateLogo
+      ? candidateLogo
+      : explicitlyRemoved
+        ? ''
+        : sanitizeSiteLogoUrl(prevSettings.siteLogoUrl) || vault?.siteLogoUrl || '';
+
+    const stampedSettings: PlatformSettings = {
+      ...prevSettings,
+      ...nextSettings,
+      siteName: safeName,
+      siteLogoUrl: finalLogoUrl,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: finalLogoUrl ? false : explicitlyRemoved,
+    };
+
+    savePermanentBranding({
+      siteName: stampedSettings.siteName,
+      siteLogoUrl: stampedSettings.siteLogoUrl,
+      brandingUpdatedAt: stampedSettings.brandingUpdatedAt,
+      logoExplicitlyRemoved: stampedSettings.logoExplicitlyRemoved,
+    });
+
+    updatePlatformState((prev) => ({ ...prev, settings: stampedSettings }));
+    syncSettingsToFirestore(stampedSettings);
   };
 
   const handleUpdateUsers = (nextUsers: UserAccount[]) => {
+    const activeUser =
+      stateRef.current.users.find((u) => u.id === stateRef.current.currentUserId) || null;
+    if (!canAccessAdminDashboard(activeUser)) return;
     const clean = sanitizeUsersList(nextUsers, getDeletedUserIds());
     updatePlatformState((prev) => ({ ...prev, users: clean }));
     syncUsersToFirestore(clean);
   };
 
   const handleUpdateNotifications = (nextNotifs: BroadcastNotification[]) => {
+    const activeUser =
+      stateRef.current.users.find((u) => u.id === stateRef.current.currentUserId) || null;
+    if (!hasAdminPermission(activeUser, 'manage_notifications')) return;
     setBannerDismissed(false);
     updatePlatformState((prev) => ({ ...prev, notifications: nextNotifs }));
     syncNotificationsToFirestore(nextNotifs);
   };
 
   const handleUpdateActivityLogs = (nextLogs: ActivityLogEntry[]) => {
+    const activeUser =
+      stateRef.current.users.find((u) => u.id === stateRef.current.currentUserId) || null;
+    if (!hasAdminPermission(activeUser, 'view_logs')) return;
     updatePlatformState((prev) => ({ ...prev, activityLogs: nextLogs }));
   };
 
@@ -694,25 +771,30 @@ export default function App() {
     isAr ? settings.whatsappDefaultMsgAr : settings.whatsappDefaultMsgEn
   );
 
+  const safeNavbarLogoUrl = sanitizeSiteLogoUrl(settings.siteLogoUrl);
+  const safeNavbarSiteName = sanitizeSiteName(settings.siteName, 'MotionTools');
+
   return (
     <>
       <nav>
         <div className="logo" style={{ cursor: 'pointer' }} data-v="home">
-          {settings.siteLogoUrl ? (
+          {safeNavbarLogoUrl ? (
             <img
-              src={settings.siteLogoUrl}
-              alt={settings.siteName}
+              id="siteBrandLogoImg"
+              src={safeNavbarLogoUrl}
+              alt={safeNavbarSiteName}
               style={{
-                width: '22px',
-                height: '22px',
-                borderRadius: '5px',
+                width: '24px',
+                height: '24px',
+                borderRadius: '6px',
                 objectFit: 'contain',
+                flexShrink: 0,
               }}
             />
           ) : (
             <i></i>
           )}
-          <span id="siteBrandName">{settings.siteName || 'MotionTools'}</span>
+          <span id="siteBrandName">{safeNavbarSiteName}</span>
         </div>
 
         <div className="links">

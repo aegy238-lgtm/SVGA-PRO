@@ -16,6 +16,7 @@ import {
   resetLoginAttempts,
   verifyUserPassword,
   getUserProSubscriptionInfo,
+  resolveAuthenticatedUserOnLogin,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import { fetchFirestoreUsers } from '../utils/firebase';
@@ -494,25 +495,66 @@ export function UserAuthModal({
   onOpenProModal,
 }: UserAuthModalProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [pendingFirstTimeUser, setPendingFirstTimeUser] = useState<UserAccount | null>(null);
+
+  const currentUser = state.users.find((u) => u.id === state.currentUserId) || null;
+
+  useEffect(() => {
+    if (open) {
+      setErrorMsg('');
+      setPendingFirstTimeUser(null);
+      setIsSwitchingAccount(false);
+      setShowPassword(false);
+    }
+  }, [open, state.currentUserId]);
 
   if (!open) return null;
   const isAr = state.language === 'ar';
   const t = getTranslation(state.language);
-  const currentUser = state.users.find((u) => u.id === state.currentUserId) || null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const nameClean = fullName.trim();
+    const nameClean = fullName.replace(/[<>]/g, '').trim();
     const emailClean = email.trim().toLowerCase();
     const pwdClean = password.trim();
 
+    // Case 1: Completing one-time name setup for an account that never had a name set
+    if (pendingFirstTimeUser) {
+      if (!nameClean) {
+        setErrorMsg(
+          isAr
+            ? 'يرجى اختيار اسمك الشخصي لمرة واحدة لتثبيته على حسابك'
+            : 'Please choose your display name once to lock it to your account'
+        );
+        return;
+      }
+      const lockedUser = resolveAuthenticatedUserOnLogin(pendingFirstTimeUser, nameClean);
+      onRegisterUser(lockedUser);
+      onLoginSuccess(lockedUser.id);
+      setPendingFirstTimeUser(null);
+      setIsSwitchingAccount(false);
+      setFullName('');
+      setPassword('');
+      onClose();
+      if (canAccessAdminDashboard(lockedUser)) {
+        onOpenAdminDashboard();
+      }
+      return;
+    }
+
     if (mode === 'register' && !nameClean) {
-      setErrorMsg(isAr ? 'يرجى إدخال الاسم الخاص بك' : 'Please enter your full name');
+      setErrorMsg(
+        isAr
+          ? 'يرجى إدخال الاسم الشخصي الخاص بك (يُحدد لمرة واحدة عند إنشاء الحساب)'
+          : 'Please enter your full name (chosen once upon account creation)'
+      );
       return;
     }
     if (!emailClean) {
@@ -547,6 +589,7 @@ export function UserAuthModal({
       let found = state.users.find(
         (u) => u.email.toLowerCase() === emailClean && !isPurgedLegacyAdmin(u)
       );
+      let isFromRemote = false;
 
       // If not in local state, query Firestore directly for cross-device / fresh sessions
       if (!found) {
@@ -556,8 +599,8 @@ export function UserAuthModal({
             (u) => u.email.toLowerCase() === emailClean && !isPurgedLegacyAdmin(u)
           );
           if (remoteFound) {
-            onRegisterUser(remoteFound);
             found = remoteFound;
+            isFromRemote = true;
           }
         } catch {}
       }
@@ -588,18 +631,26 @@ export function UserAuthModal({
 
       resetLoginAttempts(emailClean);
 
-      // If the user provided their Name during login, update & persist their display name
-      if (nameClean && nameClean !== found.name) {
-        const updatedFound: UserAccount = {
-          ...found,
-          name: nameClean,
-        };
-        onRegisterUser(updatedFound);
+      // Check if this account has never chosen a display name (e.g. blank name or explicitly unlocked)
+      const existingCleanName = typeof found.name === 'string' ? found.name.replace(/[<>]/g, '').trim() : '';
+      if (!existingCleanName || found.nameLocked === false) {
+        setPendingFirstTimeUser(found);
+        setFullName('');
+        return;
       }
 
-      onLoginSuccess(found.id);
+      // Account already has its locked name -> NEVER ask for or overwrite the name on login!
+      const finalAuthenticatedUser = resolveAuthenticatedUserOnLogin(found);
+
+      if (isFromRemote || found.nameLocked !== true) {
+        onRegisterUser(finalAuthenticatedUser);
+      }
+
+      onLoginSuccess(finalAuthenticatedUser.id);
+      setIsSwitchingAccount(false);
+      setPassword('');
       onClose();
-      if (canAccessAdminDashboard(found)) {
+      if (canAccessAdminDashboard(finalAuthenticatedUser)) {
         onOpenAdminDashboard();
       }
     } else {
@@ -624,8 +675,8 @@ export function UserAuthModal({
       if (existing) {
         setErrorMsg(
           isAr
-            ? 'هذا البريد الإلكتروني مسجل بالفعل، يرجى تسجيل الدخول.'
-            : 'This email is already registered, please sign in.'
+            ? 'هذا البريد الإلكتروني مسجل بالفعل، يرجى تسجيل الدخول بالبريد وكلمة السر.'
+            : 'This email is already registered, please sign in with email and password.'
         );
         return;
       }
@@ -633,6 +684,7 @@ export function UserAuthModal({
       const newUser: UserAccount = {
         id: 'usr_' + Date.now(),
         name: nameClean || emailClean.split('@')[0],
+        nameLocked: true,
         email: emailClean,
         password: pwdClean,
         role: 'user',
@@ -641,6 +693,9 @@ export function UserAuthModal({
       };
       onRegisterUser(newUser);
       onLoginSuccess(newUser.id);
+      setIsSwitchingAccount(false);
+      setFullName('');
+      setPassword('');
       onClose();
     }
   };
@@ -648,22 +703,32 @@ export function UserAuthModal({
   const hasCurrentAdminAccess = canAccessAdminDashboard(currentUser);
   const isCurrentSuperAdmin = isSuperAdminUser(currentUser);
   const currentEffectivePerms = getEffectiveAdminPermissions(currentUser);
+  const showProfileView = Boolean(currentUser && !isSwitchingAccount && !pendingFirstTimeUser);
 
   return (
     <div
       role="dialog"
-      aria-label={mode === 'login' ? t.authModalTitleLogin : t.authModalTitleRegister}
+      aria-label={
+        showProfileView
+          ? isAr
+            ? 'صفحة حساب المستخدم والبروفايل الشخصي'
+            : 'User Account & Profile'
+          : mode === 'login'
+            ? t.authModalTitleLogin
+            : t.authModalTitleRegister
+      }
       dir={isAr ? 'rtl' : 'ltr'}
       style={{
         position: 'fixed',
         inset: 0,
         zIndex: 9998,
-        background: 'rgba(5, 5, 10, 0.82)',
-        backdropFilter: 'blur(8px)',
+        background: 'rgba(6, 6, 12, 0.84)',
+        backdropFilter: 'blur(12px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         padding: '16px',
+        overflowY: 'auto',
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -671,212 +736,420 @@ export function UserAuthModal({
     >
       <div
         style={{
-          width: 'min(450px, 95vw)',
-          background: '#11111a',
-          border: '1px solid #28283e',
-          borderRadius: '16px',
+          width: showProfileView ? 'min(540px, 96vw)' : 'min(440px, 95vw)',
+          maxHeight: '92vh',
+          overflowY: 'auto',
+          background: '#11111b',
+          border: '1px solid #27273f',
+          borderRadius: '20px',
           padding: '24px',
           color: '#fff',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.75)',
+          boxShadow: '0 24px 70px rgba(0,0,0,0.8)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '18px',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 800 }}>
-            {currentUser
-              ? isAr
-                ? '👤 البروفايل الشخصي وحالة الاشتراك'
-                : '👤 My Profile & Subscription'
-              : mode === 'login'
-                ? isAr
-                  ? 'تسجيل الدخول'
-                  : 'Sign In'
-                : isAr
-                  ? 'إنشاء حساب جديد'
-                  : 'Create Account'}
-          </h3>
+        {/* Top Modal Header */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            borderBottom: '1px solid #222236',
+            paddingBottom: '14px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '10px',
+                background: showProfileView
+                  ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.22), rgba(16, 185, 129, 0.16))'
+                  : 'rgba(124, 92, 255, 0.16)',
+                border: '1px solid rgba(124, 92, 255, 0.4)',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '17px',
+              }}
+            >
+              {showProfileView ? '👤' : mode === 'login' ? '🔑' : '✨'}
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#f8fafc' }}>
+                {showProfileView
+                  ? isAr
+                    ? 'صفحة حسابي والبروفايل الشخصي'
+                    : 'My Account & Profile'
+                  : pendingFirstTimeUser
+                    ? isAr
+                      ? 'تثبيت الاسم الشخصي لأول مرة'
+                      : 'First-Time Display Name Setup'
+                    : mode === 'login'
+                      ? isAr
+                        ? 'تسجيل الدخول إلى الحساب'
+                        : 'Sign In to Account'
+                      : isAr
+                        ? 'إنشاء حساب مستخدم جديد'
+                        : 'Create New Account'}
+              </h3>
+              <div style={{ fontSize: '11.5px', color: '#94a3b8', marginTop: '2px' }}>
+                {showProfileView
+                  ? isAr
+                    ? 'إدارة بيانات حسابك، حالة الاشتراك، والصلاحيات في مكان واحد'
+                    : 'Manage your account details, subscription status, and permissions'
+                  : pendingFirstTimeUser
+                    ? isAr
+                      ? 'اختر اسمك لمرة واحدة فقط ولن يُطلب منك مجدداً عند الدخول'
+                      : 'Choose your display name once; it will be locked for future logins'
+                    : mode === 'login'
+                      ? isAr
+                        ? 'أدخل البريد الإلكتروني وكلمة السر فقط لفتح حسابك'
+                        : 'Enter your email and password only to open your account'
+                      : isAr
+                        ? 'حدد اسمك الشخصي لمرة واحدة عند التسجيل مع البريد وكلمة السر'
+                        : 'Choose your permanent display name once along with email & password'}
+              </div>
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={onClose}
+            aria-label={isAr ? 'إغلاق' : 'Close'}
             style={{
-              background: '#1b1b28',
-              border: '1px solid #2e2e42',
-              color: '#fff',
-              width: '28px',
-              height: '28px',
-              borderRadius: '50%',
+              background: '#191927',
+              border: '1px solid #2e2e46',
+              color: '#cbd5e1',
+              width: '32px',
+              height: '32px',
+              borderRadius: '10px',
               cursor: 'pointer',
               display: 'grid',
               placeItems: 'center',
+              fontSize: '14px',
+              flexShrink: 0,
             }}
           >
             ✕
           </button>
         </div>
 
-        {/* Current User Profile & Subscription Duration Card if logged in */}
-        {currentUser && (() => {
+        {/* =====================================================================
+            VIEW A: ORGANIZED PROFESSIONAL USER PROFILE PAGE (When Logged In)
+           ===================================================================== */}
+        {showProfileView && currentUser && (() => {
           const subInfo = getUserProSubscriptionInfo(currentUser, state.settings);
+          const initials = (currentUser.name || currentUser.email || 'U')
+            .trim()
+            .slice(0, 2)
+            .toUpperCase();
+
           return (
             <div
               id="userProfileSubscriptionCard"
               style={{
-                background: hasCurrentAdminAccess
-                  ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(16, 185, 129, 0.12))'
-                  : subInfo.isActive
-                    ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(124, 92, 255, 0.12))'
-                    : '#181826',
-                border: hasCurrentAdminAccess
-                  ? '1px solid rgba(124, 92, 255, 0.55)'
-                  : subInfo.isActive
-                    ? '1px solid rgba(245, 158, 11, 0.5)'
-                    : '1px solid #2c2c44',
-                borderRadius: '14px',
-                padding: '15px',
-                marginBottom: '16px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '12px',
+                gap: '16px',
               }}
             >
+              {/* 1. User Hero Identity Banner */}
               <div
                 style={{
+                  background: hasCurrentAdminAccess
+                    ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(16, 185, 129, 0.12))'
+                    : subInfo.isActive
+                      ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(124, 92, 255, 0.12))'
+                      : 'linear-gradient(135deg, #171726, #141422)',
+                  border: hasCurrentAdminAccess
+                    ? '1px solid rgba(124, 92, 255, 0.5)'
+                    : subInfo.isActive
+                      ? '1px solid rgba(245, 158, 11, 0.45)'
+                      : '1px solid #282840',
+                  borderRadius: '16px',
+                  padding: '16px',
                   display: 'flex',
-                  justifyContent: 'space-between',
                   alignItems: 'center',
-                  gap: '8px',
+                  justifyContent: 'space-between',
+                  gap: '14px',
                   flexWrap: 'wrap',
                 }}
               >
-                <div>
-                  <div style={{ fontSize: '11px', color: '#9494aa' }}>{t.authCurrentAccount}</div>
-                  <div style={{ fontWeight: 800, fontSize: '15px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
-                    <span>👤 {currentUser.name}</span>
-                    <span style={{ fontSize: '12px', color: '#a5b4fc', fontWeight: 600 }}>
-                      ({currentUser.email})
-                    </span>
-                    {hasCurrentAdminAccess && (
-                      <span
-                        id="userModalAdminBadge"
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          padding: '2px 8px',
-                          borderRadius: '99px',
-                          background: isCurrentSuperAdmin
-                            ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
-                            : 'linear-gradient(135deg, #10b981, #059669)',
-                          color: '#fff',
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          boxShadow: '0 2px 10px rgba(16, 185, 129, 0.35)',
-                        }}
-                      >
-                        <span>{isCurrentSuperAdmin ? '👑' : '🛡️'}</span>
-                        <span>
-                          {currentUser.adminBadgeTitle ||
-                            (isCurrentSuperAdmin
-                              ? isAr
-                                ? 'المدير العام (Super Admin)'
-                                : 'Super Admin'
-                              : isAr
-                                ? 'مشرف معتمد (Admin)'
-                                : 'Verified Admin')}
-                        </span>
-                      </span>
-                    )}
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
                   <div
                     style={{
-                      fontSize: '11.5px',
-                      color: hasCurrentAdminAccess ? '#6ee7b7' : subInfo.isActive ? '#fde047' : '#94a3b8',
-                      marginTop: '3px',
-                      fontWeight: 700,
+                      width: '54px',
+                      height: '54px',
+                      borderRadius: '14px',
+                      background: hasCurrentAdminAccess
+                        ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
+                        : subInfo.isActive
+                          ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                          : 'linear-gradient(135deg, #334155, #1e293b)',
+                      color: subInfo.isActive && !hasCurrentAdminAccess ? '#000' : '#fff',
+                      display: 'grid',
+                      placeItems: 'center',
+                      fontSize: '19px',
+                      fontWeight: 900,
+                      boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
+                      flexShrink: 0,
                     }}
                   >
-                    {hasCurrentAdminAccess
-                      ? isCurrentSuperAdmin
-                        ? isAr
-                          ? '👑 صلاحية كاملة على جميع أقسام الداشبورد والحماية'
-                          : '👑 Full Super Administrator Access'
-                        : isAr
-                          ? `🛡️ تم منحك صلاحية مشرف في الداشبورد (${currentEffectivePerms.length} صلاحيات مفعلة)`
-                          : `🛡️ Granted Dashboard Moderator Access (${currentEffectivePerms.length} active permissions)`
-                      : subInfo.isActive
-                        ? `👑 ${t.authStatusPro} — (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`
-                        : t.authStatusFree}
+                    {hasCurrentAdminAccess ? (isCurrentSuperAdmin ? '👑' : '🛡️') : subInfo.isActive ? '👑' : initials}
                   </div>
-                </div>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {hasCurrentAdminAccess && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClose();
-                        onOpenAdminDashboard();
-                      }}
-                      style={{
-                        padding: '6px 12px',
-                        borderRadius: '8px',
-                        background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
-                        border: 0,
-                        color: '#fff',
-                        fontSize: '11px',
-                        fontWeight: 800,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      ⚙️ {t.navAdminDashboard}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={onLogout}
-                    style={{
-                      padding: '6px 10px',
-                      borderRadius: '8px',
-                      background: '#261822',
-                      border: '1px solid #ef4444',
-                      color: '#fca5a5',
-                      fontSize: '11px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {t.authLogout}
-                  </button>
+
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '17px', fontWeight: 900, color: '#fff' }}>
+                        {currentUser.name}
+                      </span>
+                      <span
+                        title={
+                          isAr
+                            ? 'الاسم الشخصي مثبت على الحساب ولا يتغير عند تسجيل الدخول'
+                            : 'Display name is permanently locked to your account'
+                        }
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          background: 'rgba(148, 163, 184, 0.14)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          color: '#cbd5e1',
+                        }}
+                      >
+                        🔒 {isAr ? 'اسم الحساب ثابت' : 'Locked Name'}
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: '12.5px', color: '#a5b4fc', fontWeight: 600, marginTop: '3px' }}>
+                      {currentUser.email}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}>
+                      {hasCurrentAdminAccess ? (
+                        <span
+                          id="userModalAdminBadge"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            background: isCurrentSuperAdmin
+                              ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
+                              : 'linear-gradient(135deg, #10b981, #059669)',
+                            color: '#fff',
+                            fontSize: '10.5px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          <span>{isCurrentSuperAdmin ? '👑' : '🛡️'}</span>
+                          <span>
+                            {currentUser.adminBadgeTitle ||
+                              (isCurrentSuperAdmin
+                                ? isAr
+                                  ? 'المدير العام (Super Admin)'
+                                  : 'Super Admin'
+                                : isAr
+                                  ? 'مشرف معتمد (Admin)'
+                                  : 'Verified Admin')}
+                          </span>
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            background: subInfo.isActive
+                              ? 'rgba(245, 158, 11, 0.2)'
+                              : 'rgba(100, 116, 139, 0.2)',
+                            border: subInfo.isActive
+                              ? '1px solid rgba(245, 158, 11, 0.5)'
+                              : '1px solid #475569',
+                            color: subInfo.isActive ? '#fde047' : '#cbd5e1',
+                            fontSize: '11px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          {subInfo.isActive
+                            ? `👑 ${t.authStatusPro} — (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`
+                            : `👤 ${t.authStatusFree}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Subscription Duration & Expiration Details inside Profile */}
+              {/* 2. Organized Account Details Grid */}
+              <div
+                id="userProfileAccountInfoBox"
+                style={{
+                  background: '#151522',
+                  border: '1px solid #25253a',
+                  borderRadius: '14px',
+                  padding: '14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    color: '#e2e8f0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span>📋 {isAr ? 'البيانات الأساسية للحساب' : 'Account Information'}</span>
+                  <span style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 600 }}>
+                    {isAr ? 'محفوظة ومؤمنة تلقائياً' : 'Saved & Secured'}
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(195px, 1fr))',
+                    gap: '10px',
+                  }}
+                >
+                  <div
+                    style={{
+                      background: '#10101a',
+                      border: '1px solid #222236',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                    }}
+                  >
+                    <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>
+                      {isAr ? 'الاسم الشخصي (ثابت):' : 'Display Name (Locked):'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '13px',
+                        fontWeight: 800,
+                        color: '#f8fafc',
+                        marginTop: '3px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '6px',
+                      }}
+                    >
+                      <span>{currentUser.name}</span>
+                      <span style={{ fontSize: '10px', color: '#10b981', fontWeight: 700 }}>
+                        🔒 {isAr ? 'مُثبت' : 'Locked'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      background: '#10101a',
+                      border: '1px solid #222236',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                    }}
+                  >
+                    <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>
+                      {isAr ? 'البريد الإلكتروني للفتح:' : 'Login Email Address:'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '12.5px',
+                        fontWeight: 700,
+                        color: '#a5b4fc',
+                        marginTop: '3px',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {currentUser.email}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      background: '#10101a',
+                      border: '1px solid #222236',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                    }}
+                  >
+                    <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>
+                      {isAr ? 'تاريخ إنشاء الحساب:' : 'Member Since:'}
+                    </div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', marginTop: '3px' }}>
+                      📅{' '}
+                      {currentUser.createdAt
+                        ? new Date(currentUser.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : '—'}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      background: '#10101a',
+                      border: '1px solid #222236',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                    }}
+                  >
+                    <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>
+                      {isAr ? 'طريقة تسجيل الدخول:' : 'Sign-In Method:'}
+                    </div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#6ee7b7', marginTop: '3px' }}>
+                      🔑 {isAr ? 'البريد الإلكتروني + كلمة السر فقط' : 'Email + Password Only'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Subscription Duration & Expiration Details inside Profile */}
               {!hasCurrentAdminAccess && (
                 <div
                   id="profileSubscriptionDetailsBox"
                   style={{
-                    background: '#10101a',
-                    border: subInfo.isActive ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #252538',
-                    borderRadius: '10px',
-                    padding: '12px',
+                    background: '#151522',
+                    border: subInfo.isActive ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid #25253a',
+                    borderRadius: '14px',
+                    padding: '14px',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '8px',
+                    gap: '10px',
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 800, color: subInfo.isActive ? '#fde047' : '#cbd5e1' }}>
+                    <span style={{ fontSize: '12.5px', fontWeight: 800, color: subInfo.isActive ? '#fde047' : '#e2e8f0' }}>
                       {subInfo.isActive
                         ? isAr
-                          ? '👑 تفاصيل اشتراك باقة برو في حسابك:'
-                          : '👑 Your Pro Subscription Details:'
+                          ? '👑 تفاصيل اشتراك باقة برو في حسابك'
+                          : '👑 Your Pro Subscription Details'
                         : isAr
-                          ? '📦 حالة الاشتراك الحالية:'
-                          : '📦 Current Subscription Status:'}
+                          ? '📦 حالة الاشتراك والباقة الحالية'
+                          : '📦 Current Subscription & Plan'}
                     </span>
                     <span
                       style={{
                         fontSize: '10.5px',
                         fontWeight: 800,
-                        padding: '2px 8px',
-                        borderRadius: '99px',
+                        padding: '3px 9px',
+                        borderRadius: '6px',
                         background: subInfo.isActive ? 'rgba(16, 185, 129, 0.18)' : 'rgba(100, 116, 139, 0.2)',
                         border: subInfo.isActive ? '1px solid #10b981' : '1px solid #475569',
                         color: subInfo.isActive ? '#6ee7b7' : '#94a3b8',
@@ -899,33 +1172,32 @@ export function UserAuthModal({
                           display: 'grid',
                           gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                           gap: '8px',
-                          marginTop: '2px',
                         }}
                       >
-                        <div style={{ background: '#161624', padding: '8px 10px', borderRadius: '8px', border: '1px solid #26263a' }}>
+                        <div style={{ background: '#10101a', padding: '9px 11px', borderRadius: '10px', border: '1px solid #222236' }}>
                           <div style={{ fontSize: '10px', color: '#94a3b8' }}>
                             {isAr ? 'الباقة ومدة الاشتراك:' : 'Plan & Duration:'}
                           </div>
-                          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#fde047', marginTop: '2px' }}>
+                          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#fde047', marginTop: '3px' }}>
                             {isAr ? subInfo.planNameAr : subInfo.planNameEn} ({subInfo.durationDays} {isAr ? 'يوم' : 'days'})
                           </div>
                         </div>
 
-                        <div style={{ background: '#161624', padding: '8px 10px', borderRadius: '8px', border: '1px solid #26263a' }}>
+                        <div style={{ background: '#10101a', padding: '9px 11px', borderRadius: '10px', border: '1px solid #222236' }}>
                           <div style={{ fontSize: '10px', color: '#94a3b8' }}>
                             {isAr ? 'المدة المتبقية للانتهاء:' : 'Remaining Time:'}
                           </div>
-                          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#6ee7b7', marginTop: '2px' }}>
+                          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#6ee7b7', marginTop: '3px' }}>
                             ⏳ {isAr ? `${subInfo.remainingDays} يوم و ${subInfo.remainingHours} ساعة` : `${subInfo.remainingDays}d ${subInfo.remainingHours}h`}
                           </div>
                         </div>
 
                         {subInfo.activatedAtIso && (
-                          <div style={{ background: '#161624', padding: '8px 10px', borderRadius: '8px', border: '1px solid #26263a' }}>
+                          <div style={{ background: '#10101a', padding: '9px 11px', borderRadius: '10px', border: '1px solid #222236' }}>
                             <div style={{ fontSize: '10px', color: '#94a3b8' }}>
                               {isAr ? 'تاريخ بداية الاشتراك:' : 'Subscription Start Date:'}
                             </div>
-                            <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#e2e8f0', marginTop: '2px' }}>
+                            <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#e2e8f0', marginTop: '3px' }}>
                               📅 {new Date(subInfo.activatedAtIso).toLocaleDateString(isAr ? 'ar-EG' : 'en-US', {
                                 year: 'numeric',
                                 month: 'short',
@@ -936,11 +1208,11 @@ export function UserAuthModal({
                         )}
 
                         {subInfo.expiresAtIso && (
-                          <div style={{ background: '#161624', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
+                          <div style={{ background: '#10101a', padding: '9px 11px', borderRadius: '10px', border: '1px solid rgba(245, 158, 11, 0.35)' }}>
                             <div style={{ fontSize: '10px', color: '#fde047' }}>
                               {isAr ? 'تاريخ انتهاء الاشتراك:' : 'Subscription End Date:'}
                             </div>
-                            <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#fef08a', marginTop: '2px' }}>
+                            <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#fef08a', marginTop: '3px' }}>
                               ⏰ {new Date(subInfo.expiresAtIso).toLocaleDateString(isAr ? 'ar-EG' : 'en-US', {
                                 year: 'numeric',
                                 month: 'short',
@@ -955,7 +1227,7 @@ export function UserAuthModal({
                       <div style={{ marginTop: '2px' }}>
                         <div
                           style={{
-                            height: '6px',
+                            height: '7px',
                             borderRadius: '99px',
                             background: '#1e1e30',
                             overflow: 'hidden',
@@ -970,7 +1242,7 @@ export function UserAuthModal({
                             }}
                           />
                         </div>
-                        <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                        <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                           <span>
                             {isAr
                               ? 'تُحسب المدة من يوم الاشتراك وعند انتهائها يعود الحساب مستخدم عادي تلقائياً'
@@ -987,9 +1259,9 @@ export function UserAuthModal({
                                 background: 'rgba(245, 158, 11, 0.18)',
                                 border: '1px solid #f59e0b',
                                 color: '#fde047',
-                                padding: '3px 9px',
-                                borderRadius: '6px',
-                                fontSize: '10.5px',
+                                padding: '5px 11px',
+                                borderRadius: '8px',
+                                fontSize: '11px',
                                 fontWeight: 800,
                                 cursor: 'pointer',
                               }}
@@ -1001,11 +1273,23 @@ export function UserAuthModal({
                       </div>
                     </>
                   ) : (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                      <span style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+                    <div
+                      style={{
+                        background: '#10101a',
+                        border: '1px solid #222236',
+                        borderRadius: '10px',
+                        padding: '12px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '10px',
+                      }}
+                    >
+                      <span style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5, flex: '1 1 220px' }}>
                         {isAr
-                          ? 'أنت حالياً على الباقة المجانية. اشترك في باقة برو لفتح جميع الصيغ والأدوات الاحترافية.'
-                          : 'You are currently on the Free plan. Subscribe to Pro to unlock all formats.'}
+                          ? 'أنت حالياً على الباقة المجانية. اشترك في باقة برو لفتح جميع الصيغ والأدوات الاحترافية فوراً.'
+                          : 'You are currently on the Free plan. Subscribe to Pro to unlock all formats and pro tools.'}
                       </span>
                       {onOpenProModal && (
                         <button
@@ -1018,12 +1302,12 @@ export function UserAuthModal({
                             background: 'linear-gradient(135deg, #f59e0b, #d97706)',
                             border: 0,
                             color: '#000',
-                            padding: '6px 12px',
-                            borderRadius: '8px',
-                            fontSize: '11.5px',
+                            padding: '8px 14px',
+                            borderRadius: '9px',
+                            fontSize: '12px',
                             fontWeight: 900,
                             cursor: 'pointer',
-                            boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
+                            boxShadow: '0 4px 14px rgba(245, 158, 11, 0.3)',
                           }}
                         >
                           👑 {isAr ? 'اشتراك في باقات برو' : 'Subscribe to Pro'}
@@ -1034,214 +1318,423 @@ export function UserAuthModal({
                 </div>
               )}
 
-              {/* Granted Admin Permissions Badges inside the user's account modal */}
-              {hasCurrentAdminAccess && currentEffectivePerms.length > 0 && (
+              {/* 4. Granted Admin Permissions Section (For Super Admin / Moderators) */}
+              {hasCurrentAdminAccess && (
                 <div
                   style={{
-                    borderTop: '1px solid rgba(255,255,255,0.1)',
-                    paddingTop: '8px',
+                    background: '#151522',
+                    border: '1px solid rgba(124, 92, 255, 0.4)',
+                    borderRadius: '14px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
                   }}
                 >
-                  <div style={{ fontSize: '10.5px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 700 }}>
-                    {isAr ? '✨ الصلاحيات الممنوحة لحسابك في لوحة التحكم:' : '✨ Your Granted Dashboard Permissions:'}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 800 }}>
+                      {isAr ? '✨ صلاحيات الإدارة الممنوحة لحسابك:' : '✨ Your Granted Admin Permissions:'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenAdminDashboard();
+                      }}
+                      style={{
+                        padding: '7px 14px',
+                        borderRadius: '9px',
+                        background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
+                        border: 0,
+                        color: '#fff',
+                        fontSize: '11.5px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        boxShadow: '0 4px 14px rgba(124, 92, 255, 0.35)',
+                      }}
+                    >
+                      ⚙️ {t.navAdminDashboard}
+                    </button>
                   </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                    {ALL_ADMIN_PERMISSIONS.filter((p) => currentEffectivePerms.includes(p.key)).map((perm) => (
-                      <span
-                        key={perm.key}
-                        style={{
-                          fontSize: '10px',
-                          padding: '2px 8px',
-                          borderRadius: '6px',
-                          background: 'rgba(15, 23, 42, 0.75)',
-                          border: '1px solid rgba(16, 185, 129, 0.45)',
-                          color: '#a7f3d0',
-                          fontWeight: 700,
-                        }}
-                      >
-                        {perm.icon} {isAr ? perm.labelAr : perm.labelEn}
-                      </span>
-                    ))}
-                  </div>
+
+                  {currentEffectivePerms.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {ALL_ADMIN_PERMISSIONS.filter((p) => currentEffectivePerms.includes(p.key)).map((perm) => (
+                        <span
+                          key={perm.key}
+                          style={{
+                            fontSize: '10.5px',
+                            padding: '4px 9px',
+                            borderRadius: '7px',
+                            background: '#10101a',
+                            border: '1px solid rgba(16, 185, 129, 0.4)',
+                            color: '#a7f3d0',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {perm.icon} {isAr ? perm.labelAr : perm.labelEn}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
+
+              {/* 5. Clean Profile Footer Actions: Switch Account or Sign Out */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '10px',
+                  paddingTop: '4px',
+                  borderTop: '1px solid #222236',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  id="switchAccountViewBtn"
+                  onClick={() => {
+                    setMode('login');
+                    setErrorMsg('');
+                    setEmail('');
+                    setPassword('');
+                    setIsSwitchingAccount(true);
+                  }}
+                  style={{
+                    flex: '1 1 180px',
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    background: '#181828',
+                    border: '1px solid #2e2e48',
+                    color: '#cbd5e1',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🔄 {isAr ? 'تبديل الحساب (دخول بحساب آخر)' : 'Switch Account'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  style={{
+                    flex: '1 1 140px',
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    background: 'rgba(239, 68, 68, 0.14)',
+                    border: '1px solid rgba(239, 68, 68, 0.5)',
+                    color: '#fca5a5',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🚪 {t.authLogout}
+                </button>
+              </div>
             </div>
           );
         })()}
 
-        {/* Mode Switcher: Login or Register */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '8px',
-            marginBottom: '16px',
-            background: '#0c0c12',
-            padding: '4px',
-            borderRadius: '10px',
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setMode('login');
-              setErrorMsg('');
-            }}
-            style={{
-              padding: '8px',
-              borderRadius: '8px',
-              border: 0,
-              background: mode === 'login' ? '#7c5cff' : 'transparent',
-              color: mode === 'login' ? '#fff' : '#9494aa',
-              fontWeight: 700,
-              cursor: 'pointer',
-              fontSize: '13px',
-            }}
-          >
-            {isAr ? 'تسجيل الدخول' : 'Sign In'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode('register');
-              setErrorMsg('');
-            }}
-            style={{
-              padding: '8px',
-              borderRadius: '8px',
-              border: 0,
-              background: mode === 'register' ? '#7c5cff' : 'transparent',
-              color: mode === 'register' ? '#fff' : '#9494aa',
-              fontWeight: 700,
-              cursor: 'pointer',
-              fontSize: '13px',
-            }}
-          >
-            {isAr ? 'إنشاء حساب' : 'Create Account'}
-          </button>
-        </div>
+        {/* =====================================================================
+            VIEW B: CLEAN SIGN IN (Email + Password ONLY) & REGISTER (First-Time Name)
+           ===================================================================== */}
+        {!showProfileView && (
+          <>
+            {/* Back to current profile button if user clicked "Switch Account" while logged in */}
+            {currentUser && !pendingFirstTimeUser && (
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  background: '#161625',
+                  border: '1px solid #292942',
+                  borderRadius: '10px',
+                  padding: '8px 12px',
+                }}
+              >
+                <span style={{ fontSize: '11.5px', color: '#cbd5e1', fontWeight: 600 }}>
+                  👤 {isAr ? `الحساب الحالي: ${currentUser.name}` : `Current: ${currentUser.name}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSwitchingAccount(false);
+                    setErrorMsg('');
+                  }}
+                  style={{
+                    background: 'rgba(124, 92, 255, 0.18)',
+                    border: '1px solid rgba(124, 92, 255, 0.45)',
+                    color: '#c4b5fd',
+                    borderRadius: '7px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {isAr ? '← العودة لصفحة حسابي' : '← Back to My Profile'}
+                </button>
+              </div>
+            )}
 
-        {/* Form containing Name, Email & Password */}
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
-              {mode === 'register'
-                ? isAr
-                  ? 'الاسم / اسم المستخدم *'
-                  : 'Full Name / Username *'
-                : isAr
-                  ? 'الاسم / اسم المستخدم'
-                  : 'Full Name / Username'}
-            </label>
-            <input
-              type="text"
-              id="authUserNameInput"
-              required={mode === 'register'}
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder={isAr ? 'اكتب اسمك هنا (مثال: محمد أحمد)' : 'Enter your name (e.g. John Doe)'}
-              style={{
-                width: '100%',
-                background: '#14141c',
-                border: '1px solid #2e2e42',
-                borderRadius: '8px',
-                padding: '9px 12px',
-                color: '#fff',
-                fontSize: '14px',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
+            {/* Mode Switcher Tabs: Login vs Register (hidden only if completing 1-time name setup) */}
+            {!pendingFirstTimeUser && (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '8px',
+                  background: '#0b0b13',
+                  padding: '5px',
+                  borderRadius: '12px',
+                  border: '1px solid #222236',
+                }}
+              >
+                <button
+                  type="button"
+                  id="authTabLoginBtn"
+                  onClick={() => {
+                    setMode('login');
+                    setErrorMsg('');
+                  }}
+                  style={{
+                    padding: '9px 10px',
+                    borderRadius: '9px',
+                    border: 0,
+                    background: mode === 'login' ? 'linear-gradient(135deg, #7c5cff, #5a2fd0)' : 'transparent',
+                    color: mode === 'login' ? '#fff' : '#9494aa',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  🔑 {isAr ? 'تسجيل الدخول' : 'Sign In'}
+                </button>
+                <button
+                  type="button"
+                  id="authTabRegisterBtn"
+                  onClick={() => {
+                    setMode('register');
+                    setErrorMsg('');
+                  }}
+                  style={{
+                    padding: '9px 10px',
+                    borderRadius: '9px',
+                    border: 0,
+                    background: mode === 'register' ? 'linear-gradient(135deg, #7c5cff, #5a2fd0)' : 'transparent',
+                    color: mode === 'register' ? '#fff' : '#9494aa',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  ✨ {isAr ? 'إنشاء حساب جديد' : 'Create Account'}
+                </button>
+              </div>
+            )}
 
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
-              {isAr ? 'البريد الإلكتروني *' : 'Email Address *'}
-            </label>
-            <input
-              type="email"
-              id="authEmailInput"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@example.com"
-              style={{
-                width: '100%',
-                background: '#14141c',
-                border: '1px solid #2e2e42',
-                borderRadius: '8px',
-                padding: '9px 12px',
-                color: '#fff',
-                fontSize: '14px',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
+            {/* Auth Form */}
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* First-time-only Name Input: ONLY shown during 'register' OR if an account has never set its name */}
+              {(mode === 'register' || pendingFirstTimeUser) && (
+                <div
+                  style={{
+                    background: '#151524',
+                    border: '1px solid rgba(124, 92, 255, 0.35)',
+                    borderRadius: '12px',
+                    padding: '12px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '6px',
+                      flexWrap: 'wrap',
+                      gap: '4px',
+                    }}
+                  >
+                    <label
+                      htmlFor="authUserNameInput"
+                      style={{ fontSize: '12.5px', color: '#f8fafc', fontWeight: 800 }}
+                    >
+                      👤 {isAr ? 'الاسم الشخصي (يُحدد لأول مرة فقط) *' : 'Display Name (First-time only) *'}
+                    </label>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        padding: '2px 7px',
+                        borderRadius: '6px',
+                        background: 'rgba(16, 185, 129, 0.16)',
+                        border: '1px solid rgba(16, 185, 129, 0.4)',
+                        color: '#6ee7b7',
+                        fontWeight: 700,
+                      }}
+                    >
+                      🔒 {isAr ? 'يثبت دائماً ولا يُطلب عند الدخول' : 'Locked permanently'}
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    id="authUserNameInput"
+                    required
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder={isAr ? 'اكتب اسمك هنا (مثال: محمد أحمد)' : 'Enter your name (e.g. John Doe)'}
+                    style={{
+                      width: '100%',
+                      background: '#0e0e18',
+                      border: '1px solid #2e2e46',
+                      borderRadius: '9px',
+                      padding: '10px 12px',
+                      color: '#fff',
+                      fontSize: '14px',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '6px', lineHeight: 1.4 }}>
+                    {isAr
+                      ? '💡 يتم اختيار الاسم لمرة واحدة فقط عند إنشاء الحساب، وبعد ذلك تفتح حسابك بالبريد الإلكتروني وكلمة السر فقط.'
+                      : '💡 Name is chosen once upon registration. Afterwards, you sign in using only your email and password.'}
+                  </div>
+                </div>
+              )}
 
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
-              {isAr ? 'كلمة السر *' : 'Password *'}
-            </label>
-            <input
-              type="password"
-              id="authPasswordInput"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              style={{
-                width: '100%',
-                background: '#14141c',
-                border: '1px solid #2e2e42',
-                borderRadius: '8px',
-                padding: '9px 12px',
-                color: '#fff',
-                fontSize: '14px',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
+              {/* Email & Password Fields (Shown in both login and register; hidden only if in step 2 of pendingFirstTimeUser) */}
+              {!pendingFirstTimeUser && (
+                <>
+                  <div>
+                    <label
+                      htmlFor="authEmailInput"
+                      style={{ display: 'block', fontSize: '12.5px', color: '#e2e8f0', marginBottom: '6px', fontWeight: 700 }}
+                    >
+                      📧 {isAr ? 'البريد الإلكتروني *' : 'Email Address *'}
+                    </label>
+                    <input
+                      type="email"
+                      id="authEmailInput"
+                      required
+                      autoComplete="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      style={{
+                        width: '100%',
+                        background: '#141420',
+                        border: '1px solid #2e2e46',
+                        borderRadius: '10px',
+                        padding: '10px 12px',
+                        color: '#fff',
+                        fontSize: '14px',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </div>
 
-          {errorMsg && (
-            <div
-              style={{
-                background: 'rgba(239, 68, 68, 0.14)',
-                border: '1px solid #ef4444',
-                borderRadius: '8px',
-                padding: '8px 12px',
-                color: '#fca5a5',
-                fontSize: '12px',
-                fontWeight: 600,
-              }}
-            >
-              ⚠️ {errorMsg}
-            </div>
-          )}
+                  <div>
+                    <label
+                      htmlFor="authPasswordInput"
+                      style={{ display: 'block', fontSize: '12.5px', color: '#e2e8f0', marginBottom: '6px', fontWeight: 700 }}
+                    >
+                      🔒 {isAr ? 'كلمة السر *' : 'Password *'}
+                    </label>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        id="authPasswordInput"
+                        required
+                        autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        style={{
+                          width: '100%',
+                          background: '#141420',
+                          border: '1px solid #2e2e46',
+                          borderRadius: '10px',
+                          padding: '10px 38px 10px 12px',
+                          color: '#fff',
+                          fontSize: '14px',
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        style={{
+                          position: 'absolute',
+                          insetInlineEnd: '8px',
+                          background: 'transparent',
+                          border: 0,
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          padding: '4px',
+                        }}
+                      >
+                        {showPassword ? '🙈' : '👁️'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
-          <button
-            type="submit"
-            id="authSubmitBtn"
-            style={{
-              marginTop: '4px',
-              padding: '11px',
-              borderRadius: '8px',
-              background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
-              border: 0,
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: '14px',
-              cursor: 'pointer',
-              boxShadow: '0 4px 16px rgba(124, 92, 255, 0.35)',
-            }}
-          >
-            {mode === 'login'
-              ? isAr
-                ? 'دخول إلى الحساب'
-                : 'Sign In'
-              : isAr
-                ? 'إنشاء الحساب الآن'
-                : 'Create Account'}
-          </button>
-        </form>
+              {errorMsg && (
+                <div
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.14)',
+                    border: '1px solid #ef4444',
+                    borderRadius: '10px',
+                    padding: '9px 12px',
+                    color: '#fca5a5',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                  }}
+                >
+                  ⚠️ {errorMsg}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                id="authSubmitBtn"
+                style={{
+                  marginTop: '4px',
+                  padding: '12px',
+                  borderRadius: '10px',
+                  background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
+                  border: 0,
+                  color: '#fff',
+                  fontWeight: 800,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  boxShadow: '0 6px 20px rgba(124, 92, 255, 0.35)',
+                }}
+              >
+                {pendingFirstTimeUser
+                  ? isAr
+                    ? '✅ تثبيت الاسم وفتح الحساب'
+                    : '✅ Lock Name & Open Account'
+                  : mode === 'login'
+                    ? isAr
+                      ? '🔑 دخول إلى الحساب (بالبريد وكلمة السر)'
+                      : '🔑 Sign In to Account'
+                    : isAr
+                      ? '✨ إنشاء الحساب الآن وتثبيت الاسم'
+                      : '✨ Create Account Now'}
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );

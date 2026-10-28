@@ -17,6 +17,11 @@ import {
   isPurgedLegacyAdmin,
   PURGED_LEGACY_ADMIN_IDS,
   INITIAL_SUPER_ADMIN_ACCOUNT,
+  sanitizeSiteLogoUrl,
+  sanitizeSiteName,
+  savePermanentBranding,
+  loadPermanentBranding,
+  mergeBrandingSettingsSafely,
   type PlatformSettings,
   type UserAccount,
   type BroadcastNotification,
@@ -210,16 +215,65 @@ export async function testFirebaseConnection(force = false): Promise<FirebaseCon
 }
 
 /**
- * Sync platform settings to Firestore
+ * Sync platform settings and permanent branding (Site Name + Site Logo) to Firestore server
  */
 export async function syncSettingsToFirestore(settings: PlatformSettings): Promise<boolean> {
   try {
     const db = getFirebaseDb();
-    const docRef = doc(db, 'platform_settings', 'config');
-    await setDoc(docRef, {
+    const localVault = loadPermanentBranding();
+    const safeSiteName = sanitizeSiteName(settings.siteName, localVault?.siteName || 'MotionTools');
+    const candidateLogo = sanitizeSiteLogoUrl(settings.siteLogoUrl);
+    const explicitlyRemoved = Boolean(settings.logoExplicitlyRemoved);
+
+    // Never allow an accidental empty logo to overwrite a saved logo unless explicitly removed
+    const finalLogoUrl = candidateLogo
+      ? candidateLogo
+      : explicitlyRemoved
+        ? ''
+        : localVault?.siteLogoUrl || '';
+
+    const brandingUpdatedAt = settings.brandingUpdatedAt || new Date().toISOString();
+    const nowIso = new Date().toISOString();
+
+    const cleanSettings: PlatformSettings = {
       ...settings,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
+      siteName: safeSiteName,
+      siteLogoUrl: finalLogoUrl,
+      brandingUpdatedAt,
+      logoExplicitlyRemoved: finalLogoUrl ? false : explicitlyRemoved,
+    };
+
+    // Pin in local permanent branding vault
+    savePermanentBranding({
+      siteName: cleanSettings.siteName,
+      siteLogoUrl: cleanSettings.siteLogoUrl,
+      brandingUpdatedAt: cleanSettings.brandingUpdatedAt,
+      logoExplicitlyRemoved: cleanSettings.logoExplicitlyRemoved,
+    });
+
+    // 1. Save full config to platform_settings/config
+    await setDoc(
+      doc(db, 'platform_settings', 'config'),
+      {
+        ...cleanSettings,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
+    // 2. Also pin branding in dedicated server document platform_settings/branding so logo is permanently stored
+    await setDoc(
+      doc(db, 'platform_settings', 'branding'),
+      {
+        siteName: cleanSettings.siteName,
+        siteLogoUrl: cleanSettings.siteLogoUrl,
+        brandingUpdatedAt: cleanSettings.brandingUpdatedAt,
+        logoExplicitlyRemoved: cleanSettings.logoExplicitlyRemoved,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+
     return true;
   } catch (err) {
     console.warn('Firestore syncSettings notice:', err);
@@ -228,16 +282,29 @@ export async function syncSettingsToFirestore(settings: PlatformSettings): Promi
 }
 
 /**
- * Fetch platform settings from Firestore
+ * Fetch platform settings & permanent branding from Firestore server
  */
 export async function fetchFirestoreSettings(): Promise<PlatformSettings | null> {
   try {
     const db = getFirebaseDb();
-    const snap = await getDoc(doc(db, 'platform_settings', 'config'));
-    if (snap.exists()) {
-      return snap.data() as PlatformSettings;
+    const [configSnap, brandingSnap] = await Promise.all([
+      getDoc(doc(db, 'platform_settings', 'config')),
+      getDoc(doc(db, 'platform_settings', 'branding')).catch(() => null),
+    ]);
+
+    const configData = configSnap.exists() ? (configSnap.data() as PlatformSettings) : null;
+    const brandingData =
+      brandingSnap && brandingSnap.exists() ? (brandingSnap.data() as Partial<PlatformSettings>) : null;
+
+    if (!configData && !brandingData) {
+      return null;
     }
-    return null;
+
+    const base = (configData || {}) as PlatformSettings;
+    if (brandingData) {
+      return mergeBrandingSettingsSafely(base, brandingData);
+    }
+    return base;
   } catch (err) {
     console.warn('Firestore fetchSettings notice:', err);
     return null;
@@ -245,18 +312,32 @@ export async function fetchFirestoreSettings(): Promise<PlatformSettings | null>
 }
 
 /**
- * Real-time listener for Firestore platform settings
+ * Real-time listener for Firestore platform settings and permanent branding
  */
 export function subscribeToFirestoreSettings(callback: (settings: PlatformSettings) => void): () => void {
   try {
     const db = getFirebaseDb();
-    const unsub = onSnapshot(
+    let latestConfig: PlatformSettings | null = null;
+    let latestBranding: Partial<PlatformSettings> | null = null;
+
+    const emitMerged = () => {
+      if (!latestConfig) return;
+      const combined = latestBranding
+        ? mergeBrandingSettingsSafely(latestConfig, latestBranding)
+        : latestConfig;
+      if (combined && combined.siteName) {
+        callback(combined);
+      }
+    };
+
+    const unsubConfig = onSnapshot(
       doc(db, 'platform_settings', 'config'),
       (snap) => {
         if (snap.exists()) {
           const data = snap.data() as PlatformSettings;
           if (data && data.siteName) {
-            callback(data);
+            latestConfig = data;
+            emitMerged();
           }
         }
       },
@@ -264,7 +345,22 @@ export function subscribeToFirestoreSettings(callback: (settings: PlatformSettin
         console.warn('Firestore settings snapshot notice:', err);
       }
     );
-    return unsub;
+
+    const unsubBranding = onSnapshot(
+      doc(db, 'platform_settings', 'branding'),
+      (snap) => {
+        if (snap.exists()) {
+          latestBranding = snap.data() as Partial<PlatformSettings>;
+          emitMerged();
+        }
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubConfig();
+      unsubBranding();
+    };
   } catch (e) {
     console.warn('Could not initialize Firestore settings listener:', e);
     return () => {};

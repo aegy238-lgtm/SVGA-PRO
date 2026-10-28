@@ -22,6 +22,10 @@ import {
   revokeAdminFromUserAccount,
   getUserProSubscriptionInfo,
   checkAndExpireUsersPro,
+  sanitizeSiteLogoUrl,
+  sanitizeSiteName,
+  mergeBrandingSettingsSafely,
+  resolveAuthenticatedUserOnLogin,
   type UserAccount,
 } from './platformStore.ts';
 
@@ -171,6 +175,23 @@ test('granular RBAC permissions, admin revocation, and session token verificatio
     adminPermissions: ['manage_users', 'manage_notifications', 'manage_admins'],
   };
   assert.equal(verifySessionToken(tampered, token), false);
+
+  // Privilege escalation attempt: fake user claiming isSuperAdmin: true or role: 'admin' with no permissions
+  const fakeSuperAdmin: UserAccount = {
+    id: 'usr_hacker_99',
+    name: 'Hacker',
+    email: 'hacker@example.com',
+    role: 'admin',
+    isSuperAdmin: true,
+    isPro: true,
+    createdAt: '2026-10-25T00:00:00.000Z',
+  };
+  assert.equal(isSuperAdminUser(fakeSuperAdmin), false);
+  assert.equal(canAccessAdminDashboard(fakeSuperAdmin), false);
+  const cleanedUsers = sanitizeUsersList([fakeSuperAdmin]);
+  const cleanedHacker = cleanedUsers.find((u) => u.id === 'usr_hacker_99')!;
+  assert.equal(cleanedHacker.role, 'user');
+  assert.equal(cleanedHacker.isSuperAdmin, false);
 });
 
 test('Pro subscription duration calculation and automatic expiration revert user to regular free user', () => {
@@ -235,5 +256,93 @@ test('brute-force login rate limiter locks after 5 failed attempts and resets on
   assert.equal(checkLoginRateLimit(testEmail, t0 + 65_000).allowed, true);
   resetLoginAttempts(testEmail);
 });
+
+test('site logo and site name sanitization & mergeBrandingSettingsSafely prevent logo deletion', () => {
+  const validPngDataUrl =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  assert.equal(sanitizeSiteLogoUrl(validPngDataUrl), validPngDataUrl);
+  assert.equal(sanitizeSiteLogoUrl('https://cdn.example.com/logo.png'), 'https://cdn.example.com/logo.png');
+  assert.equal(sanitizeSiteLogoUrl('javascript:alert(1)'), '');
+  assert.equal(sanitizeSiteLogoUrl('data:text/html;base64,PHNjcmlwdD4='), '');
+
+  assert.equal(sanitizeSiteName('  استوديو الموشن <script>  '), 'استوديو الموشن script');
+
+  const localWithLogo = {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    siteName: 'SVGA Studio Pro',
+    siteLogoUrl: validPngDataUrl,
+    brandingUpdatedAt: '2026-10-28T10:00:00.000Z',
+    logoExplicitlyRemoved: false,
+  };
+
+  // 1. Incoming snapshot has updated siteName but empty siteLogoUrl (not explicitly removed) -> MUST preserve uploaded logo!
+  const afterNameChange = mergeBrandingSettingsSafely(localWithLogo, {
+    siteName: 'New Site Name 2026',
+    siteLogoUrl: '',
+    brandingUpdatedAt: '2026-10-28T10:05:00.000Z',
+    logoExplicitlyRemoved: false,
+  });
+  assert.equal(afterNameChange.siteName, 'New Site Name 2026');
+  assert.equal(afterNameChange.siteLogoUrl, validPngDataUrl);
+
+  // 2. Incoming stale snapshot has older timestamp -> MUST keep newer local branding
+  const afterStaleSnapshot = mergeBrandingSettingsSafely(afterNameChange, {
+    siteName: 'Old Name',
+    siteLogoUrl: '',
+    brandingUpdatedAt: '2026-10-28T09:00:00.000Z',
+  });
+  assert.equal(afterStaleSnapshot.siteName, 'New Site Name 2026');
+  assert.equal(afterStaleSnapshot.siteLogoUrl, validPngDataUrl);
+
+  // 3. Admin explicitly removes logo with newer timestamp -> clears logo
+  const afterExplicitRemove = mergeBrandingSettingsSafely(afterNameChange, {
+    siteName: 'New Site Name 2026',
+    siteLogoUrl: '',
+    brandingUpdatedAt: '2026-10-28T10:10:00.000Z',
+    logoExplicitlyRemoved: true,
+  });
+  assert.equal(afterExplicitRemove.siteLogoUrl, '');
+  assert.equal(afterExplicitRemove.logoExplicitlyRemoved, true);
+});
+
+test('resolveAuthenticatedUserOnLogin locks user name permanently after first-time registration and never overwrites on login', () => {
+  const registeredUser: UserAccount = {
+    id: 'usr_reg_1',
+    name: 'محمد أحمد',
+    nameLocked: true,
+    email: 'mohamed@example.com',
+    password: 'password123',
+    role: 'user',
+    isPro: false,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
+
+  // Even if someone passes a different name during login, the user's registered name stays locked
+  const afterLogin = resolveAuthenticatedUserOnLogin(registeredUser, 'اسم مختلف');
+  assert.equal(afterLogin.name, 'محمد أحمد');
+  assert.equal(afterLogin.nameLocked, true);
+
+  // If an account was created without a name (nameLocked: false), it sets the name once and locks it forever
+  const unnamedAccount: UserAccount = {
+    id: 'usr_unnamed_1',
+    name: '',
+    nameLocked: false,
+    email: 'newuser@example.com',
+    password: 'password123',
+    role: 'user',
+    isPro: false,
+    createdAt: '2026-10-28T00:00:00.000Z',
+  };
+  const firstSetup = resolveAuthenticatedUserOnLogin(unnamedAccount, 'كريم محمود');
+  assert.equal(firstSetup.name, 'كريم محمود');
+  assert.equal(firstSetup.nameLocked, true);
+
+  // Subsequent login after first setup keeps 'كريم محمود' locked
+  const secondLogin = resolveAuthenticatedUserOnLogin(firstSetup, 'اسم آخر');
+  assert.equal(secondLogin.name, 'كريم محمود');
+  assert.equal(secondLogin.nameLocked, true);
+});
+
+
 
 

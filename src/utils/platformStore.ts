@@ -185,6 +185,7 @@ export function normalizeProPlans(
 export interface UserAccount {
   id: string;
   name: string;
+  nameLocked?: boolean;
   email: string;
   password?: string;
   phone?: string;
@@ -236,6 +237,8 @@ export const ALL_SUPPORTED_FORMATS: FormatDefinition[] = [
 export interface PlatformSettings {
   siteName: string;
   siteLogoUrl: string; // empty string = default gradient dot logo, or DataURL / https URL
+  brandingUpdatedAt?: string;
+  logoExplicitlyRemoved?: boolean;
   proPackageNameAr: string;
   proPackageNameEn: string;
   proPrice: string;
@@ -404,24 +407,31 @@ export function verifyUserPassword(user: UserAccount | null | undefined, inputPa
 
 /**
  * Pure function: Checks if a user is the primary Super Admin.
+ * Strictly requires matching the canonical Super Admin ID or email so regular accounts cannot self-promote.
  */
 export function isSuperAdminUser(user: UserAccount | null | undefined): boolean {
   if (!user || isPurgedLegacyAdmin(user)) return false;
-  return user.role === 'admin' && (user.isSuperAdmin === true || user.id === INITIAL_SUPER_ADMIN_ACCOUNT.id);
+  return (
+    user.role === 'admin' &&
+    (user.id === INITIAL_SUPER_ADMIN_ACCOUNT.id ||
+      (user.isSuperAdmin === true &&
+        user.email?.trim().toLowerCase() === INITIAL_SUPER_ADMIN_ACCOUNT.email.toLowerCase()))
+  );
 }
 
 /**
- * Pure function: Checks if a user has access to the Admin Dashboard (either Super Admin or a delegated Admin with >=1 permission).
- * Strictly requires role === 'admin' so revoked users never retain access.
+ * Pure function: Checks if a user has access to the Admin Dashboard (either Super Admin or a delegated Admin with >=1 valid permission).
+ * Strictly requires role === 'admin' and a non-empty valid adminPermissions array for non-Super-Admins so revoked or malformed users never retain access.
  */
 export function canAccessAdminDashboard(user: UserAccount | null | undefined): boolean {
   if (!user || isPurgedLegacyAdmin(user)) return false;
   if (isSuperAdminUser(user)) return true;
   if (user.role !== 'admin') return false;
-  if (Array.isArray(user.adminPermissions)) {
-    return user.adminPermissions.length > 0;
-  }
-  return true;
+  if (!Array.isArray(user.adminPermissions)) return false;
+  const validPerms = user.adminPermissions.filter((k): k is AdminPermissionKey =>
+    ALL_ADMIN_PERMISSION_KEYS.includes(k)
+  );
+  return validPerms.length > 0;
 }
 
 /**
@@ -740,6 +750,43 @@ export function resetLoginAttempts(email: string): void {
 }
 
 /**
+ * Pure function: Ensures a user's display name is chosen only once (upon registration or first-time setup)
+ * and is permanently locked on subsequent logins so signing in with email + password never overwrites the user's name.
+ */
+export function resolveAuthenticatedUserOnLogin(
+  existingUser: UserAccount,
+  firstTimeFallbackName?: string
+): UserAccount {
+  const currentCleanName = typeof existingUser.name === 'string'
+    ? existingUser.name.replace(/[<>]/g, '').trim()
+    : '';
+  const candidateCleanName = typeof firstTimeFallbackName === 'string'
+    ? firstTimeFallbackName.replace(/[<>]/g, '').trim()
+    : '';
+
+  // If the account already has a valid name and is not explicitly unlocked, keep the existing name permanently
+  if (currentCleanName && existingUser.nameLocked !== false) {
+    return {
+      ...existingUser,
+      name: currentCleanName,
+      nameLocked: true,
+    };
+  }
+
+  // First-time name assignment (only if account had no name or was explicitly unlocked for first-time setup)
+  const finalName =
+    candidateCleanName ||
+    currentCleanName ||
+    (existingUser.email ? existingUser.email.split('@')[0] : 'User');
+
+  return {
+    ...existingUser,
+    name: finalName,
+    nameLocked: true,
+  };
+}
+
+/**
  * Pure function: Resolves the effective format key when converting a file.
  * If targetFormat is 'orig' ("Keep Original"), resolves based on the uploaded file's extension.
  */
@@ -830,6 +877,257 @@ export function buildWhatsAppUrl(phone: string, message?: string): string {
 const STORAGE_KEY = 'motiontools_platform_state_v2';
 const LEGACY_STORAGE_KEY = 'motiontools_platform_state_v1';
 const DELETED_USERS_KEY = 'motiontools_deleted_user_ids_v1';
+const PERMANENT_BRANDING_KEY = 'motiontools_permanent_branding_v1';
+
+/**
+ * Pure function: Sanitizes siteName by removing dangerous HTML/script characters while preserving Arabic/English text.
+ */
+export function sanitizeSiteName(name: string | null | undefined, fallback = 'MotionTools'): string {
+  if (typeof name !== 'string') return fallback;
+  const cleaned = name.replace(/[<>]/g, '').replace(/javascript:/gi, '').trim();
+  return cleaned || fallback;
+}
+
+/**
+ * Pure function: Validates and sanitizes siteLogoUrl against XSS vectors (javascript:, vbscript:, data:text/html, etc.).
+ * Allows safe https://, http://, relative / paths, and valid data:image/*;base64,... URLs.
+ */
+export function sanitizeSiteLogoUrl(url: string | null | undefined): string {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('javascript:') ||
+    lower.startsWith('vbscript:') ||
+    lower.startsWith('data:text/') ||
+    lower.startsWith('data:application/') ||
+    lower.includes('<script') ||
+    lower.includes('onerror=') ||
+    lower.includes('onload=')
+  ) {
+    return '';
+  }
+  if (
+    lower.startsWith('https://') ||
+    lower.startsWith('http://') ||
+    lower.startsWith('/') ||
+    /^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml|bmp|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=\s]+$/i.test(
+      trimmed
+    )
+  ) {
+    return trimmed;
+  }
+  return '';
+}
+
+export interface PermanentBrandingRecord {
+  siteName: string;
+  siteLogoUrl: string;
+  brandingUpdatedAt: string;
+  logoExplicitlyRemoved: boolean;
+}
+
+/**
+ * Saves branding (siteName + siteLogoUrl) in a dedicated permanent localStorage key so it is never lost
+ * even if main state storage is overwritten or hits quota limits.
+ */
+export function savePermanentBranding(branding: {
+  siteName?: string;
+  siteLogoUrl?: string;
+  brandingUpdatedAt?: string;
+  logoExplicitlyRemoved?: boolean;
+}): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const existing = loadPermanentBranding();
+    const safeLogo = sanitizeSiteLogoUrl(branding.siteLogoUrl);
+    const explicitlyRemoved = Boolean(branding.logoExplicitlyRemoved);
+    const finalLogo = safeLogo
+      ? safeLogo
+      : explicitlyRemoved
+        ? ''
+        : existing?.siteLogoUrl || '';
+    const record: PermanentBrandingRecord = {
+      siteName: sanitizeSiteName(branding.siteName, existing?.siteName || DEFAULT_PLATFORM_SETTINGS.siteName),
+      siteLogoUrl: finalLogo,
+      brandingUpdatedAt: branding.brandingUpdatedAt || new Date().toISOString(),
+      logoExplicitlyRemoved: finalLogo ? false : explicitlyRemoved,
+    };
+    window.localStorage.setItem(PERMANENT_BRANDING_KEY, JSON.stringify(record));
+  } catch (e) {
+    console.warn('Could not persist permanent branding vault:', e);
+  }
+}
+
+export function loadPermanentBranding(): PermanentBrandingRecord | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(PERMANENT_BRANDING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      siteName: sanitizeSiteName(parsed.siteName, DEFAULT_PLATFORM_SETTINGS.siteName),
+      siteLogoUrl: sanitizeSiteLogoUrl(parsed.siteLogoUrl),
+      brandingUpdatedAt: typeof parsed.brandingUpdatedAt === 'string' ? parsed.brandingUpdatedAt : '',
+      logoExplicitlyRemoved: Boolean(parsed.logoExplicitlyRemoved),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure function: Safely merges incoming (e.g., Firestore snapshot) settings with local settings
+ * so that changing the site name NEVER deletes the uploaded site logo, and stale Firestore snapshots
+ * with an empty siteLogoUrl NEVER wipe out a saved logo unless logoExplicitlyRemoved is true with a newer timestamp.
+ */
+export function mergeBrandingSettingsSafely(
+  localSettings: PlatformSettings,
+  incomingSettings: Partial<PlatformSettings> | null | undefined
+): PlatformSettings {
+  if (!incomingSettings || typeof incomingSettings !== 'object') {
+    return { ...localSettings };
+  }
+
+  const localTime = localSettings.brandingUpdatedAt
+    ? new Date(localSettings.brandingUpdatedAt).getTime()
+    : 0;
+  const incomingTime = incomingSettings.brandingUpdatedAt
+    ? new Date(incomingSettings.brandingUpdatedAt).getTime()
+    : 0;
+
+  const isLocalBrandingNewer =
+    Number.isFinite(localTime) &&
+    localTime > 0 &&
+    (!Number.isFinite(incomingTime) || localTime > incomingTime);
+
+  const localSafeLogo = sanitizeSiteLogoUrl(localSettings.siteLogoUrl);
+  const incomingSafeLogo = sanitizeSiteLogoUrl(incomingSettings.siteLogoUrl);
+
+  let resolvedLogoUrl: string;
+  let resolvedLogoRemoved: boolean;
+
+  if (isLocalBrandingNewer) {
+    // Local branding was updated more recently than the incoming snapshot: keep local logo & name
+    resolvedLogoUrl = localSafeLogo;
+    resolvedLogoRemoved = Boolean(localSettings.logoExplicitlyRemoved);
+  } else if (incomingSafeLogo) {
+    // Incoming has a valid non-empty logo
+    resolvedLogoUrl = incomingSafeLogo;
+    resolvedLogoRemoved = false;
+  } else if (
+    incomingSettings.logoExplicitlyRemoved === true &&
+    incomingTime > 0 &&
+    incomingTime >= localTime
+  ) {
+    // Admin explicitly clicked "Reset/Delete Logo" with a newer timestamp
+    resolvedLogoUrl = '';
+    resolvedLogoRemoved = true;
+  } else {
+    // Incoming logo is empty, but was NOT explicitly removed -> preserve local logo!
+    resolvedLogoUrl = localSafeLogo;
+    resolvedLogoRemoved = false;
+  }
+
+  const resolvedSiteName = isLocalBrandingNewer
+    ? sanitizeSiteName(localSettings.siteName, sanitizeSiteName(incomingSettings.siteName))
+    : sanitizeSiteName(incomingSettings.siteName, sanitizeSiteName(localSettings.siteName));
+
+  const resolvedTimestamp =
+    Math.max(Number.isFinite(localTime) ? localTime : 0, Number.isFinite(incomingTime) ? incomingTime : 0) > 0
+      ? new Date(
+          Math.max(
+            Number.isFinite(localTime) ? localTime : 0,
+            Number.isFinite(incomingTime) ? incomingTime : 0
+          )
+        ).toISOString()
+      : localSettings.brandingUpdatedAt || incomingSettings.brandingUpdatedAt || '';
+
+  const merged: PlatformSettings = {
+    ...localSettings,
+    ...incomingSettings,
+    siteName: resolvedSiteName,
+    siteLogoUrl: resolvedLogoUrl,
+    brandingUpdatedAt: resolvedTimestamp,
+    logoExplicitlyRemoved: resolvedLogoRemoved,
+  };
+  merged.proPlans = normalizeProPlans(merged.proPlans, merged.proPrice);
+  return merged;
+}
+
+/**
+ * Compresses and optimizes an uploaded logo image file on the client side using HTML5 Canvas
+ * so that even high-resolution PNG/JPG/WebP uploads (e.g. 2MB-10MB) are cleanly resized (max 256x256)
+ * while preserving full alpha transparency and staying well under Firestore's 1MB limit (<80KB).
+ */
+export async function optimizeLogoImageFile(file: File, maxDim = 256): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      reject(new Error('Invalid image file'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = () => {
+      const rawDataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!rawDataUrl) {
+        reject(new Error('Empty image data'));
+        return;
+      }
+      // If it's a small SVG or already small (<65KB), keep it directly after sanitization
+      if (rawDataUrl.length <= 65_000 && sanitizeSiteLogoUrl(rawDataUrl)) {
+        resolve(rawDataUrl);
+        return;
+      }
+      if (typeof document === 'undefined' || typeof Image === 'undefined') {
+        resolve(sanitizeSiteLogoUrl(rawDataUrl));
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let w = img.naturalWidth || img.width || maxDim;
+          let h = img.naturalHeight || img.height || maxDim;
+          if (w > maxDim || h > maxDim) {
+            const ratio = Math.min(maxDim / w, maxDim / h);
+            w = Math.max(1, Math.round(w * ratio));
+            h = Math.max(1, Math.round(h * ratio));
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(sanitizeSiteLogoUrl(rawDataUrl));
+            return;
+          }
+          ctx.clearRect(0, 0, w, h);
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, 0, 0, w, h);
+
+          // Try PNG first to preserve lossless edges and transparency
+          let output = canvas.toDataURL('image/png');
+          // If PNG is still > 140KB, use WebP at 0.90 quality (which also supports full alpha transparency!)
+          if (output.length > 140_000) {
+            const webp = canvas.toDataURL('image/webp', 0.9);
+            if (webp.startsWith('data:image/webp') && webp.length < output.length) {
+              output = webp;
+            }
+          }
+          resolve(sanitizeSiteLogoUrl(output) || sanitizeSiteLogoUrl(rawDataUrl));
+        } catch {
+          resolve(sanitizeSiteLogoUrl(rawDataUrl));
+        }
+      };
+      img.onerror = () => resolve(sanitizeSiteLogoUrl(rawDataUrl));
+      img.src = rawDataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export function getDeletedUserIds(): string[] {
   if (typeof window === 'undefined' || !window.localStorage) return [...PURGED_LEGACY_ADMIN_IDS];
@@ -864,18 +1162,27 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
   const hasSuperAdmin = filtered.some((u) => isSuperAdminUser(u));
   const baseList = hasSuperAdmin ? filtered : [{ ...INITIAL_SUPER_ADMIN_ACCOUNT }, ...filtered];
   return baseList.map((u) => {
+    const cleanName = typeof u.name === 'string' ? u.name.replace(/[<>]/g, '').trim() : u.email;
+    const isNameLocked = u.nameLocked !== false && Boolean(cleanName);
     if (isSuperAdminUser(u)) {
       return {
         ...u,
+        name: cleanName || INITIAL_SUPER_ADMIN_ACCOUNT.name,
+        nameLocked: true,
         role: 'admin',
         isSuperAdmin: true,
         adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
         isPro: true,
       };
     }
-    if (u.role !== 'admin') {
+    const validPerms = Array.isArray(u.adminPermissions)
+      ? u.adminPermissions.filter((k): k is AdminPermissionKey => ALL_ADMIN_PERMISSION_KEYS.includes(k))
+      : [];
+    if (u.role !== 'admin' || validPerms.length === 0) {
       return {
         ...u,
+        name: cleanName,
+        nameLocked: isNameLocked,
         role: 'user',
         isSuperAdmin: false,
         adminPermissions: [],
@@ -883,15 +1190,31 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         adminGrantedAt: '',
       };
     }
-    return u;
+    return {
+      ...u,
+      name: cleanName,
+      nameLocked: isNameLocked,
+      role: 'admin',
+      isSuperAdmin: false,
+      adminPermissions: validPerms,
+    };
   });
 }
 
 export function loadPlatformState(): PlatformState {
   const deletedIds = getDeletedUserIds();
+  const permanentBranding = loadPermanentBranding();
+  const defaultWithPermanent: PlatformSettings = {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    siteName: permanentBranding?.siteName || DEFAULT_PLATFORM_SETTINGS.siteName,
+    siteLogoUrl: permanentBranding?.siteLogoUrl || DEFAULT_PLATFORM_SETTINGS.siteLogoUrl,
+    brandingUpdatedAt: permanentBranding?.brandingUpdatedAt || '',
+    logoExplicitlyRemoved: permanentBranding?.logoExplicitlyRemoved || false,
+  };
+
   if (typeof window === 'undefined' || !window.localStorage) {
     return {
-      settings: { ...DEFAULT_PLATFORM_SETTINGS },
+      settings: defaultWithPermanent,
       users: sanitizeUsersList(INITIAL_USERS, deletedIds),
       currentUserId: null,
       sessionToken: null,
@@ -912,7 +1235,7 @@ export function loadPlatformState(): PlatformState {
     }
     if (!raw) {
       return {
-        settings: { ...DEFAULT_PLATFORM_SETTINGS },
+        settings: defaultWithPermanent,
         users: sanitizeUsersList(INITIAL_USERS, deletedIds),
         currentUserId: null,
         sessionToken: null,
@@ -943,10 +1266,8 @@ export function loadPlatformState(): PlatformState {
         log && !PURGED_LEGACY_ADMIN_EMAILS.includes((log.userEmail || '').trim().toLowerCase())
     );
 
-    const mergedSettings: PlatformSettings = {
-      ...DEFAULT_PLATFORM_SETTINGS,
-      ...(parsed.settings || {}),
-    };
+    const parsedSettings = parsed.settings || {};
+    const mergedSettings = mergeBrandingSettingsSafely(defaultWithPermanent, parsedSettings);
     mergedSettings.proPlans = normalizeProPlans(mergedSettings.proPlans, mergedSettings.proPrice);
 
     return {
@@ -962,7 +1283,7 @@ export function loadPlatformState(): PlatformState {
     };
   } catch {
     return {
-      settings: { ...DEFAULT_PLATFORM_SETTINGS },
+      settings: defaultWithPermanent,
       users: sanitizeUsersList(INITIAL_USERS, deletedIds),
       currentUserId: null,
       sessionToken: null,
@@ -978,11 +1299,26 @@ export function loadPlatformState(): PlatformState {
 export function savePlatformState(state: PlatformState): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
+    // Always pin the latest branding in the dedicated permanent branding vault first!
+    savePermanentBranding({
+      siteName: state.settings.siteName,
+      siteLogoUrl: state.settings.siteLogoUrl,
+      brandingUpdatedAt: state.settings.brandingUpdatedAt,
+      logoExplicitlyRemoved: state.settings.logoExplicitlyRemoved,
+    });
+
     const activeUser = state.currentUserId
       ? state.users.find((u) => u.id === state.currentUserId) || null
       : null;
     const nextState: PlatformState = {
       ...state,
+      settings: {
+        ...state.settings,
+        siteName: sanitizeSiteName(state.settings.siteName),
+        siteLogoUrl: sanitizeSiteLogoUrl(state.settings.siteLogoUrl),
+      },
+      // Cap activityLogs in localStorage to latest 100 entries so localStorage never overflows
+      activityLogs: Array.isArray(state.activityLogs) ? state.activityLogs.slice(0, 100) : [],
       sessionToken: activeUser ? computeSessionToken(activeUser) : null,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
@@ -991,4 +1327,5 @@ export function savePlatformState(state: PlatformState): void {
     console.warn('Could not persist platform state to localStorage:', e);
   }
 }
+
 

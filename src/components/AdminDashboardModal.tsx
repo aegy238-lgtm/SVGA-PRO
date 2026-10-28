@@ -24,12 +24,18 @@ import {
   addDeletedUserId,
   revokeAdminFromUserAccount,
   getUserProSubscriptionInfo,
+  optimizeLogoImageFile,
+  sanitizeSiteLogoUrl,
+  sanitizeSiteName,
+  savePermanentBranding,
+  loadPermanentBranding,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import {
   firebaseConfig,
   testFirebaseConnection,
   syncAllToFirebase,
+  syncSettingsToFirestore,
   subscribeToFirebaseStatus,
   fetchFirestoreUsers,
   saveUserToFirestore,
@@ -111,7 +117,31 @@ export default function AdminDashboardModal({
   const [notifImportant, setNotifImportant] = useState(true);
   const [saveFeedback, setSaveFeedback] = useState('');
 
+  // Branding local draft & server-pinning states so siteName and siteLogoUrl never overwrite each other
+  const [brandNameDraft, setBrandNameDraft] = useState<string>(state.settings.siteName || 'MotionTools');
+  const [externalLogoUrlDraft, setExternalLogoUrlDraft] = useState<string>(
+    state.settings.siteLogoUrl && !state.settings.siteLogoUrl.startsWith('data:image/')
+      ? state.settings.siteLogoUrl
+      : ''
+  );
+  const [isSavingBranding, setIsSavingBranding] = useState<boolean>(false);
+  const [brandingSyncNotice, setBrandingSyncNotice] = useState<string>('');
+
+  const latestSettingsRef = useRef<PlatformSettings>(state.settings);
+  latestSettingsRef.current = state.settings;
+
   const logoFileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (state.settings.siteName) {
+      setBrandNameDraft(state.settings.siteName);
+    }
+    if (state.settings.siteLogoUrl && !state.settings.siteLogoUrl.startsWith('data:image/')) {
+      setExternalLogoUrlDraft(state.settings.siteLogoUrl);
+    } else if (!state.settings.siteLogoUrl) {
+      setExternalLogoUrlDraft('');
+    }
+  }, [open, state.settings.siteName, state.settings.siteLogoUrl]);
 
   const currentUser = state.users.find((u) => u.id === state.currentUserId) || null;
   const isCurrentSuperAdmin = isSuperAdminUser(currentUser);
@@ -621,22 +651,215 @@ export default function AdminDashboardModal({
     );
   };
 
-  const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSiteNameChange = (rawName: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_branding')) return;
+    setBrandNameDraft(rawName);
+    const currentSettings = latestSettingsRef.current;
+    const vault = loadPermanentBranding();
+    // Always preserve the currently uploaded/saved logo when changing siteName!
+    const preservedLogo =
+      sanitizeSiteLogoUrl(currentSettings.siteLogoUrl) || vault?.siteLogoUrl || '';
+    const nowIso = new Date().toISOString();
+    const safeName = rawName.trim() ? sanitizeSiteName(rawName) : currentSettings.siteName || 'MotionTools';
+
+    const nextSettings: PlatformSettings = {
+      ...currentSettings,
+      siteName: safeName,
+      siteLogoUrl: preservedLogo,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: preservedLogo ? false : Boolean(currentSettings.logoExplicitlyRemoved),
+    };
+    savePermanentBranding({
+      siteName: nextSettings.siteName,
+      siteLogoUrl: nextSettings.siteLogoUrl,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: nextSettings.logoExplicitlyRemoved,
+    });
+    onUpdateSettings(nextSettings);
+    showSavedFeedback('تم تحديث اسم الموقع مع الحفاظ على اللوجو ✓', 'Site name updated & logo preserved ✓');
+  };
+
+  const handleExternalLogoUrlChange = (rawUrl: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_branding')) return;
+    setExternalLogoUrlDraft(rawUrl);
+    const trimmed = rawUrl.trim();
+    const currentSettings = latestSettingsRef.current;
+    const vault = loadPermanentBranding();
+    // If the user clears the external URL box while an uploaded data:image logo is active, keep the uploaded logo!
+    if (!trimmed && currentSettings.siteLogoUrl?.startsWith('data:image/')) {
+      return;
+    }
+    const safeLogo = sanitizeSiteLogoUrl(trimmed);
+    if (trimmed && !safeLogo) {
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    const preservedName = sanitizeSiteName(
+      brandNameDraft || currentSettings.siteName || vault?.siteName || 'MotionTools'
+    );
+    const nextSettings: PlatformSettings = {
+      ...currentSettings,
+      siteName: preservedName,
+      siteLogoUrl: safeLogo,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: !safeLogo,
+    };
+    savePermanentBranding({
+      siteName: nextSettings.siteName,
+      siteLogoUrl: nextSettings.siteLogoUrl,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: nextSettings.logoExplicitlyRemoved,
+    });
+    onUpdateSettings(nextSettings);
+    showSavedFeedback('تم تحديث رابط اللوجو ✓', 'Logo URL updated ✓');
+  };
+
+  const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!hasAdminPermission(currentUser, 'manage_branding')) return;
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateSettings({
-          ...settings,
-          siteLogoUrl: reader.result,
-        });
-        showSavedFeedback('تم رفع وتحديث لوجو الموقع بنجاح ✓', 'Site logo updated ✓');
-      }
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    if (!file) return;
+
+    setIsSavingBranding(true);
+    setBrandingSyncNotice(
+      isAr
+        ? '⏳ جاري تحسين وضغط صورة اللوجو وحفظها وتثبيتها في السيرفر...'
+        : '⏳ Optimizing & pinning logo image to server...'
+    );
+
+    try {
+      const optimizedDataUrl = await optimizeLogoImageFile(file, 256);
+      if (!optimizedDataUrl) {
+        setBrandingSyncNotice(
+          isAr ? '⚠️ تعذر قراءة ملف الصورة، يرجى اختيار صورة صالحة.' : '⚠️ Could not process image file.'
+        );
+        setIsSavingBranding(false);
+        return;
+      }
+
+      const currentSettings = latestSettingsRef.current;
+      const vault = loadPermanentBranding();
+      const preservedSiteName = sanitizeSiteName(
+        brandNameDraft || currentSettings.siteName || vault?.siteName || 'MotionTools'
+      );
+      const nowIso = new Date().toISOString();
+
+      const nextSettings: PlatformSettings = {
+        ...currentSettings,
+        siteName: preservedSiteName,
+        siteLogoUrl: optimizedDataUrl,
+        brandingUpdatedAt: nowIso,
+        logoExplicitlyRemoved: false,
+      };
+
+      savePermanentBranding({
+        siteName: preservedSiteName,
+        siteLogoUrl: optimizedDataUrl,
+        brandingUpdatedAt: nowIso,
+        logoExplicitlyRemoved: false,
+      });
+
+      setExternalLogoUrlDraft('');
+      onUpdateSettings(nextSettings);
+      const synced = await syncSettingsToFirestore(nextSettings);
+
+      setBrandingSyncNotice(
+        synced
+          ? isAr
+            ? '✅ تم رفع وتثبيت اللوجو الجديد واسم الموقع في السيرفر وقاعدة البيانات بشكل دائم!'
+            : '✅ New logo & site name permanently pinned to Firebase server!'
+          : isAr
+            ? '✅ تم حفظ وتثبيت اللوجو الجديد واسم الموقع بشكل دائم!'
+            : '✅ New logo & site name permanently saved!'
+      );
+      showSavedFeedback('تم رفع وتثبيت لوجو الموقع بشكل دائم ✓', 'Site logo permanently saved ✓');
+    } catch {
+      setBrandingSyncNotice(
+        isAr ? '⚠️ حدث خطأ أثناء معالجة الصورة.' : '⚠️ Error processing logo image.'
+      );
+    } finally {
+      setIsSavingBranding(false);
+    }
+  };
+
+  const handleSaveBrandingPermanently = async () => {
+    if (!hasAdminPermission(currentUser, 'manage_branding')) return;
+    setIsSavingBranding(true);
+    const currentSettings = latestSettingsRef.current;
+    const vault = loadPermanentBranding();
+
+    const finalSiteName = sanitizeSiteName(
+      brandNameDraft || currentSettings.siteName || vault?.siteName || 'MotionTools'
+    );
+    const candidateExternal = sanitizeSiteLogoUrl(externalLogoUrlDraft);
+    const finalLogoUrl =
+      candidateExternal ||
+      sanitizeSiteLogoUrl(currentSettings.siteLogoUrl) ||
+      (currentSettings.logoExplicitlyRemoved ? '' : vault?.siteLogoUrl || '');
+
+    const nowIso = new Date().toISOString();
+    const nextSettings: PlatformSettings = {
+      ...currentSettings,
+      siteName: finalSiteName,
+      siteLogoUrl: finalLogoUrl,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: finalLogoUrl ? false : Boolean(currentSettings.logoExplicitlyRemoved),
+    };
+
+    savePermanentBranding({
+      siteName: nextSettings.siteName,
+      siteLogoUrl: nextSettings.siteLogoUrl,
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: nextSettings.logoExplicitlyRemoved,
+    });
+
+    onUpdateSettings(nextSettings);
+    const ok = await syncSettingsToFirestore(nextSettings);
+    setIsSavingBranding(false);
+    setBrandingSyncNotice(
+      ok
+        ? isAr
+          ? `✅ تم حفظ وتثبيت اسم الموقع (${finalSiteName}) واللوجو في السيرفر بشكل دائم ولن يتم حذفهما!`
+          : `✅ Site name (${finalSiteName}) and logo permanently pinned on server!`
+        : isAr
+          ? `✅ تم تثبيت اسم الموقع (${finalSiteName}) واللوجو بشكل دائم!`
+          : `✅ Site name & logo permanently saved!`
+    );
+    showSavedFeedback(
+      'تم حفظ وتثبيت اسم ولوجو الموقع في السيرفر بشكل دائم ✓',
+      'Branding permanently pinned to server ✓'
+    );
+  };
+
+  const handleResetLogoToDefault = async () => {
+    if (!hasAdminPermission(currentUser, 'manage_branding')) return;
+    const currentSettings = latestSettingsRef.current;
+    const preservedSiteName = sanitizeSiteName(
+      brandNameDraft || currentSettings.siteName || 'MotionTools'
+    );
+    const nowIso = new Date().toISOString();
+    const nextSettings: PlatformSettings = {
+      ...currentSettings,
+      siteName: preservedSiteName,
+      siteLogoUrl: '',
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: true,
+    };
+    setExternalLogoUrlDraft('');
+    savePermanentBranding({
+      siteName: preservedSiteName,
+      siteLogoUrl: '',
+      brandingUpdatedAt: nowIso,
+      logoExplicitlyRemoved: true,
+    });
+    onUpdateSettings(nextSettings);
+    await syncSettingsToFirestore(nextSettings);
+    setBrandingSyncNotice(
+      isAr
+        ? '🔄 تمت إزالة الصورة المرفوعة واستعادة اللوجو الافتراضي للموقع.'
+        : '🔄 Uploaded logo removed and default logo restored.'
+    );
+    showSavedFeedback('تمت استعادة اللوجو الافتراضي', 'Default logo restored');
   };
 
   const handleSendNotification = (e: React.FormEvent) => {
@@ -2958,9 +3181,77 @@ export default function AdminDashboardModal({
                   padding: '16px',
                 }}
               >
-                <h3 style={{ margin: '0 0 12px', fontSize: '15px', color: '#c4b5fd' }}>
-                  {isAr ? '🎨 تغيير اسم الموقع ولوجو الموقع' : '🎨 Website Name & Logo Branding'}
-                </h3>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '15px', color: '#c4b5fd' }}>
+                      {isAr ? '🎨 تغيير اسم الموقع ولوجو الموقع (حفظ دائم في السيرفر)' : '🎨 Website Name & Logo Branding (Permanent Server Sync)'}
+                    </h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '11.5px', color: '#94a3b8' }}>
+                      {isAr
+                        ? 'عند رفع صورة اللوجو أو تعديل اسم الموقع يتم ضغط الصورة تلقائياً وحفظها وتثبيتها بشكل دائم في السيرفر دون أن تُحذف عند تغيير الاسم.'
+                        : 'Uploaded logos are automatically optimized and permanently pinned to the server so changing the site name never deletes your logo.'}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    id="saveBrandingPermanentBtn"
+                    disabled={isSavingBranding}
+                    onClick={handleSaveBrandingPermanently}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: '10px',
+                      background: 'linear-gradient(135deg, #10b981, #059669)',
+                      border: '1px solid #34d399',
+                      color: '#fff',
+                      fontWeight: 800,
+                      fontSize: '12.5px',
+                      cursor: isSavingBranding ? 'wait' : 'pointer',
+                      boxShadow: '0 4px 14px rgba(16, 185, 129, 0.3)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <span>💾</span>
+                    <span>
+                      {isSavingBranding
+                        ? isAr
+                          ? 'جاري التثبيت في السيرفر...'
+                          : 'Pinning to Server...'
+                        : isAr
+                          ? 'حفظ وتثبيت الاسم واللوجو بشكل دائم'
+                          : 'Save & Pin Name & Logo Permanently'}
+                    </span>
+                  </button>
+                </div>
+
+                {brandingSyncNotice && (
+                  <div
+                    id="brandingServerSyncStatus"
+                    style={{
+                      marginBottom: '14px',
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      background: 'rgba(16, 185, 129, 0.14)',
+                      border: '1px solid rgba(16, 185, 129, 0.45)',
+                      color: '#6ee7b7',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    {brandingSyncNotice}
+                  </div>
+                )}
 
                 <div
                   style={{
@@ -2971,39 +3262,71 @@ export default function AdminDashboardModal({
                   }}
                 >
                   <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#9494aa', marginBottom: '6px' }}>
+                    <label
+                      htmlFor="adminSiteNameInput"
+                      style={{ display: 'block', fontSize: '12px', color: '#9494aa', marginBottom: '6px', fontWeight: 700 }}
+                    >
                       {isAr ? 'اسم الموقع (يظهر في الشريط العلوي والعنوان):' : 'Website Name:'}
                     </label>
                     <input
+                      id="adminSiteNameInput"
                       type="text"
-                      value={settings.siteName}
+                      value={brandNameDraft}
                       placeholder="MotionTools"
-                      onChange={(e) => {
-                        onUpdateSettings({ ...settings, siteName: e.target.value });
-                        showSavedFeedback('تم تحديث اسم الموقع ✓', 'Site name updated ✓');
-                      }}
+                      onChange={(e) => handleSiteNameChange(e.target.value)}
                     />
 
                     <label
+                      htmlFor="adminExternalLogoUrlInput"
                       style={{
                         display: 'block',
                         fontSize: '12px',
                         color: '#9494aa',
                         marginTop: '14px',
                         marginBottom: '6px',
+                        fontWeight: 700,
                       }}
                     >
-                      {isAr ? 'رابط صورة اللوجو (أو ارفع صورة من جهازك بالأسفل):' : 'Logo Image URL:'}
+                      {isAr ? 'رابط صورة اللوجو الخارجي (اختياري - أو ارفع صورة من جهازك):' : 'External Logo Image URL (Optional):'}
                     </label>
                     <input
+                      id="adminExternalLogoUrlInput"
                       type="text"
-                      value={settings.siteLogoUrl}
-                      placeholder="https://example.com/logo.png"
-                      onChange={(e) => {
-                        onUpdateSettings({ ...settings, siteLogoUrl: e.target.value });
-                        showSavedFeedback('تم تحديث اللوجو ✓', 'Logo updated ✓');
-                      }}
+                      value={externalLogoUrlDraft}
+                      placeholder={
+                        settings.siteLogoUrl?.startsWith('data:image/')
+                          ? isAr
+                            ? '✅ تم رفع وتثبيت صورة لوجو من جهازك بنجاح'
+                            : '✅ Custom uploaded logo image is active'
+                          : 'https://example.com/logo.png'
+                      }
+                      onChange={(e) => handleExternalLogoUrlChange(e.target.value)}
                     />
+
+                    {settings.siteLogoUrl && (
+                      <div
+                        style={{
+                          marginTop: '8px',
+                          fontSize: '11px',
+                          color: '#6ee7b7',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontWeight: 700,
+                        }}
+                      >
+                        <span>📌</span>
+                        <span>
+                          {settings.siteLogoUrl.startsWith('data:image/')
+                            ? isAr
+                              ? 'حالة اللوجو: صورة مرفوعة من جهازك ومثبتة في السيرفر بشكل دائم'
+                              : 'Logo Status: Uploaded image permanently pinned on server'
+                            : isAr
+                              ? 'حالة اللوجو: رابط صورة خارجي مثبت في السيرفر'
+                              : 'Logo Status: External logo URL pinned on server'}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div
@@ -3018,10 +3341,11 @@ export default function AdminDashboardModal({
                       gap: '10px',
                     }}
                   >
-                    <div style={{ fontSize: '12px', color: '#9494aa' }}>
-                      {isAr ? 'معاينة اللوجو والاسم الحالي:' : 'Live Brand Preview:'}
+                    <div style={{ fontSize: '12px', color: '#9494aa', fontWeight: 700 }}>
+                      {isAr ? 'معاينة اللوجو والاسم المثبت حالياً:' : 'Live Pinned Brand Preview:'}
                     </div>
                     <div
+                      id="adminBrandingLivePreviewBox"
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -3034,11 +3358,12 @@ export default function AdminDashboardModal({
                     >
                       {settings.siteLogoUrl ? (
                         <img
+                          id="adminPreviewLogoImg"
                           src={settings.siteLogoUrl}
                           alt="Site Logo"
                           style={{
-                            width: '28px',
-                            height: '28px',
+                            width: '30px',
+                            height: '30px',
                             objectFit: 'contain',
                             borderRadius: '6px',
                           }}
@@ -3054,46 +3379,46 @@ export default function AdminDashboardModal({
                           }}
                         />
                       )}
-                      <span style={{ fontWeight: 800, fontSize: '16px', color: '#fff' }}>
-                        {settings.siteName || 'MotionTools'}
+                      <span id="adminPreviewSiteNameText" style={{ fontWeight: 800, fontSize: '16px', color: '#fff' }}>
+                        {brandNameDraft || settings.siteName || 'MotionTools'}
                       </span>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
                       <button
                         type="button"
+                        id="uploadLogoFromDeviceBtn"
                         onClick={() => logoFileInputRef.current?.click()}
                         style={{
-                          padding: '6px 14px',
+                          padding: '7px 14px',
                           borderRadius: '8px',
                           background: '#7c5cff',
                           border: 0,
                           color: '#fff',
-                          fontWeight: 600,
+                          fontWeight: 700,
                           cursor: 'pointer',
                           fontSize: '12px',
                         }}
                       >
-                        {isAr ? '📁 رفع صورة لوجو من الجهاز' : '📁 Upload Logo Image'}
+                        {isAr ? '📁 رفع وتثبيت صورة لوجو من الجهاز' : '📁 Upload & Pin Logo Image'}
                       </button>
                       {settings.siteLogoUrl && (
                         <button
                           type="button"
-                          onClick={() => {
-                            onUpdateSettings({ ...settings, siteLogoUrl: '' });
-                            showSavedFeedback('تمت استعادة اللوجو الافتراضي', 'Default logo restored');
-                          }}
+                          id="resetSiteLogoBtn"
+                          onClick={handleResetLogoToDefault}
                           style={{
-                            padding: '6px 12px',
+                            padding: '7px 12px',
                             borderRadius: '8px',
                             background: '#222230',
                             border: '1px solid #3a3a4e',
                             color: '#fca5a5',
                             cursor: 'pointer',
                             fontSize: '12px',
+                            fontWeight: 700,
                           }}
                         >
-                          {isAr ? 'حذف اللوجو' : 'Reset Logo'}
+                          {isAr ? '🗑️ حذف اللوجو' : '🗑️ Remove Logo'}
                         </button>
                       )}
                       <input
