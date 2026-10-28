@@ -922,6 +922,164 @@ export function computeAutoCropDrawRect(
   };
 }
 
+/**
+ * Distinguishes whether a PK-header (ZIP) container is an SVGA 1.x animation file
+ * (which contains movie.binary or movie.spec at root) or a closed/zipped archive
+ * containing gift files and folders (e.g. Gifts_Folders_And_Images.zip).
+ */
+export function classifyZipContainer(entryPaths: string[], fileName = ''): 'svga1' | 'archive' {
+  const normalized = (entryPaths || []).map((p) => String(p || '').replace(/^\/+/, '').trim());
+  const hasSvgaRootSpec = normalized.some(
+    (p) => p === 'movie.binary' || p === 'movie.spec'
+  );
+  if (hasSvgaRootSpec) {
+    return 'svga1';
+  }
+  return 'archive';
+}
 
+export interface FilteredArchiveEntries {
+  giftPaths: string[];
+  nestedZipPaths: string[];
+  candidateImagePaths: string[];
+  ignoredPaths: string[];
+}
 
+/**
+ * Filters internal file paths from a closed ZIP archive or folder so all project gift files
+ * (SVGA, PAG, VAP, YYEVA, MP4, Lottie JSON, GIF, APNG, SVG, nested ZIPs) are extracted for display
+ * while OS metadata and static companion thumbnails (.jpg/.jpeg) are skipped.
+ */
+export function filterExtractableArchiveEntries(entryPaths: string[]): FilteredArchiveEntries {
+  const giftPaths: string[] = [];
+  const nestedZipPaths: string[] = [];
+  const candidateImagePaths: string[] = [];
+  const ignoredPaths: string[] = [];
 
+  for (const rawPath of entryPaths || []) {
+    const p = String(rawPath || '').trim();
+    if (!p || p.endsWith('/')) {
+      ignoredPaths.push(rawPath);
+      continue;
+    }
+    const clean = p.replace(/\\/g, '/');
+    const parts = clean.split('/').filter(Boolean);
+    const base = parts[parts.length - 1] || '';
+
+    // Ignore macOS / Windows hidden system files
+    if (
+      clean.includes('__MACOSX/') ||
+      base.startsWith('._') ||
+      base === '.DS_Store' ||
+      base.toLowerCase() === 'thumbs.db' ||
+      base.toLowerCase() === 'desktop.ini'
+    ) {
+      ignoredPaths.push(rawPath);
+      continue;
+    }
+
+    const extMatch = base.match(/\.([^.]+)$/);
+    const ext = extMatch ? extMatch[1].toLowerCase() : '';
+
+    if (ext === 'zip') {
+      nestedZipPaths.push(rawPath);
+    } else if (
+      ['svga', 'pag', 'vap', 'yyeva', 'mp4', 'webm', 'mov', 'm4v', 'json', 'gif', 'apng', 'svg', 'webpa', 'bin', 'dat'].includes(
+        ext
+      )
+    ) {
+      giftPaths.push(rawPath);
+    } else if (ext === 'png' || ext === 'webp') {
+      // May be animated APNG / animated WebP or a static preview image exported alongside a gift
+      candidateImagePaths.push(rawPath);
+    } else {
+      ignoredPaths.push(rawPath);
+    }
+  }
+
+  return { giftPaths, nestedZipPaths, candidateImagePaths, ignoredPaths };
+}
+
+/**
+ * Extracts a clean display filename from an internal archive or folder path.
+ */
+export function deriveCleanGiftNameFromArchivePath(entryPath: string): string {
+  const clean = String(entryPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = clean.split('/').filter(Boolean);
+  return parts[parts.length - 1] || 'gift';
+}
+
+/**
+ * Unwraps a locked or header-padded gift binary payload if a recognizable gift magic signature
+ * (zlib SVGA, MP4/VAP ftyp, PAG, or PK zip) is embedded within the first 512 bytes.
+ */
+export function unwrapLockedGiftPayload(bytes: Uint8Array): {
+  bytes: Uint8Array;
+  unwrapped: boolean;
+  detectedSignature: 'svga_zlib' | 'pk' | 'mp4_ftyp' | 'pag' | null;
+} {
+  if (!bytes || bytes.length < 8) {
+    return { bytes, unwrapped: false, detectedSignature: null };
+  }
+
+  const isZlibHeader = (b0: number, b1: number) =>
+    b0 === 0x78 &&
+    (b1 === 0x01 || b1 === 0x5e || b1 === 0x9c || b1 === 0xda) &&
+    (b0 * 256 + b1) % 31 === 0;
+
+  const isPkHeader = (i: number) =>
+    i + 4 <= bytes.length &&
+    bytes[i] === 0x50 &&
+    bytes[i + 1] === 0x4b &&
+    bytes[i + 2] === 0x03 &&
+    bytes[i + 3] === 0x04;
+
+  const isFtypAt = (i: number) =>
+    i >= 4 &&
+    i + 4 <= bytes.length &&
+    bytes[i] === 0x66 && // 'f'
+    bytes[i + 1] === 0x74 && // 't'
+    bytes[i + 2] === 0x79 && // 'y'
+    bytes[i + 3] === 0x70; // 'p'
+
+  const isPagHeader = (i: number) =>
+    i + 4 <= bytes.length &&
+    bytes[i] === 0x50 && // 'P'
+    bytes[i + 1] === 0x41 && // 'A'
+    bytes[i + 2] === 0x47 && // 'G'
+    bytes[i + 3] >= 1 &&
+    bytes[i + 3] <= 10;
+
+  // Check offset 0 first
+  if (isZlibHeader(bytes[0], bytes[1])) {
+    return { bytes, unwrapped: false, detectedSignature: 'svga_zlib' };
+  }
+  if (isPkHeader(0)) {
+    return { bytes, unwrapped: false, detectedSignature: 'pk' };
+  }
+  if (isFtypAt(4)) {
+    return { bytes, unwrapped: false, detectedSignature: 'mp4_ftyp' };
+  }
+  if (isPagHeader(0)) {
+    return { bytes, unwrapped: false, detectedSignature: 'pag' };
+  }
+
+  // Scan up to 512 bytes for an embedded header
+  const maxScan = Math.min(bytes.length - 8, 512);
+  for (let i = 1; i <= maxScan; i++) {
+    if (isFtypAt(i + 4)) {
+      return { bytes: bytes.subarray(i), unwrapped: true, detectedSignature: 'mp4_ftyp' };
+    }
+    if (isPkHeader(i)) {
+      return { bytes: bytes.subarray(i), unwrapped: true, detectedSignature: 'pk' };
+    }
+    if (isPagHeader(i)) {
+      return { bytes: bytes.subarray(i), unwrapped: true, detectedSignature: 'pag' };
+    }
+    if (isZlibHeader(bytes[i], bytes[i + 1])) {
+      return { bytes: bytes.subarray(i), unwrapped: true, detectedSignature: 'svga_zlib' };
+    }
+  }
+
+  return { bytes, unwrapped: false, detectedSignature: null };
+}

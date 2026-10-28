@@ -66,7 +66,7 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
   <button id="bgb">🖼 الخلفية</button>
   <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> 💧 العلامة المائية</button>
   <button id="durBtn" title="تفعيل وضع تحديد مدة الفيديو لعرض التأثير وتصدير الفيديو بالمدة التي تختارها في أي صيغة هدية"><span class="wm-dot" id="durdot"></span> <span id="durBtnTxt">⏱️ مدة الفيديو: الأصلية</span></button>
-  <button id="pwb" title="اختر ملف libpag.wasm">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
+  <button id="pwb" title="اختر ملف libpag.wasm" style="display:none">⚙ محرك PAG</button><input type="file" id="pwi" accept=".wasm" hidden>
   <div class="pop" id="pop">
    <div class="sw" id="sw"></div>
    <div class="r"><input type="color" id="c1" value="#141a30"><input type="color" id="c2" value="#4b2f8a"><select id="bm"><option value="color">لون</option><option value="grad">تدرّج</option><option value="img">صورة</option><option value="tr">شفافة</option></select></div>
@@ -144,32 +144,15 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
 <input type="file" id="fi" multiple hidden><input type="file" id="bfi" accept="image/*" hidden>
 <div class="bar" id="bar" style="display:none">
  <button id="all">☑ تحديد الكل</button><button id="del">🗑 حذف المحدد</button><span id="cnt"></span>
- <button id="qOne" title="تصدير جميع الهدايا المعروضة جنب بعض في ملف فيديو واحد" style="border-color:rgba(138,112,255,.45);background:rgba(138,112,255,.12);color:#e9d5ff">🎞️ الكل في فيديو واحد (جنب بعض)</button>
- <button id="qExtract" title="استخراج ملفات SVGA في فولدر والملفات الأخرى في فولدر مع صور الهدايا الواضحة" style="border-color:rgba(16,185,129,.45);background:rgba(16,185,129,.12);color:#d1fae5">📦 استخراج الفولدرات + الصور</button>
  <span class="sp"></span>
  <button id="pa">▶ تشغيل الكل</button><button id="sa">⏸ إيقاف الكل</button><button id="ra">🔄 إعادة الكل</button>
  <button id="muBtn" class="pill" style="border:1px solid var(--ac);background:#20183b;color:#f3e8ff;display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 12px;border-radius:10px" title="كتم أو تشغيل صوت المعاينة">🔇 الصوت: مكتوم (اضغط للتشغيل)</button>
  <input type="checkbox" id="mu" checked hidden>
  <label>الحجم <input type="range" id="zm" min="130" max="420" value="200"></label>
  <label>إطارات <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
- <div class="dur-inline" id="durInlineBox">
-  <button type="button" id="durBarToggle" class="dur-tgl" title="اضغط لتفعيل أو إيقاف تحديد مدة الفيديو (عند الإيقاف يتم التصدير بالمدة الأصلية)">
-   <span class="wm-dot" id="durBarDot"></span>
-   <span id="durBarLbl">⏱️ تحديد مدة الفيديو: متوقف (الأصلية)</span>
-  </button>
-  <div id="durBarControls" class="dur-ctrls" style="display:none">
-   <div class="dur-chips" id="durBarChips">
-    <button type="button" data-dsec="3">3ث</button>
-    <button type="button" data-dsec="5" class="act">5ث</button>
-    <button type="button" data-dsec="8">8ث</button>
-    <button type="button" data-dsec="10">10ث</button>
-    <button type="button" data-dsec="15">15ث</button>
-   </div>
-   <label style="font-size:12px;color:#e9d5ff;font-weight:700">المدة <input type="number" id="sd" value="5" min="0.5" max="120" step="0.5" style="width:58px;border:1px solid #a855f7;border-radius:9px;padding:4px 6px;background:#0b0e1a;color:#fff;font-weight:700;text-align:center"> ث</label>
-  </div>
- </div>
+ <input type="number" id="sd" value="5" min="0.5" max="120" step="0.5" hidden>
 </div>
-<div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG</div><div style="font-size:12px;opacity:.7;margin-top:6px">لا يتم رفع الصور الثابتة (PNG / JPG)</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
+<div id="drop"><div style="font-size:46px">📦</div><h2>اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG · ZIP</div><div style="font-size:12px;opacity:.75;margin-top:6px">يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
 <div id="grid"></div>
 <div id="dock"><div class="r"><b id="dt">…</b><span style="margin-inline-start:auto"></span><button id="cx">إلغاء</button><button class="p" id="sv" style="display:none">⬇ حفظ الملف</button></div><div id="pw"><div id="pg"></div></div><small id="ds" style="color:var(--mu)"></small></div>
 <script src="/mp4-muxer.js"></script>
@@ -512,9 +495,131 @@ async function detectAlpha(v){
  for(const p of [.25,.6]){await new Promise(r=>{v.onseeked=r;v.currentTime=(v.duration||1)*p;setTimeout(r,350)});x.drawImage(v,0,0,cw,ch);const d=x.getImageData(0,0,cw,ch).data;
   for(const l in sc){const e=evalL(d,cw,ch,l);if(e.na<cw*ch*.0005)continue;n[l]++;if(e.iou<.3||e.ga<.9)bad[l]=1;sc[l]+=e.ga-e.gc}}
  let best=null,bs=.12;for(const l in sc)if(!bad[l]&&n[l]&&sc[l]/n[l]>=bs){bs=sc[l]/n[l];best=l}return best}
+function unwrapGiftBytes(u){
+ if(!u||u.length<8)return u;
+ const isZlib=(b0,b1)=>b0===0x78&&(b1===0x01||b1===0x5e||b1===0x9c||b1===0xda)&&((b0*256+b1)%31===0);
+ const isPk=i=>i+4<=u.length&&u[i]===0x50&&u[i+1]===0x4B&&u[i+2]===0x03&&u[i+3]===0x04;
+ const isFtyp=i=>i>=4&&i+4<=u.length&&u[i]===0x66&&u[i+1]===0x74&&u[i+2]===0x79&&u[i+3]===0x70;
+ const isPag=i=>i+4<=u.length&&u[i]===0x50&&u[i+1]===0x41&&u[i+2]===0x47&&u[i+3]>=1&&u[i+3]<=10;
+ if(isZlib(u[0],u[1])||isPk(0)||isFtyp(4)||isPag(0)||sniff(u))return u;
+ const maxScan=Math.min(u.length-8,512);
+ for(let i=1;i<=maxScan;i++){
+  if(isFtyp(i+4)||isPk(i)||isPag(i)||isZlib(u[i],u[i+1]))return u.subarray(i);
+ }
+ return u;
+}
+async function unpackIncomingFilesAndArchives(fileList,depth){
+ depth=depth||0;
+ const outFiles=[];
+ let unpackedArchiveCount=0,extractedGiftCount=0;
+ for(const f of [...(fileList||[])]){
+  if(!f)continue;
+  const name=f.name||'gift';
+  const extMatch=name.match(/\.([^.]+)$/),ext=extMatch?extMatch[1].toLowerCase():'';
+  let isCandidateZip=(ext==='zip');
+  if(!isCandidateZip&&f.size>=4&&ext!=='mp4'&&ext!=='vap'&&ext!=='yyeva'){
+   try{
+    const h=new Uint8Array(await f.slice(0,4).arrayBuffer());
+    if(h[0]===0x50&&h[1]===0x4B&&h[2]===0x03&&h[3]===0x04)isCandidateZip=true;
+   }catch(e){}
+  }
+  if(isCandidateZip&&window.JSZip&&depth<4){
+   try{
+    const z=await JSZip.loadAsync(f);
+    const paths=Object.keys(z.files||{});
+    const normPaths=paths.map(p=>p.replace(/^\/+/,'').trim());
+    const isSvga1=normPaths.some(p=>p==='movie.binary'||p==='movie.spec');
+    if(isSvga1){
+     outFiles.push(f);
+     continue;
+    }
+    unpackedArchiveCount++;
+    for(const rawPath of paths){
+     const entry=z.files[rawPath];
+     if(!entry||entry.dir||rawPath.endsWith('/'))continue;
+     const clean=rawPath.replace(/\\/g,'/');
+     const parts=clean.split('/').filter(Boolean);
+     const base=parts[parts.length-1]||'';
+     if(!base||clean.includes('__MACOSX/')||base.startsWith('._')||base==='.DS_Store'||base.toLowerCase()==='thumbs.db'||base.toLowerCase()==='desktop.ini')continue;
+     const eMatch=base.match(/\.([^.]+)$/),eExt=eMatch?eMatch[1].toLowerCase():'';
+     if(eExt==='jpg'||eExt==='jpeg'||eExt==='txt'||eExt==='md'||eExt==='html')continue;
+     const rawBytes=new Uint8Array(await entry.async('arraybuffer'));
+     if(!rawBytes||rawBytes.length<4)continue;
+     // إذا كان بداخل الملف المغلق ملف ZIP داخلي آخر نفتح محتواه أيضاً
+     if((eExt==='zip'||(rawBytes[0]===0x50&&rawBytes[1]===0x4B&&rawBytes[2]===0x03&&rawBytes[3]===0x04))&&eExt!=='svga'){
+      const innerFile=new File([rawBytes],base,{type:'application/zip'});
+      const nested=await unpackIncomingFilesAndArchives([innerFile],depth+1);
+      if(nested.files.length){
+       outFiles.push(...nested.files);
+       extractedGiftCount+=nested.files.length;
+       continue;
+      }
+     }
+     const u=unwrapGiftBytes(rawBytes);
+     const fType=sniff(u);
+     // تخطي الصور الثابتة المرفقة مع الهدايا داخل الأرشيف (مثل صور المعاينة PNG) تلقائياً بدون إزعاج المستخدم
+     if(fType==='png'||fType==='jpg'||fType==='webp')continue;
+     if(fType||['svga','pag','vap','yyeva','mp4','webm','mov','m4v','json','gif','apng','svg','webpa'].includes(eExt)){
+      outFiles.push(new File([u],base,{type:MIME[fType]||''}));
+      extractedGiftCount++;
+     }
+    }
+    continue;
+   }catch(e){}
+  }
+  outFiles.push(f);
+ }
+ return{files:outFiles,unpackedArchiveCount,extractedGiftCount};
+}
+async function extractDroppedFilesAndFolders(dt){
+ if(!dt)return[];
+ if(dt.items&&dt.items.length){
+  const entries=[];
+  for(let i=0;i<dt.items.length;i++){
+   const it=dt.items[i];
+   if(it.kind==='file'&&typeof it.webkitGetAsEntry==='function'){
+    const ent=it.webkitGetAsEntry();
+    if(ent)entries.push(ent);
+   }
+  }
+  if(entries.some(e=>e&&e.isDirectory)){
+   const collected=[];
+   const walk=async(ent)=>{
+    if(!ent)return;
+    if(ent.isFile){
+     const file=await new Promise(res=>ent.file(res,()=>res(null)));
+     if(file){
+      const b=file.name||'';
+      if(!b.startsWith('._')&&b!=='.DS_Store'&&b.toLowerCase()!=='thumbs.db'&&!/\.(jpg|jpeg|png)$/i.test(b)){
+       collected.push(file);
+      }else if(/\.png$/i.test(b)){
+       try{
+        const u=new Uint8Array(await file.slice(0,256).arrayBuffer());
+        if(pngInfo(u).ac)collected.push(file);
+       }catch(e){}
+      }
+     }
+    }else if(ent.isDirectory&&typeof ent.createReader==='function'){
+     const reader=ent.createReader();
+     while(true){
+      const batch=await new Promise(res=>reader.readEntries(res,()=>res([])));
+      if(!batch||!batch.length)break;
+      for(const child of batch)await walk(child);
+     }
+    }
+   };
+   for(const ent of entries)await walk(ent);
+   if(collected.length)return collected;
+  }
+ }
+ return[...(dt.files||[])];
+}
 async function analyze(it){
  try{
-  const u=new Uint8Array(await it.file.arrayBuffer());let f=sniff(u);
+  const rawU=new Uint8Array(await it.file.arrayBuffer());
+  const u=unwrapGiftBytes(rawU);
+  if(u!==rawU)it.file=new File([u],it.name,{type:it.file.type||''});
+  let f=sniff(u);
   const extMatch=(it.name||'').match(/\.([^.]+)$/),ext=extMatch?extMatch[1].toLowerCase():'';
   if(!f&&(ext==='vap'||ext==='yyeva'))f='mp4';
   if(!f&&ext==='svga')f='svga';
@@ -550,7 +655,16 @@ async function analyze(it){
  }catch(e){it.err=e.message||String(e)}
 }
 async function addFiles(fl){
- const a=[...fl].map(f=>({id:nid++,file:f,name:f.name,fmt:'',sel:false,dur:0,vis:true,userPaused:false}));
+ const unpacked=await unpackIncomingFilesAndArchives(fl,0);
+ const effectiveFiles=unpacked.files;
+ if(unpacked.unpackedArchiveCount>0){
+  if(unpacked.extractedGiftCount>0){
+   toast(`📦 تم فتح ${unpacked.unpackedArchiveCount===1?'الملف المغلق':unpacked.unpackedArchiveCount+' ملفات مغلقة'} واستخراج ${unpacked.extractedGiftCount} هدية للعرض بنجاح`);
+  }else{
+   toast('⚠️ لم يتم العثور على ملفات هدايا مدعومة داخل الملف المغلق');
+  }
+ }
+ const a=[...effectiveFiles].map(f=>({id:nid++,file:f,name:f.name,fmt:'',sel:false,dur:0,vis:true,userPaused:false}));
  if(!a.length)return;
  items.push(...a);
  appendCards(a);
@@ -1024,7 +1138,7 @@ $('#durResetBtn').onclick=()=>{
  refreshCustomDurationUi();
  $('#durpop').classList.remove('o');
 };
-$('#durBarToggle').onclick=e=>{
+if($('#durBarToggle'))$('#durBarToggle').onclick=e=>{
  e.stopPropagation();
  customDur.enabled=!customDur.enabled;
  refreshCustomDurationUi();
@@ -1077,7 +1191,14 @@ $('#bfi').onchange=e=>{const f=e.target.files[0];if(!f)return;bg.url=URL.createO
 $('#up').onclick=$('#drop').onclick=()=>$('#fi').click();$('#fi').onchange=e=>{addFiles(e.target.files);e.target.value=''};
 addEventListener('dragover',e=>{if(e.dataTransfer?.types?.includes('Files')){e.preventDefault();$('#drop').classList.add('o')}});
 addEventListener('dragleave',()=>$('#drop').classList.remove('o'));
-addEventListener('drop',e=>{$('#drop').classList.remove('o');if(e.dataTransfer?.files?.length){e.preventDefault();addFiles(e.dataTransfer.files)}});
+addEventListener('drop',async e=>{
+ $('#drop').classList.remove('o');
+ if(e.dataTransfer&&(e.dataTransfer.files?.length||e.dataTransfer.items?.length)){
+  e.preventDefault();
+  const droppedFiles=await extractDroppedFilesAndFolders(e.dataTransfer);
+  if(droppedFiles&&droppedFiles.length)addFiles(droppedFiles);
+ }
+});
 $('#all').onclick=()=>{const v=!items.every(i=>i.sel);items.forEach(i=>{i.sel=v;const c=document.querySelector('.card[data-id="'+i.id+'"]');if(c){c.classList.toggle('sel',v);const ck=c.querySelector('.ck');if(ck)ck.checked=v}});updateBar()};
 $('#del').onclick=()=>{const rm=items.filter(i=>i.sel).map(i=>i.id);rm.forEach(removeCard)};
 const g=$('#grid');
@@ -1956,9 +2077,6 @@ syncModeUi();
 function isSvgaItem(it){
  return !!(it&&!it.err&&(it.fmt==='svga'||/\.svga$/i.test(it.name||'')));
 }
-
-$('#qOne').onclick=()=>{$('#mode').value='one';syncModeUi();$('#ex').click()};
-$('#qExtract').onclick=()=>{$('#mode').value='extract';syncModeUi();$('#ex').click()};
 
 $('#cx').onclick=()=>{sig.stop=true;$('#dock').style.display='none'};$('#sv').onclick=()=>out&&save(out.name,out.blob);
 $('#ex').onclick=async()=>{

@@ -24,6 +24,10 @@ import {
   resolveEffectiveGiftDuration,
   computeCustomPlaybackRate,
   mapExportFrameToNativeTime,
+  classifyZipContainer,
+  filterExtractableArchiveEntries,
+  deriveCleanGiftNameFromArchivePath,
+  unwrapLockedGiftPayload,
   type GiftStudioExportItemLike,
 } from './giftStudioUtils.ts';
 
@@ -275,7 +279,51 @@ test('custom video duration mode preserves original duration when OFF and overri
   assert.ok(Math.abs(tNativeMid - 1.0) < 0.001);
 });
 
+test('classifyZipContainer and filterExtractableArchiveEntries extract internal gifts from closed project archives', () => {
+  // 1. SVGA 1.0 ZIP container (has movie.binary at root) is classified as 'svga1'
+  assert.equal(classifyZipContainer(['movie.binary', 'image_0.png'], 'lion.svga'), 'svga1');
+  assert.equal(classifyZipContainer(['movie.spec', 'img.png'], 'effect.svga'), 'svga1');
 
+  // 2. Closed project archive (e.g. Gifts_Folders_And_Images.zip) is classified as 'archive'
+  const archiveEntries = [
+    'SVGA_Files/',
+    'SVGA_Files/top_settle.svga',
+    'SVGA_Files/top_settle.png',
+    'VAP_YYEVA_Files/',
+    'VAP_YYEVA_Files/dragon_effect.mp4',
+    'VAP_YYEVA_Files/dragon_effect.png',
+    'VAP_YYEVA_Files/magic_castle.vap',
+    'nested_pack.zip',
+    '__MACOSX/._top_settle.svga',
+    '.DS_Store',
+  ];
+  assert.equal(classifyZipContainer(archiveEntries, 'Gifts_Folders_And_Images.zip'), 'archive');
 
+  // 3. Filter extracts all inner gifts, nested ZIPs, and separates candidate images from junk
+  const filtered = filterExtractableArchiveEntries(archiveEntries);
+  assert.deepEqual(filtered.giftPaths, [
+    'SVGA_Files/top_settle.svga',
+    'VAP_YYEVA_Files/dragon_effect.mp4',
+    'VAP_YYEVA_Files/magic_castle.vap',
+  ]);
+  assert.deepEqual(filtered.nestedZipPaths, ['nested_pack.zip']);
+  assert.deepEqual(filtered.candidateImagePaths, [
+    'SVGA_Files/top_settle.png',
+    'VAP_YYEVA_Files/dragon_effect.png',
+  ]);
+  assert.equal(deriveCleanGiftNameFromArchivePath('SVGA_Files/top_settle.svga'), 'top_settle.svga');
+});
 
+test('unwrapLockedGiftPayload detects and extracts embedded gift bytes from header-wrapped files', () => {
+  // 12-byte custom lock prefix followed by zlib SVGA 2.0 header (0x78 0x9c)
+  const lockedSvga = new Uint8Array([
+    0x4c, 0x4f, 0x43, 0x4b, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x78, 0x9c, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60,
+  ]);
+  const res = unwrapLockedGiftPayload(lockedSvga);
+  assert.equal(res.unwrapped, true);
+  assert.equal(res.detectedSignature, 'svga_zlib');
+  assert.equal(res.bytes[0], 0x78);
+  assert.equal(res.bytes[1], 0x9c);
+});
 
