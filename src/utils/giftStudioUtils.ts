@@ -460,4 +460,385 @@ export function resampleChannelFloat32(
   return out;
 }
 
+export type GiftStudioExportMode = 'gi' | 'pack' | 'sep' | 'one' | 'extract';
+
+export interface GiftStudioExportItemLike {
+  id?: number;
+  name: string;
+  fmt: string;
+  kind?: string;
+  sel?: boolean;
+  err?: string;
+  w?: number;
+  h?: number;
+  dur?: number;
+  alpha?: string;
+  vapi?: unknown;
+  yyi?: unknown;
+  yy?: boolean;
+  isVap?: boolean;
+}
+
+export interface ExportModeMeta {
+  value: GiftStudioExportMode;
+  optionLabel: string;
+  buttonLabel: string;
+  requiresVideoEncoder: boolean;
+  usesResolutionSelect: boolean;
+}
+
+export const GIFT_STUDIO_EXPORT_MODES: ExportModeMeta[] = [
+  {
+    value: 'gi',
+    optionLabel: '🎁 هدية + 🖼 صورة (مجلد)',
+    buttonLabel: '⬇ تصدير هدية + صورة',
+    requiresVideoEncoder: false,
+    usesResolutionSelect: true,
+  },
+  {
+    value: 'pack',
+    optionLabel: '🎁 هدية + 🎬 فيديو + 🖼 صورة',
+    buttonLabel: '⬇ تصدير الحزمة الشاملة',
+    requiresVideoEncoder: true,
+    usesResolutionSelect: true,
+  },
+  {
+    value: 'sep',
+    optionLabel: '🎬 فيديو لكل هدية (منفصل)',
+    buttonLabel: '⬇ تصدير الفيديوهات',
+    requiresVideoEncoder: true,
+    usesResolutionSelect: true,
+  },
+  {
+    value: 'one',
+    optionLabel: '🎞️ جميع الهدايا في فيديو واحد (جنب بعض)',
+    buttonLabel: '🎞️ تصدير في فيديو واحد',
+    requiresVideoEncoder: true,
+    usesResolutionSelect: true,
+  },
+  {
+    value: 'extract',
+    optionLabel: '📦 استخراج الهدايا في فولدرات + الصور (SVGA / VAP)',
+    buttonLabel: '📦 استخراج الفولدرات + الصور',
+    requiresVideoEncoder: false,
+    usesResolutionSelect: true,
+  },
+];
+
+export function getExportModeMeta(mode: string): ExportModeMeta {
+  return (
+    GIFT_STUDIO_EXPORT_MODES.find((m) => m.value === mode) ||
+    GIFT_STUDIO_EXPORT_MODES[0]
+  );
+}
+
+export function isSvgaGiftItem(item: GiftStudioExportItemLike): boolean {
+  if (!item || item.err) return false;
+  return item.fmt === 'svga' || /\.svga$/i.test(item.name || '');
+}
+
+export function isVapOrYyevaGiftItem(item: GiftStudioExportItemLike): boolean {
+  if (!item || item.err) return false;
+  if (item.kind === 'VAP' || item.kind === 'YYEVA') return true;
+  if (item.vapi || item.yyi || item.yy || item.isVap) return true;
+  if (/\.(vap|yyeva)$/i.test(item.name || '')) return true;
+  if (item.fmt === 'mp4' && item.alpha && item.alpha !== 'N') return true;
+  return false;
+}
+
+/**
+ * Classifies which folder inside the unified extraction ZIP a gift belongs to.
+ * SVGA files go into 'SVGA_Files', while VAP/YYEVA/MP4 and other formats go into 'VAP_YYEVA_Files'.
+ */
+export function classifyExtractedGiftFolder(item: GiftStudioExportItemLike): 'SVGA_Files' | 'VAP_YYEVA_Files' {
+  return isSvgaGiftItem(item) ? 'SVGA_Files' : 'VAP_YYEVA_Files';
+}
+
+export interface ExtractedGiftEntryPaths {
+  folder: 'SVGA_Files' | 'VAP_YYEVA_Files';
+  filePath: string;
+  imagePath: string;
+}
+
+/**
+ * Computes the ZIP paths for each gift and its high-clarity PNG snapshot so that
+ * SVGA files and their PNG images live together in `SVGA_Files/`, and VAP/YYEVA/other files
+ * and their PNG images live together in `VAP_YYEVA_Files/`.
+ */
+export function buildExtractedGiftAndImagePaths(
+  items: GiftStudioExportItemLike[]
+): ExtractedGiftEntryPaths[] {
+  const used = new Set<string>();
+  return (items || []).map((item, idx) => {
+    const isSvga = isSvgaGiftItem(item);
+    const folder = classifyExtractedGiftFolder(item);
+    const extMatch = (item.name || '').match(/(\.[^.]+)$/);
+    const ext = isSvga ? '.svga' : extMatch ? extMatch[1] : '.mp4';
+    const rawBase = (item.name || '').replace(/\.[^.]+$/, '').trim() || `gift_${idx + 1}`;
+    let k = rawBase;
+    let n = 1;
+    while (used.has(k.toLowerCase())) {
+      n++;
+      k = `${rawBase}_${n}`;
+    }
+    used.add(k.toLowerCase());
+    return {
+      folder,
+      filePath: `${folder}/${k}${ext}`,
+      imagePath: `${folder}/${k}.png`,
+    };
+  });
+}
+
+/**
+ * Resolves the target items list for a given export mode.
+ */
+export function resolveItemsForExportMode<T extends GiftStudioExportItemLike>(
+  items: T[],
+  mode: GiftStudioExportMode
+): T[] {
+  const valid = (items || []).filter((i) => i && !i.err && i.fmt);
+  const selected = valid.filter((i) => i.sel);
+
+  if (mode === 'one') {
+    // For "All displayed files in one video", merge all valid items unless 2+ specific items are checked
+    return selected.length > 1 ? selected : valid;
+  }
+
+  return selected.length > 0 ? selected : valid;
+}
+
+/**
+ * Generates unique, collision-free file names inside a single extracted folder.
+ */
+export function buildUniqueExtractedFileNames(
+  names: string[],
+  defaultExt: string
+): string[] {
+  const used = new Set<string>();
+  const cleanDefaultExt = defaultExt.startsWith('.') ? defaultExt : `.${defaultExt}`;
+  return names.map((rawName, idx) => {
+    const match = (rawName || '').match(/(\.[^.]+)$/);
+    const ext = match ? match[1] : cleanDefaultExt;
+    const finalExt = defaultExt === '.svga' ? '.svga' : ext;
+    const rawBase = (rawName || '').replace(/\.[^.]+$/, '').trim() || `file_${idx + 1}`;
+    let candidate = rawBase;
+    let counter = 1;
+    while (used.has(`${candidate.toLowerCase()}${finalExt.toLowerCase()}`)) {
+      counter++;
+      candidate = `${rawBase}_${counter}`;
+    }
+    const fullName = `${candidate}${finalExt}`;
+    used.add(fullName.toLowerCase());
+    return fullName;
+  });
+}
+
+export interface SideBySideCellRect {
+  index: number;
+  row: number;
+  col: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SideBySideVideoLayout {
+  canvasWidth: number;
+  canvasHeight: number;
+  cols: number;
+  rows: number;
+  cells: SideBySideCellRect[];
+}
+
+/**
+ * Computes a side-by-side layout for displaying multiple gifts simultaneously in one video frame.
+ * - For 1..4 items: arranges them in a single horizontal side-by-side row (cols = N, rows = 1).
+ * - For 5+ items: arranges them in a balanced wide multi-column grid so all gifts are clearly visible side-by-side.
+ * Always produces even canvasWidth and canvasHeight within hardware H.264 limits.
+ */
+export function computeSideBySideVideoLayout(
+  itemCount: number,
+  baseHeight = 720,
+  firstItemWidth = 720,
+  firstItemHeight = 720
+): SideBySideVideoLayout {
+  const count = Math.max(1, Math.round(itemCount || 1));
+  const safeBaseH = Math.max(240, Math.min(2160, Math.round((baseHeight || 720) / 2) * 2));
+
+  if (count === 1) {
+    const aspect = (firstItemWidth > 0 && firstItemHeight > 0) ? firstItemWidth / firstItemHeight : 1;
+    const w = Math.max(64, Math.min(3840, Math.round((safeBaseH * aspect) / 2) * 2));
+    return {
+      canvasWidth: w,
+      canvasHeight: safeBaseH,
+      cols: 1,
+      rows: 1,
+      cells: [{ index: 0, row: 0, col: 0, x: 0, y: 0, width: w, height: safeBaseH }],
+    };
+  }
+
+  const cols = count <= 4 ? count : Math.min(5, Math.ceil(Math.sqrt(count * 1.6)));
+  const rows = Math.ceil(count / cols);
+
+  // Give each side-by-side cell a generous square-ish / portrait-friendly slot while keeping total canvas within 1920x1080 (or 2560x1440 for high res)
+  const maxCanvasW = safeBaseH > 1080 ? 2560 : 1920;
+  const maxCanvasH = safeBaseH > 1080 ? 1440 : 1080;
+
+  const idealCellH = rows === 1 ? safeBaseH : Math.max(240, Math.floor(maxCanvasH / rows));
+  const idealCellW = Math.max(240, Math.min(idealCellH, Math.floor(maxCanvasW / cols)));
+
+  const canvasWidth = Math.max(64, Math.min(maxCanvasW, Math.round((idealCellW * cols) / 2) * 2));
+  const canvasHeight = Math.max(64, Math.min(maxCanvasH, Math.round((idealCellH * rows) / 2) * 2));
+
+  const cellW = canvasWidth / cols;
+  const cellH = canvasHeight / rows;
+
+  const cells: SideBySideCellRect[] = [];
+  for (let i = 0; i < count; i++) {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    // Center items on the last row if it is partially filled
+    const itemsInRow = row === rows - 1 ? count - row * cols : cols;
+    const rowOffsetX = ((cols - itemsInRow) * cellW) / 2;
+    cells.push({
+      index: i,
+      row,
+      col,
+      x: Math.round(rowOffsetX + col * cellW),
+      y: Math.round(row * cellH),
+      width: Math.round(cellW),
+      height: Math.round(cellH),
+    });
+  }
+
+  return {
+    canvasWidth,
+    canvasHeight,
+    cols,
+    rows,
+    cells,
+  };
+}
+
+export interface AlphaBoundingBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  visiblePixels: number;
+  clarityScore: number;
+}
+
+/**
+ * Scans an RGBA pixel buffer (Uint8Array or Uint8ClampedArray) of size (width x height)
+ * to find the exact tight bounding box of non-transparent gift pixels and a visual clarity score.
+ */
+export function computeTightAlphaBounds(
+  rgba: ArrayLike<number>,
+  width: number,
+  height: number,
+  alphaThreshold = 16
+): AlphaBoundingBox | null {
+  const w = Math.max(0, Math.floor(width));
+  const h = Math.max(0, Math.floor(height));
+  if (!rgba || w <= 0 || h <= 0 || rgba.length < w * h * 4) return null;
+
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  let visiblePixels = 0;
+  let clarityScore = 0;
+
+  for (let y = 0; y < h; y++) {
+    const rowOff = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const idx = rowOff + x * 4;
+      const a = rgba[idx + 3];
+      if (a > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        visiblePixels++;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        clarityScore += (a / 255) * (0.4 + 0.6 * (luma / 255));
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY || visiblePixels === 0) {
+    return null;
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+    visiblePixels,
+    clarityScore,
+  };
+}
+
+export interface AutoCropDrawRect {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+}
+
+/**
+ * Computes source crop rectangle and destination draw rectangle so that the gift's visible bounding box
+ * is scaled up cleanly to fit the target snapshot canvas tightly ("على قد الصورة بشكل دقيق") with a small margin.
+ */
+export function computeAutoCropDrawRect(
+  bounds: AlphaBoundingBox,
+  targetWidth: number,
+  targetHeight: number,
+  paddingRatio = 0.03
+): AutoCropDrawRect {
+  const tw = Math.max(2, Math.round(targetWidth));
+  const th = Math.max(2, Math.round(targetHeight));
+  const safePad = Math.max(0, Math.min(0.2, Number(paddingRatio) || 0));
+
+  const availW = Math.max(1, tw * (1 - safePad * 2));
+  const availH = Math.max(1, th * (1 - safePad * 2));
+
+  const sw = Math.max(1, bounds.width);
+  const sh = Math.max(1, bounds.height);
+  const scale = Math.min(availW / sw, availH / sh);
+
+  const dw = Math.max(1, Math.round(sw * scale));
+  const dh = Math.max(1, Math.round(sh * scale));
+  const dx = Math.round((tw - dw) / 2);
+  const dy = Math.round((th - dh) / 2);
+
+  return {
+    sx: bounds.minX,
+    sy: bounds.minY,
+    sw,
+    sh,
+    dx,
+    dy,
+    dw,
+    dh,
+  };
+}
+
+
+
 

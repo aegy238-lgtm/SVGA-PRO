@@ -10,6 +10,18 @@ import {
   computeFrameSeekTime,
   buildAudioEncoderCandidates,
   resampleChannelFloat32,
+  GIFT_STUDIO_EXPORT_MODES,
+  getExportModeMeta,
+  isSvgaGiftItem,
+  isVapOrYyevaGiftItem,
+  classifyExtractedGiftFolder,
+  buildExtractedGiftAndImagePaths,
+  resolveItemsForExportMode,
+  buildUniqueExtractedFileNames,
+  computeSideBySideVideoLayout,
+  computeTightAlphaBounds,
+  computeAutoCropDrawRect,
+  type GiftStudioExportItemLike,
 } from './giftStudioUtils.ts';
 
 test('computeTiledWatermarkGrid generates full-coverage cells across entire gift dimensions', () => {
@@ -108,5 +120,127 @@ test('resampleChannelFloat32 resamples between sample rates and applies gain acc
   assert.equal(upsampled.length, 9);
   assert.ok(Math.abs(upsampled[4] - 1.0) < 1e-5);
 });
+
+test('GIFT_STUDIO_EXPORT_MODES defines all 5 coordinated export modes with unified extract option', () => {
+  assert.equal(GIFT_STUDIO_EXPORT_MODES.length, 5);
+  const modes = GIFT_STUDIO_EXPORT_MODES.map((m) => m.value);
+  assert.deepEqual(modes, ['gi', 'pack', 'sep', 'one', 'extract']);
+
+  assert.equal(getExportModeMeta('one').requiresVideoEncoder, true);
+  assert.equal(getExportModeMeta('extract').requiresVideoEncoder, false);
+  assert.equal(getExportModeMeta('extract').usesResolutionSelect, true);
+});
+
+test('classifyExtractedGiftFolder and resolveItemsForExportMode sort SVGA and VAP+YYEVA into separate folders', () => {
+  const sampleItems: GiftStudioExportItemLike[] = [
+    { id: 1, name: 'crown.svga', fmt: 'svga', kind: 'SVGA', sel: false },
+    { id: 2, name: 'dragon.svga', fmt: 'svga', kind: 'SVGA', sel: false },
+    { id: 3, name: 'car_vap.mp4', fmt: 'mp4', kind: 'VAP', vapi: {}, alpha: 'V', sel: false },
+    { id: 4, name: 'castle_yyeva.mp4', fmt: 'mp4', kind: 'YYEVA', yy: true, alpha: 'L', sel: false },
+    { id: 5, name: 'plain.lottie.json', fmt: 'lottie', kind: 'Lottie', sel: true },
+  ];
+
+  assert.equal(isSvgaGiftItem(sampleItems[0]), true);
+  assert.equal(isSvgaGiftItem(sampleItems[2]), false);
+  assert.equal(classifyExtractedGiftFolder(sampleItems[0]), 'SVGA_Files');
+  assert.equal(classifyExtractedGiftFolder(sampleItems[2]), 'VAP_YYEVA_Files');
+  assert.equal(classifyExtractedGiftFolder(sampleItems[3]), 'VAP_YYEVA_Files');
+
+  assert.equal(isVapOrYyevaGiftItem(sampleItems[2]), true);
+  assert.equal(isVapOrYyevaGiftItem(sampleItems[3]), true);
+  assert.equal(isVapOrYyevaGiftItem(sampleItems[0]), false);
+
+  // Single combined video ('one') merges all displayed valid items when <= 1 item is checked
+  const oneVideoList = resolveItemsForExportMode(sampleItems, 'one');
+  assert.equal(oneVideoList.length, 5);
+
+  // Extract mode returns selected items if any, otherwise all valid items
+  const extractSelected = resolveItemsForExportMode(sampleItems, 'extract');
+  assert.equal(extractSelected.length, 1);
+  sampleItems[4].sel = false;
+  const extractAll = resolveItemsForExportMode(sampleItems, 'extract');
+  assert.equal(extractAll.length, 5);
+
+  // Verify each gift file and its PNG image are placed together in the same folder
+  const paths = buildExtractedGiftAndImagePaths(sampleItems);
+  assert.deepEqual(paths[0], {
+    folder: 'SVGA_Files',
+    filePath: 'SVGA_Files/crown.svga',
+    imagePath: 'SVGA_Files/crown.png',
+  });
+  assert.deepEqual(paths[2], {
+    folder: 'VAP_YYEVA_Files',
+    filePath: 'VAP_YYEVA_Files/car_vap.mp4',
+    imagePath: 'VAP_YYEVA_Files/car_vap.png',
+  });
+});
+
+test('buildUniqueExtractedFileNames deduplicates colliding names and enforces extensions', () => {
+  const svgaNames = buildUniqueExtractedFileNames(['lion.svga', 'lion.svga', 'tiger'], '.svga');
+  assert.deepEqual(svgaNames, ['lion.svga', 'lion_2.svga', 'tiger.svga']);
+
+  const vapYyNames = buildUniqueExtractedFileNames(['effect.mp4', 'effect.mp4', 'magic.yyeva'], '.mp4');
+  assert.deepEqual(vapYyNames, ['effect.mp4', 'effect_2.mp4', 'magic.yyeva']);
+});
+
+test('computeSideBySideVideoLayout arranges multiple gifts side-by-side in one video frame', () => {
+  const twoLayout = computeSideBySideVideoLayout(2, 720);
+  assert.equal(twoLayout.cols, 2);
+  assert.equal(twoLayout.rows, 1);
+  assert.equal(twoLayout.cells.length, 2);
+  assert.equal(twoLayout.canvasWidth % 2, 0);
+  assert.equal(twoLayout.canvasHeight % 2, 0);
+  assert.equal(twoLayout.cells[0].y, twoLayout.cells[1].y);
+  assert.ok(twoLayout.cells[1].x >= twoLayout.cells[0].x + twoLayout.cells[0].width);
+
+  const threeLayout = computeSideBySideVideoLayout(3, 720);
+  assert.equal(threeLayout.cols, 3);
+  assert.equal(threeLayout.rows, 1);
+  assert.equal(threeLayout.cells.length, 3);
+
+  const sixLayout = computeSideBySideVideoLayout(6, 720);
+  assert.equal(sixLayout.cells.length, 6);
+  assert.ok(sixLayout.cols >= 3);
+  assert.ok(sixLayout.rows >= 2);
+});
+
+test('computeTightAlphaBounds and computeAutoCropDrawRect tightly frame gift graphics for high-clarity snapshots', () => {
+  // 10x10 RGBA buffer with a 4x4 bright opaque gift centered at (3..6, 3..6)
+  const w = 10;
+  const h = 10;
+  const rgba = new Uint8Array(w * h * 4);
+  for (let y = 3; y <= 6; y++) {
+    for (let x = 3; x <= 6; x++) {
+      const idx = (y * w + x) * 4;
+      rgba[idx] = 255;
+      rgba[idx + 1] = 200;
+      rgba[idx + 2] = 100;
+      rgba[idx + 3] = 255;
+    }
+  }
+
+  const bounds = computeTightAlphaBounds(rgba, w, h, 16);
+  assert.ok(bounds);
+  assert.equal(bounds.minX, 3);
+  assert.equal(bounds.minY, 3);
+  assert.equal(bounds.maxX, 6);
+  assert.equal(bounds.maxY, 6);
+  assert.equal(bounds.width, 4);
+  assert.equal(bounds.height, 4);
+  assert.equal(bounds.visiblePixels, 16);
+  assert.ok(bounds.clarityScore > 10);
+
+  const rect = computeAutoCropDrawRect(bounds, 720, 720, 0.03);
+  assert.equal(rect.sx, 3);
+  assert.equal(rect.sy, 3);
+  assert.equal(rect.sw, 4);
+  assert.equal(rect.sh, 4);
+  // Gift should be scaled up to fill ~94% of the 720x720 output canvas
+  assert.ok(rect.dw >= 660 && rect.dw <= 720);
+  assert.equal(rect.dw, rect.dh);
+  assert.equal(rect.dx, Math.round((720 - rect.dw) / 2));
+});
+
+
 
 

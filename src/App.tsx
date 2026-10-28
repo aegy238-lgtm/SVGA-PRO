@@ -5,6 +5,7 @@ import AdminDashboardModal, { AdminDashboardTabId } from './components/AdminDash
 import EdgeFeatherModal from './components/EdgeFeatherModal';
 import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
+import GiftImageCreator from './components/GiftImageCreator';
 import { BatchOperationsState } from './utils/batchImageOps';
 import { AppliedWatermarkLayer } from './utils/watermark';
 import {
@@ -807,6 +808,24 @@ export default function App() {
           >
             <span>🎁</span>
             <span>{t.navGiftsStudio}</span>
+          </a>
+          <a
+            data-v="gift-image"
+            id="giftImageCreatorNavBtn"
+            style={{
+              padding: '3px 10px',
+              borderRadius: '7px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.2), rgba(16, 185, 129, 0.14))',
+              border: '1px solid rgba(124, 92, 255, 0.4)',
+              boxShadow: '0 2px 8px rgba(124, 92, 255, 0.18), inset 0 1px 0 rgba(255,255,255,0.12)',
+              fontWeight: 700,
+            }}
+          >
+            <span>🖼️</span>
+            <span>{t.navGiftImageCreator}</span>
           </a>
         </div>
 
@@ -1730,6 +1749,10 @@ export default function App() {
               background: '#0b0e1a',
             }}
           />
+        </section>
+
+        <section className="view" id="gift-image" style={{ height: '100%', overflow: 'hidden' }}>
+          <GiftImageCreator isAr={isAr} />
         </section>
       </main>
 

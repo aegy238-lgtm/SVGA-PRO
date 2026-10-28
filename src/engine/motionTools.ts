@@ -152,13 +152,16 @@ export function initMotionToolsFixed() {
   fi.onchange = () => fi.files[0] && load(fi.files[0]);
   ['dragover', 'dragenter'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio or Editor tab or dropping onto them
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
+        document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         location.hash === '#gifts' ||
+        location.hash === '#gift-image' ||
         location.hash === '#editor' ||
         e.target?.closest?.('#gifts') ||
+        e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#editor') ||
         e.defaultPrevented
       ) {
@@ -170,13 +173,16 @@ export function initMotionToolsFixed() {
   );
   ['dragleave', 'drop'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio or Editor tab or dropping onto them
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
+        document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         location.hash === '#gifts' ||
+        location.hash === '#gift-image' ||
         location.hash === '#editor' ||
         e.target?.closest?.('#gifts') ||
+        e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#editor') ||
         e.defaultPrevented
       ) {
