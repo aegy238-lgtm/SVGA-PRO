@@ -57,6 +57,25 @@ test('isQuickExportKeyEvent detects Tab and ArrowLeft when not typing in text in
     hasOpenModal: true,
   });
   assert.equal(tabWithModal.shouldExport, false);
+
+  // Standalone Left Control triggers export
+  const ctrlLeftOnBody = isQuickExportKeyEvent({
+    key: 'Control',
+    code: 'ControlLeft',
+    ctrlKey: true,
+    targetTagName: 'BODY',
+  });
+  assert.equal(ctrlLeftOnBody.shouldExport, true);
+  assert.equal(ctrlLeftOnBody.triggerType, 'ctrl_left');
+
+  // Pressing ANY regular key (letters, numbers, Space, Enter, Escape, Backspace, etc.) NEVER triggers export
+  for (const k of ['a', 's', 'd', '1', ' ', 'Enter', 'Escape', 'Backspace', 'ArrowRight', 'Shift']) {
+    const res = isQuickExportKeyEvent({
+      key: k,
+      targetTagName: 'BODY',
+    });
+    assert.equal(res.shouldExport, false, `Key "${k}" must not trigger export`);
+  }
 });
 
 test('GUIDE_BOOK_CHAPTERS contains complete bilingual visual chapters and callouts for all platform features', () => {

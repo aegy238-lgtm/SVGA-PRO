@@ -800,97 +800,77 @@ export default function PlatformGuideBook({
 
   return (
     <>
-      {/* Bottom Floating Book Button — Strictly visible ONLY on the Home screen */}
+      {/* Bottom-Left Single Circular Guidebook Button — Strictly visible ONLY on the Home screen */}
       <div
         id="homeGuideBookDock"
         dir={isAr ? 'rtl' : 'ltr'}
         style={{
           position: 'fixed',
-          bottom: '18px',
-          left: '50%',
-          transform: 'translateX(-50%)',
+          bottom: '22px',
+          left: '22px',
           zIndex: 90,
           display: 'flex',
           alignItems: 'center',
-          gap: '10px',
-          padding: '6px 10px',
-          borderRadius: '999px',
-          background: 'rgba(13, 14, 24, 0.92)',
-          border: '1px solid rgba(124, 92, 255, 0.55)',
-          boxShadow:
-            '0 12px 36px rgba(0, 0, 0, 0.65), 0 0 24px rgba(124, 92, 255, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12)',
-          backdropFilter: 'blur(14px)',
-          maxWidth: '95vw',
-          flexWrap: 'wrap',
-          justifyContent: 'center',
         }}
       >
         <button
           type="button"
           id="openGuideBookBtn"
           onClick={() => setOpen(true)}
+          aria-label={
+            isAr
+              ? 'دليل شرح مميزات الموقع والاختصارات بالصور'
+              : 'Illustrated Platform Features Guidebook'
+          }
+          title={
+            isAr
+              ? '📖 دليل شرح وظائف ومميزات الموقع بالصور + اختصارات التصدير'
+              : '📖 Illustrated Platform Features & Shortcuts Guidebook'
+          }
           style={{
-            padding: '8px 18px',
-            borderRadius: '999px',
-            border: '1px solid rgba(245, 158, 11, 0.75)',
+            width: '52px',
+            height: '52px',
+            borderRadius: '50%',
+            border: '1.5px solid rgba(154, 124, 255, 0.45)',
             background:
-              'linear-gradient(135deg, rgba(124, 92, 255, 0.95) 0%, rgba(217, 119, 6, 0.9) 100%)',
-            color: '#ffffff',
-            fontWeight: 900,
-            fontSize: '12.5px',
+              'radial-gradient(circle at 30% 25%, rgba(154, 124, 255, 0.26) 0%, rgba(20, 20, 32, 0.94) 68%, rgba(11, 11, 18, 0.98) 100%)',
+            color: '#e0d4ff',
             cursor: 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 4px 16px rgba(124, 92, 255, 0.4)',
-            whiteSpace: 'nowrap',
+            display: 'grid',
+            placeItems: 'center',
+            boxShadow:
+              '0 10px 28px rgba(0, 0, 0, 0.65), 0 0 22px rgba(154, 124, 255, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16)',
+            backdropFilter: 'blur(12px)',
+            transition: 'transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease',
+            padding: 0,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'translateY(-2px) scale(1.05)';
+            e.currentTarget.style.borderColor = 'rgba(167, 139, 250, 0.85)';
+            e.currentTarget.style.boxShadow =
+              '0 12px 32px rgba(0, 0, 0, 0.75), 0 0 28px rgba(154, 124, 255, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.25)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'none';
+            e.currentTarget.style.borderColor = 'rgba(154, 124, 255, 0.45)';
+            e.currentTarget.style.boxShadow =
+              '0 10px 28px rgba(0, 0, 0, 0.65), 0 0 22px rgba(154, 124, 255, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16)';
           }}
         >
-          <span style={{ fontSize: '16px' }}>📖</span>
-          <span>
-            {isAr
-              ? 'كتالوج وشرح مميزات الموقع بالصور (دليل شامل)'
-              : 'Illustrated Platform Features Guidebook'}
-          </span>
+          <svg
+            width="23"
+            height="23"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#c4b5fd"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+          </svg>
         </button>
-
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            fontSize: '11px',
-            color: '#cbd5e1',
-            paddingInline: '6px',
-          }}
-        >
-          <span
-            style={{
-              padding: '3px 9px',
-              borderRadius: '99px',
-              background: 'rgba(16, 185, 129, 0.16)',
-              border: '1px solid rgba(16, 185, 129, 0.45)',
-              color: '#6ee7b7',
-              fontWeight: 800,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            🖱️ {isAr ? 'كليك شمال = تصدير فوري' : 'Left-Click = Instant Export'}
-          </span>
-          <span
-            style={{
-              padding: '3px 9px',
-              borderRadius: '99px',
-              background: 'rgba(245, 158, 11, 0.16)',
-              border: '1px solid rgba(245, 158, 11, 0.45)',
-              color: '#fde047',
-              fontWeight: 800,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            ⌨️ {isAr ? 'زر Tab = تصدير بالصيغة المحددة' : 'Tab Key = Quick Export'}
-          </span>
-        </div>
       </div>
 
       {/* Full Illustrated Guidebook Modal */}

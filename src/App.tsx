@@ -100,7 +100,8 @@ export default function App() {
   const [screenShieldActive, setScreenShieldActive] = useState(false);
   const [guestAttemptTrigger, setGuestAttemptTrigger] = useState(0);
   const [activeView, setActiveView] = useState<string>('home');
-  const [leftClickExportEnabled, setLeftClickExportEnabled] = useState<boolean>(true);
+  const [leftClickExportEnabled] = useState<boolean>(true);
+  const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
@@ -811,17 +812,21 @@ export default function App() {
         (document.getElementById('mo') && !(document.getElementById('mo') as HTMLElement).hidden);
 
       const targetEl = e.target as HTMLElement | null;
-      const shouldTrigger = isQuickExportKeyEvent({
+      const triggerRes = isQuickExportKeyEvent({
         key: e.key,
+        code: e.code,
         targetTagName: targetEl?.tagName,
+        targetType: (targetEl as HTMLInputElement | null)?.type,
         isContentEditable: targetEl?.isContentEditable,
         ctrlKey: e.ctrlKey,
         altKey: e.altKey,
         metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        repeat: e.repeat,
         hasOpenModal: Boolean(anyModalOpen),
       });
 
-      if (!shouldTrigger) return;
+      if (!triggerRes.shouldExport) return;
 
       const currentOnView = document.querySelector('.view.on')?.id || activeView;
       if (currentOnView === 'convert') {
@@ -1207,109 +1212,206 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-          {/* Admin Dashboard Button - Strictly visible to Super Admin or Delegated Moderator */}
-          {hasAdminAccess && (
+          {/* Consolidated Single Quick-Actions Menu Button (Admin Dashboard, Subscribe, WhatsApp, Language) */}
+          <div
+            id="navQuickActionsContainer"
+            style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
+          >
             <button
               type="button"
-              id="adminDashBtn"
-              onClick={() => {
-                setAdminInitialTab('users');
-                setAdminOpen(true);
-              }}
+              id="navQuickActionsMenuBtn"
+              onClick={() => setNavMenuOpen((prev) => !prev)}
+              aria-expanded={navMenuOpen}
               style={{
-                padding: '4px 11px',
+                padding: '4px 12px',
                 borderRadius: '99px',
-                border: isSuperAdmin
-                  ? '1px solid rgba(124, 92, 255, 0.65)'
-                  : '1px solid rgba(16, 185, 129, 0.65)',
-                background: isSuperAdmin
-                  ? 'rgba(124, 92, 255, 0.18)'
-                  : 'rgba(16, 185, 129, 0.16)',
-                color: isSuperAdmin ? '#e0d4ff' : '#6ee7b7',
-                fontSize: '11px',
-                fontWeight: 700,
+                border: navMenuOpen
+                  ? '1px solid rgba(167, 139, 250, 0.85)'
+                  : '1px solid rgba(154, 124, 255, 0.45)',
+                background: navMenuOpen
+                  ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.32), #1b1b2b)'
+                  : 'linear-gradient(135deg, rgba(124, 92, 255, 0.16), #151520)',
+                color: '#e2e8f0',
+                fontSize: '11.5px',
+                fontWeight: 800,
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                gap: '6px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.35)',
+                whiteSpace: 'nowrap',
               }}
             >
-              <span>{isSuperAdmin ? '⚙️' : '🛡️'}</span>
-              <span>{t.navAdminDashboard}</span>
+              <span>⚡</span>
+              <span>{isAr ? 'القائمة والخيارات' : 'Menu & Options'}</span>
+              <span
+                style={{
+                  fontSize: '10px',
+                  opacity: 0.8,
+                  transform: navMenuOpen ? 'rotate(180deg)' : 'none',
+                  transition: 'transform 0.18s ease',
+                }}
+              >
+                ▾
+              </span>
             </button>
-          )}
 
-          {/* WhatsApp Header Link */}
-          {whatsappUrl && (
-            <a
-              id="whatsappNavBtn"
-              href={whatsappUrl}
-              target="_blank"
-              rel="noreferrer"
-              title={t.navWhatsapp}
-              style={{
-                padding: '4px 9px',
-                borderRadius: '99px',
-                border: '1px solid rgba(37, 211, 102, 0.5)',
-                background: 'rgba(37, 211, 102, 0.14)',
-                color: '#4ade80',
-                fontSize: '11px',
-                fontWeight: 700,
-                textDecoration: 'none',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-            >
-              <span>💬</span>
-              <span className="hide-sm">WhatsApp</span>
-            </a>
-          )}
+            {navMenuOpen && (
+              <>
+                <div
+                  onClick={() => setNavMenuOpen(false)}
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    zIndex: 98,
+                  }}
+                />
+                <div
+                  id="navQuickActionsDropdown"
+                  dir={isAr ? 'rtl' : 'ltr'}
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    insetInlineEnd: 0,
+                    minWidth: '215px',
+                    background: 'rgba(15, 16, 26, 0.98)',
+                    border: '1px solid rgba(154, 124, 255, 0.45)',
+                    borderRadius: '14px',
+                    padding: '8px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    boxShadow:
+                      '0 16px 40px rgba(0, 0, 0, 0.75), 0 0 24px rgba(124, 92, 255, 0.22)',
+                    backdropFilter: 'blur(16px)',
+                    zIndex: 99,
+                  }}
+                >
+                  {/* 1. Admin Dashboard Button */}
+                  {hasAdminAccess && (
+                    <button
+                      type="button"
+                      id="adminDashBtn"
+                      onClick={() => {
+                        setNavMenuOpen(false);
+                        setAdminInitialTab('users');
+                        setAdminOpen(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '10px',
+                        border: isSuperAdmin
+                          ? '1px solid rgba(124, 92, 255, 0.55)'
+                          : '1px solid rgba(16, 185, 129, 0.55)',
+                        background: isSuperAdmin
+                          ? 'rgba(124, 92, 255, 0.16)'
+                          : 'rgba(16, 185, 129, 0.14)',
+                        color: isSuperAdmin ? '#e0d4ff' : '#6ee7b7',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        textAlign: 'start',
+                      }}
+                    >
+                      <span>{isSuperAdmin ? '⚙️' : '🛡️'}</span>
+                      <span>{t.navAdminDashboard}</span>
+                    </button>
+                  )}
 
-          {/* Crown + Subscribe Button right next to WhatsApp */}
-          <button
-            type="button"
-            id="proSubscribeNavBtn"
-            onClick={() => setProModalOpen(true)}
-            title={isAr ? 'عرض باقات الاشتراك في أدوات برو' : 'View Pro Subscription Packages'}
-            style={{
-              padding: '4px 11px',
-              borderRadius: '99px',
-              border: '1px solid rgba(245, 158, 11, 0.75)',
-              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.24), rgba(217, 119, 6, 0.18))',
-              color: '#fde047',
-              fontSize: '11.5px',
-              fontWeight: 800,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-              boxShadow: '0 2px 10px rgba(245, 158, 11, 0.22)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <span>👑</span>
-            <span>{isAr ? 'اشتراك' : 'Subscribe'}</span>
-          </button>
+                  {/* 2. Subscribe Pro Button */}
+                  <button
+                    type="button"
+                    id="proSubscribeNavBtn"
+                    onClick={() => {
+                      setNavMenuOpen(false);
+                      setProModalOpen(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(245, 158, 11, 0.65)',
+                      background:
+                        'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.14))',
+                      color: '#fde047',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      textAlign: 'start',
+                    }}
+                  >
+                    <span>👑</span>
+                    <span>{isAr ? 'اشتراك برو (Pro)' : 'Subscribe Pro'}</span>
+                  </button>
 
-          {/* Language Toggle Button (AR / EN) */}
-          <button
-            type="button"
-            id="langToggleBtn"
-            onClick={handleToggleLanguage}
-            style={{
-              padding: '4px 9px',
-              borderRadius: '99px',
-              border: '1px solid #2b2b3d',
-              background: '#151520',
-              color: '#cbd5e1',
-              fontSize: '11px',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            🌐 {t.navLangToggle}
-          </button>
+                  {/* 3. WhatsApp Link */}
+                  {whatsappUrl && (
+                    <a
+                      id="whatsappNavBtn"
+                      href={whatsappUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => setNavMenuOpen(false)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '10px',
+                        border: '1px solid rgba(37, 211, 102, 0.45)',
+                        background: 'rgba(37, 211, 102, 0.12)',
+                        color: '#4ade80',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        textDecoration: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span>💬</span>
+                      <span>{isAr ? 'تواصل عبر WhatsApp' : 'Contact on WhatsApp'}</span>
+                    </a>
+                  )}
+
+                  {/* 4. Language Toggle Button */}
+                  <button
+                    type="button"
+                    id="langToggleBtn"
+                    onClick={() => {
+                      setNavMenuOpen(false);
+                      handleToggleLanguage();
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '10px',
+                      border: '1px solid #2b2b3d',
+                      background: '#161622',
+                      color: '#cbd5e1',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      textAlign: 'start',
+                    }}
+                  >
+                    <span>🌐</span>
+                    <span>
+                      {isAr ? `تغيير اللغة (${t.navLangToggle})` : `Language (${t.navLangToggle})`}
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Notification Bell Button */}
           <button
@@ -1857,95 +1959,6 @@ export default function App() {
             </aside>
 
             <div className="stage" id="stage" style={{ position: 'relative' }}>
-              <div
-                id="quickExportStageBar"
-                style={{
-                  position: 'absolute',
-                  top: '12px',
-                  left: '12px',
-                  right: '12px',
-                  zIndex: 8,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '8px',
-                  pointerEvents: 'none',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <button
-                  type="button"
-                  id="toggleLeftClickExportBtn"
-                  onClick={() => setLeftClickExportEnabled((prev) => !prev)}
-                  style={{
-                    pointerEvents: 'auto',
-                    padding: '5px 12px',
-                    borderRadius: '999px',
-                    border: leftClickExportEnabled
-                      ? '1px solid rgba(16, 185, 129, 0.65)'
-                      : '1px solid rgba(148, 163, 184, 0.3)',
-                    background: leftClickExportEnabled
-                      ? 'rgba(6, 78, 59, 0.82)'
-                      : 'rgba(15, 23, 42, 0.82)',
-                    color: leftClickExportEnabled ? '#6ee7b7' : '#94a3b8',
-                    fontSize: '11.5px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    backdropFilter: 'blur(8px)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
-                  }}
-                  title={
-                    isAr
-                      ? 'عند التفعيل: الضغط كليك شمال على شاشة المعاينة يصدّر الملف فوراً بالصيغة المحددة'
-                      : 'When enabled: Left-clicking the preview exports immediately in the selected format'
-                  }
-                >
-                  <span>🖱️</span>
-                  <span>
-                    {isAr
-                      ? `تصدير بكليك شمال: ${leftClickExportEnabled ? 'مفعّل ⚡' : 'متوقف'}`
-                      : `Left-Click Export: ${leftClickExportEnabled ? 'ON ⚡' : 'OFF'}`}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  id="quickStageInstantExportBtn"
-                  onClick={() => document.getElementById('start')?.click()}
-                  style={{
-                    pointerEvents: 'auto',
-                    padding: '5px 13px',
-                    borderRadius: '999px',
-                    border: '1px solid rgba(168, 85, 247, 0.65)',
-                    background:
-                      'linear-gradient(135deg, rgba(124, 58, 237, 0.88), rgba(219, 39, 119, 0.85))',
-                    color: '#ffffff',
-                    fontSize: '11.5px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    backdropFilter: 'blur(8px)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.35)',
-                  }}
-                  title={
-                    isAr
-                      ? 'اضغط هنا أو اضغط زر Tab أو كليك شمال على المعاينة للتصدير الفوري حسب الصيغة المختارة'
-                      : 'Click here, press Tab, or Left-Click the preview for instant export in selected format'
-                  }
-                >
-                  <span>⚡</span>
-                  <span>
-                    {isAr
-                      ? 'تصدير فوري بالصيغة المحددة [Tab / كليك شمال]'
-                      : 'Instant Export [Tab / Left-Click]'}
-                  </span>
-                </button>
-              </div>
               <div
                 id="view"
                 data-placeholder={t.dropToPreview}

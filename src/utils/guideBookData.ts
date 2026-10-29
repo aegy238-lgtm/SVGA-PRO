@@ -46,22 +46,23 @@ export function shouldShowGuideBookButton(activeView: string | null | undefined)
 
 /**
  * Pure function: Checks whether a keyboard event should trigger instant export.
- * Supports `Tab` key (and `ArrowLeft` when not inside form controls) while ignoring inputs/textareas/selects.
+ * Strictly triggers ONLY for `Tab`, `ArrowLeft`, or standalone `ControlLeft` when not inside form controls or modals.
+ * All other keys (letters, numbers, Space, Enter, Escape, Function keys, etc.) return `shouldExport: false`.
  */
 export function isQuickExportKeyEvent(params: {
   key: string;
+  code?: string;
   ctrlKey?: boolean;
   altKey?: boolean;
   metaKey?: boolean;
+  shiftKey?: boolean;
+  repeat?: boolean;
   targetTagName?: string;
   targetType?: string;
   isContentEditable?: boolean;
   hasOpenModal?: boolean;
-}): { shouldExport: boolean; triggerType: 'tab' | 'arrow_left' | null } {
-  if (params.hasOpenModal) {
-    return { shouldExport: false, triggerType: null };
-  }
-  if (params.ctrlKey || params.altKey || params.metaKey) {
+}): { shouldExport: boolean; triggerType: 'tab' | 'arrow_left' | 'ctrl_left' | null } {
+  if (params.hasOpenModal || params.repeat) {
     return { shouldExport: false, triggerType: null };
   }
 
@@ -70,14 +71,35 @@ export function isQuickExportKeyEvent(params: {
     return { shouldExport: false, triggerType: null };
   }
 
-  // If user is typing inside an input, textarea, or select:
-  // Do not hijack ArrowLeft; and for Tab, only trigger if not typing in a text/number/password/search/email input
   const isTextInput =
     tag === 'TEXTAREA' ||
     (tag === 'INPUT' &&
       !['BUTTON', 'CHECKBOX', 'RADIO', 'RANGE', 'COLOR', 'FILE'].includes(
         (params.targetType || '').toUpperCase()
       ));
+
+  const isInteractiveInput =
+    isTextInput ||
+    tag === 'SELECT' ||
+    (tag === 'INPUT' && (params.targetType || '').toUpperCase() === 'RANGE');
+
+  // Standalone Left Control ("تريك شمال / كنترول شمال")
+  if (
+    (params.code === 'ControlLeft' || (params.key === 'Control' && params.code !== 'ControlRight')) &&
+    !params.altKey &&
+    !params.metaKey &&
+    !params.shiftKey
+  ) {
+    if (isInteractiveInput) {
+      return { shouldExport: false, triggerType: null };
+    }
+    return { shouldExport: true, triggerType: 'ctrl_left' };
+  }
+
+  // For Tab and ArrowLeft, do not trigger if modifier keys are held
+  if (params.ctrlKey || params.altKey || params.metaKey || params.shiftKey) {
+    return { shouldExport: false, triggerType: null };
+  }
 
   if (params.key === 'Tab') {
     if (isTextInput) {
@@ -87,7 +109,7 @@ export function isQuickExportKeyEvent(params: {
   }
 
   if (params.key === 'ArrowLeft') {
-    if (isTextInput || tag === 'SELECT' || (tag === 'INPUT' && (params.targetType || '').toUpperCase() === 'RANGE')) {
+    if (isInteractiveInput) {
       return { shouldExport: false, triggerType: null };
     }
     return { shouldExport: true, triggerType: 'arrow_left' };
