@@ -56,6 +56,38 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;display:flex;
 .wm-pv canvas{width:100%;height:100%;display:block}
 .wm-dot{width:8px;height:8px;border-radius:50%;background:#64748b;display:inline-block}
 button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
+button.dup-on{border-color:#3b82f6!important;background:linear-gradient(135deg,rgba(37,99,235,.32),rgba(29,78,216,.22))!important;color:#eff6ff!important;box-shadow:0 0 18px rgba(59,130,246,.42),inset 0 0 0 1px rgba(96,165,250,.38)!important;font-weight:800}
+button.dup-on .wm-dot{background:#3b82f6!important;box-shadow:0 0 10px #60a5fa!important}
+.pg-bar{display:none;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:8px 18px;padding:10px 16px;background:linear-gradient(180deg,rgba(20,20,30,.96),rgba(13,13,18,.96));border:1px solid var(--bd);border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
+.pg-info{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:#d8d8e6}
+.pg-badge{background:rgba(59,130,246,.18);border:1px solid rgba(59,130,246,.5);color:#bfdbfe;padding:3px 10px;border-radius:8px;font-weight:800;font-size:11.5px}
+.pg-gpu-tag{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);color:#6ee7b7;padding:2px 8px;border-radius:7px;font-size:11px;font-weight:700}
+.pg-nav{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.pg-btn{padding:5px 11px!important;font-size:12px!important;border-radius:8px!important;background:#14141c;border:1px solid var(--bd);color:#cbd5e1;font-weight:700}
+.pg-btn.act{background:linear-gradient(135deg,#3b82f6,#2563eb)!important;border-color:#60a5fa!important;color:#fff!important;box-shadow:0 2px 12px rgba(59,130,246,.42)}
+.pg-modes{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pg-mode-btn{padding:6px 12px!important;font-size:12px!important;border-radius:9px!important;font-weight:800}
+.pg-mode-btn.on{background:rgba(59,130,246,.22)!important;border-color:#3b82f6!important;color:#eff6ff!important;box-shadow:0 0 12px rgba(59,130,246,.28)}
+.dup-banner{position:sticky;top:58px;z-index:28;margin:10px 18px 4px;background:linear-gradient(180deg,rgba(20,20,28,.98),rgba(13,13,18,.98));border:1px solid rgba(124,92,255,.5);border-radius:16px;padding:13px 16px;box-shadow:0 12px 32px rgba(0,0,0,.68),0 0 0 1px rgba(124,92,255,.16);backdrop-filter:blur(12px)}
+.dup-banner-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.dup-icon-wrap{width:38px;height:38px;border-radius:11px;background:rgba(124,92,255,.16);border:1px solid rgba(124,92,255,.45);display:grid;place-items:center;font-size:18px;flex-shrink:0}
+.dup-text-wrap{flex:1;min-width:240px}
+.dup-title-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px}
+.dup-title-row b{font-size:14px;color:#f3efff}
+.dup-pill-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:7px;background:rgba(124,92,255,.22);border:1px solid rgba(124,92,255,.5);color:#d8c8ff}
+.dup-question{margin:0;font-size:12.5px;color:#b8b8c8;line-height:1.55}
+.dup-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dup-btn-primary{background:linear-gradient(135deg,#7c5cff,#6246ea);color:#fff;border:1px solid #9a7cff;font-weight:800;padding:8px 15px;border-radius:10px;box-shadow:0 4px 16px rgba(124,92,255,.32);font-size:12.5px}
+.dup-btn-primary:hover{background:linear-gradient(135deg,#8b6eff,#7052f5);border-color:#b79cff}
+.dup-btn-secondary{background:#14141c;color:#c4c4d4;border:1px solid #262636;padding:8px 12px;border-radius:10px;font-weight:700;font-size:12px}
+.dup-btn-close{background:#14141c;color:#80808f;border:1px solid #232332;padding:6px 10px;border-radius:9px;font-size:12px}
+.dup-groups-list{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;padding-top:10px;border-top:1px solid #1e1e28}
+.dup-group-chip{display:inline-flex;align-items:center;gap:7px;background:#09090d;border:1px solid #232332;border-radius:10px;padding:5px 10px;font-size:12px;color:#e8e8ee}
+.dup-copies-tag{background:rgba(124,92,255,.18);border:1px solid rgba(124,92,255,.4);color:#cbb8ff;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700}
+.dup-match-tag{color:#9ca3af;font-size:11px}
+.card.is-dup{outline:2px solid #7c5cff;box-shadow:0 0 0 3px rgba(124,92,255,.22)}
+.dup-card-badge{position:absolute;top:34px;inset-inline-start:8px;background:rgba(124,92,255,.92);color:#fff;border:1px solid #b79cff;border-radius:7px;padding:2px 7px;font-size:10.5px;font-weight:800;z-index:4}
+.uniq-card-badge{position:absolute;top:34px;inset-inline-start:8px;background:rgba(13,13,18,.88);color:#b79cff;border:1px solid rgba(124,92,255,.45);border-radius:7px;padding:2px 7px;font-size:10.5px;font-weight:700;z-index:4}
 </style>
 </head>
 <body>
@@ -63,6 +95,7 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
  <div class="brand"><i class="lg">🎁</i><div><b id="brandTitle">استوديو الهدايا</b><small id="brandSubtitle">شغّل وصدّر كل صيغ الهدايا</small></div></div>
  <div class="act">
   <button id="up"><span id="upTxt">➕ رفع هدايا</span></button>
+  <button id="scanDuplicatesBtn" title="اضغط لتفعيل فحص وفلترة الملفات المكررة (يتحول للون الأزرق عند التفعيل، وعند عدم التفعيل يعمل النظام العادي لرفع جميع الملفات)"><span class="wm-dot" id="dupdot"></span> <span id="scanDupTxt">🔍 فحص المكرر</span></button>
   <button id="bgb"><span id="bgTxt">🖼 الخلفية</span></button>
   <button id="wmb" title="إضافة علامة مائية شبكية كاملة على حجم الهدية"><span class="wm-dot" id="wmdot"></span> <span id="wmTxt">💧 العلامة المائية</span></button>
   <button id="durBtn" title="تفعيل وضع تحديد مدة الفيديو لعرض التأثير وتصدير الفيديو بالمدة التي تختارها في أي صيغة هدية"><span class="wm-dot" id="durdot"></span> <span id="durBtnTxt">⏱️ مدة الفيديو: الأصلية</span></button>
@@ -141,9 +174,27 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
   <button class="p" id="ex">⬇ تصدير هدية + صورة</button>
  </div>
 </header>
+<div id="dupAlertBanner" class="dup-banner" role="region" aria-label="تنبيه الملفات المكررة" style="display:none">
+ <div class="dup-banner-head">
+  <div class="dup-icon-wrap">🛡️</div>
+  <div class="dup-text-wrap">
+   <div class="dup-title-row">
+    <b id="dupBannerTitle">يوجد ملفات مكررة تم اكتشافها تلقائياً</b>
+    <span class="dup-pill-badge" id="dupBannerCountBadge">0 نسخة مكررة</span>
+   </div>
+   <p id="dupBannerQuestion" class="dup-question">يوجد ملف مكرر منه عدة نسخ (تم التحقق من شكل الملف والاسم بدقة). هل تريد حذف الملفات المكررة وتثبيت نسخة أساسية واحدة فقط؟</p>
+  </div>
+  <div class="dup-actions">
+   <button type="button" id="dupConfirmKeepOneBtn" class="dup-btn-primary">✅ نعم، حذف الملفات المكررة (تثبيت نسخة واحدة فقط)</button>
+   <button type="button" id="dupKeepAllBtn" class="dup-btn-secondary">📥 الإبقاء على جميع النسخ</button>
+   <button type="button" id="dupDismissBtn" class="dup-btn-close" title="إغلاق وتثبيت نسخة واحدة">✕</button>
+  </div>
+ </div>
+ <div id="dupGroupsList" class="dup-groups-list"></div>
+</div>
 <input type="file" id="fi" multiple hidden><input type="file" id="bfi" accept="image/*" hidden>
 <div class="bar" id="bar" style="display:none">
- <button id="all">☑ تحديد الكل</button><button id="del">🗑 حذف المحدد</button><span id="cnt"></span>
+ <button id="all">☑ تحديد الكل</button><button id="del">🗑 حذف المحدد</button><button id="barScanDupBtn" title="تفعيل أو إيقاف فحص وحذف الملفات المكررة"><span class="wm-dot" id="barDupDot"></span> <span id="barScanDupTxt">🔍 فحص المكرر</span></button><span id="cnt"></span>
  <span class="sp"></span>
  <button id="pa">▶ تشغيل الكل</button><button id="sa">⏸ إيقاف الكل</button><button id="ra">🔄 إعادة الكل</button>
  <button id="muBtn" class="pill" style="border:1px solid var(--ac);background:#20183b;color:#f3e8ff;display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 12px;border-radius:10px" title="كتم أو تشغيل صوت المعاينة">🔇 الصوت: مكتوم (اضغط للتشغيل)</button>
@@ -152,8 +203,10 @@ button.wm-on .wm-dot,.dur-inline.on .wm-dot{background:#22c55e;box-shadow:0 0 8p
  <label><span id="fpsLbl">إطارات</span> <select id="fps"><option>24</option><option selected>30</option><option>60</option></select></label>
  <input type="number" id="sd" value="5" min="0.5" max="120" step="0.5" hidden>
 </div>
+<div id="paginationTopBar" class="pg-bar" role="navigation" aria-label="تقسيم صفحات العرض"></div>
 <div id="drop"><div style="font-size:46px">📦</div><h2 id="dropTitle">اسحب الهدايا أو الملفات المغلقة هنا أو اضغط للرفع</h2><div>SVGA · PAG · VAP · YYEVA · Lottie · MP4 · GIF · APNG · WebP · SVG · ZIP</div><div id="dropSub" style="font-size:12px;opacity:.75;margin-top:6px">يدعم فتح الملفات المغلقة والمضغوطة (ZIP / المجلدات) واستخراج وعرض جميع الهدايا بداخلها تلقائياً</div><div id="dropStaticHint" style="font-size:12px;opacity:.7;margin-top:4px">لا يتم رفع الصور الثابتة (PNG / JPG)</div><canvas id="dropWm" class="wm-ov" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"></canvas></div>
 <div id="grid"></div>
+<div id="paginationBottomBar" class="pg-bar" role="navigation" aria-label="تقسيم صفحات العرض السفلي" style="margin-bottom:110px"></div>
 <div id="dock"><div class="r"><b id="dt">…</b><span style="margin-inline-start:auto"></span><button id="cx">إلغاء</button><button class="p" id="sv" style="display:none">⬇ حفظ الملف</button></div><div id="pw"><div id="pg"></div></div><small id="ds" style="color:var(--mu)"></small></div>
 <script src="/mp4-muxer.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
@@ -249,7 +302,33 @@ const I18N={
   toastSnapFailed:'تعذر إنشاء الصورة',
   toastIgnoredStatic:n=>`تم تجاهل ${n} صورة ثابتة — لا يتم رفع الصور`,
   toastUnpackedArchives:(a,g)=>`📦 تم فتح ${a===1?'الملف المغلق':a+' ملفات مغلقة'} واستخراج ${g} هدية للعرض بنجاح`,
-  toastNoGiftsInArchive:'⚠️ لم يتم العثور على ملفات هدايا مدعومة داخل الملف المغلق'
+  toastNoGiftsInArchive:'⚠️ لم يتم العثور على ملفات هدايا مدعومة داخل الملف المغلق',
+  btnScanDuplicates:'🔍 فحص المكرر',
+  btnScanDuplicatesOn:'🔍 فحص المكرر: مفعّل ✓',
+  toastDupFilterEnabled:'🔵 تم تفعيل فحص وفلترة الملفات المكررة تلقائياً (تثبيت نسخة واحدة لكل هدية)',
+  toastDupFilterDisabled:'⚪ تم إيقاف فحص المكرر — يعمل الآن النظام العادي لرفع جميع الملفات',
+  pgBadge:(cur,total)=>`📄 الصفحة ${cur} من ${total}`,
+  pgRangeInfo:(from,to,total,sz)=>`عرض ${from}–${to} من إجمالي ${total} هدية (${sz} إطار في الصفحة)`,
+  pgAllInfo:total=>`عرض كل الملفات معاً (${total} هدية في صفحة واحدة)`,
+  pgGpuTag:'⚡ حماية المعالج وكارت الشاشة',
+  pgPrev:'◀ الصفحة السابقة',
+  pgNext:'الصفحة التالية ▶',
+  pgModePaged:sz=>`📄 تقسيم صفحات (${sz} إطار)`,
+  pgModeAll:total=>`🌐 عرض كل الملفات (${total})`,
+  dupBannerTitle:(extra,groups)=>`🛡️ تنبيه الفلترة الذكية: يوجد ${extra} ${extra===1?'ملف مكرر':'ملفات مكررة'} (${groups} ${groups===1?'هدية أساسية':'هدايا أساسية'})`,
+  dupBannerBadge:extra=>`${extra} نسخة مكررة`,
+  dupBannerQuestion:(firstName,totalCopies)=>`يوجد ملف "${firstName}" منه ${totalCopies} نسخ (تم التحقق بدقة من شكل الملف وبصمته والاسم وعدم رفع المكرر). هل تريد حذف الملفات المكررة وتثبيت نسخة أساسية واحدة فقط؟`,
+  dupConfirmKeepOne:'✅ نعم، حذف الملفات المكررة (تثبيت نسخة واحدة فقط)',
+  dupKeepAll:extra=>`📥 الإبقاء على جميع النسخ (+${extra})`,
+  dupCopiesBadge:(total,extra)=>`يوجد منه ${total} نسخ (${extra} مكرر)`,
+  dupMatchExactBoth:'✓ تطابق شكل الملف والاسم 100%',
+  dupMatchExactShape:'✓ تطابق شكل وبصمة الملف 100%',
+  dupMatchVisualShape:'✓ تطابق الاسم والأبعاد والشكل',
+  toastDupDeleted:n=>`✅ تم حذف ${n} ${n===1?'نسخة مكررة':'ملفات مكررة'} وتثبيت الملفات الأساسية فقط (نسخة واحدة لكل هدية)`,
+  toastDupKeptAll:n=>`📥 تم السماح برفع ${n} نسخة إضافية إلى مساحة العرض`,
+  toastNoDuplicatesFound:n=>`✓ تم فحص جميع الملفات (${n}): لا توجد أي ملفات مكررة (كل هدية بنسخة واحدة أساسية)`,
+  cardUniqueVerifiedBadge:'✓ نسخة أساسية (1)',
+  cardDuplicateFlagBadge:'⚠️ نسخة مكررة'
  },
  en:{
   dir:'ltr',
@@ -332,7 +411,33 @@ const I18N={
   toastSnapFailed:'Failed to create image snapshot',
   toastIgnoredStatic:n=>`Ignored ${n} static image(s) — static images are not uploaded`,
   toastUnpackedArchives:(a,g)=>`📦 Opened ${a===1?'closed archive':a+' closed archives'} and extracted ${g} gift(s) for display successfully`,
-  toastNoGiftsInArchive:'⚠️ No supported gift files found inside the closed archive'
+  toastNoGiftsInArchive:'⚠️ No supported gift files found inside the closed archive',
+  btnScanDuplicates:'🔍 Scan Duplicates',
+  btnScanDuplicatesOn:'🔍 Duplicate Filter: ON ✓',
+  toastDupFilterEnabled:'🔵 Smart Duplicate Filter Enabled (Auto-detects & keeps 1 unique copy)',
+  toastDupFilterDisabled:'⚪ Duplicate Filter Disabled — Normal upload mode active for all files',
+  pgBadge:(cur,total)=>`📄 Page ${cur} of ${total}`,
+  pgRangeInfo:(from,to,total,sz)=>`Showing ${from}–${to} of ${total} gifts (${sz} frames/page)`,
+  pgAllInfo:total=>`Showing all files (${total} gifts on one page)`,
+  pgGpuTag:'⚡ CPU & GPU Protection',
+  pgPrev:'◀ Prev Page',
+  pgNext:'Next Page ▶',
+  pgModePaged:sz=>`📄 Paginated (${sz} frames)`,
+  pgModeAll:total=>`🌐 Show All Files (${total})`,
+  dupBannerTitle:(extra,groups)=>`🛡️ Smart Duplicate Filter: Found ${extra} duplicate file${extra===1?'':'s'} (${groups} unique gift${groups===1?'':'s'})`,
+  dupBannerBadge:extra=>`${extra} duplicate${extra===1?'':'s'}`,
+  dupBannerQuestion:(firstName,totalCopies)=>`File "${firstName}" has ${totalCopies} copies (verified by file shape, binary hash & name; duplicates held from upload). Delete duplicate files and keep only one primary copy?`,
+  dupConfirmKeepOne:'✅ Yes, Delete Duplicates (Keep One Copy Only)',
+  dupKeepAll:extra=>`📥 Keep All Copies (+${extra})`,
+  dupCopiesBadge:(total,extra)=>`${total} copies (${extra} duplicate)`,
+  dupMatchExactBoth:'✓ 100% File Shape & Name Match',
+  dupMatchExactShape:'✓ 100% File Binary Shape Match',
+  dupMatchVisualShape:'✓ Name & Dimensions Shape Match',
+  toastDupDeleted:n=>`✅ Deleted ${n} duplicate file(s) and locked in primary single copies only`,
+  toastDupKeptAll:n=>`📥 Allowed ${n} additional copy/copies into the studio`,
+  toastNoDuplicatesFound:n=>`✓ Scanned all ${n} file(s): No duplicate files found (1 unique copy per gift)`,
+  cardUniqueVerifiedBadge:'✓ Primary Copy (1)',
+  cardDuplicateFlagBadge:'⚠️ Duplicate Copy'
  }
 };
 
@@ -371,6 +476,11 @@ function applyLanguage(lang){
  if($('#brandTitle'))$('#brandTitle').textContent=dict.brandTitle;
  if($('#brandSubtitle'))$('#brandSubtitle').textContent=dict.brandSubtitle;
  if($('#upTxt'))$('#upTxt').textContent=dict.btnUpload;
+ if(typeof refreshDupFilterToggleUi==='function')refreshDupFilterToggleUi();
+ else{
+  if($('#scanDupTxt'))$('#scanDupTxt').textContent=dict.btnScanDuplicates;
+  if($('#barScanDupTxt'))$('#barScanDupTxt').textContent=dict.btnScanDuplicates;
+ }
  if($('#bgTxt'))$('#bgTxt').textContent=dict.btnBackground;
  if($('#wmTxt'))$('#wmTxt').textContent=dict.btnWatermark;
 
@@ -441,6 +551,7 @@ function applyLanguage(lang){
  if($('#cx'))$('#cx').textContent=dict.dockCancel;
  if($('#sv'))$('#sv').textContent=dict.dockSave;
 
+ if(typeof refreshDuplicateBannerUi==='function')refreshDuplicateBannerUi();
  syncModeUi();
  updateMuteUi();
  refreshCustomDurationUi();
@@ -903,11 +1014,473 @@ async function extractDroppedFilesAndFolders(dt){
  }
  return[...(dt.files||[])];
 }
+/* نظام الكشف الاحترافي عن الملفات المكررة (بصمة محتوى وشكل الملف + الاسم المنظّم) + تقسيم الصفحات الذكي (50 إطار/صفحة) لحماية المعالج وكارت الشاشة */
+const dupFilterState={
+ enabled:false
+};
+const pendingDupState={
+ active:false,
+ groups:[],
+ heldEntries:[],
+ inGridDuplicateIds:[]
+};
+const paginationState={
+ pageSize:50,
+ currentPage:1,
+ showAll:false
+};
+
+function getPaginationSlice(){
+ const totalItems=items.length;
+ const safePageSize=Math.max(1,Math.round(paginationState.pageSize||50));
+ if(paginationState.showAll){
+  return{
+   totalItems,
+   pageSize:safePageSize,
+   totalPages:1,
+   currentPage:1,
+   startIndex:0,
+   endIndex:totalItems,
+   displayFrom:totalItems>0?1:0,
+   displayTo:totalItems,
+   visibleItems:items.slice(),
+   showAll:true,
+   isPaginated:false
+  };
+ }
+ const totalPages=Math.max(1,Math.ceil(totalItems/safePageSize));
+ const clampedPage=Math.max(1,Math.min(totalPages,Math.round(paginationState.currentPage||1)));
+ paginationState.currentPage=clampedPage;
+ const startIndex=totalItems===0?0:(clampedPage-1)*safePageSize;
+ const endIndex=Math.min(totalItems,startIndex+safePageSize);
+ return{
+  totalItems,
+  pageSize:safePageSize,
+  totalPages,
+  currentPage:clampedPage,
+  startIndex,
+  endIndex,
+  displayFrom:totalItems>0?startIndex+1:0,
+  displayTo:endIndex,
+  visibleItems:items.slice(startIndex,endIndex),
+  showAll:false,
+  isPaginated:totalItems>safePageSize
+ };
+}
+
+function getVisiblePageItems(){
+ return getPaginationSlice().visibleItems;
+}
+
+function isItemOnCurrentPage(id){
+ const vis=getVisiblePageItems();
+ for(let i=0;i<vis.length;i++){
+  if(vis[i].id==id)return true;
+ }
+ return false;
+}
+
+function buildPaginationBarHtml(slice){
+ const rangeTxt=slice.showAll
+  ?t('pgAllInfo',slice.totalItems)
+  :t('pgRangeInfo',slice.displayFrom,slice.displayTo,slice.totalItems,slice.pageSize);
+ let navHtml='';
+ if(!slice.showAll&&slice.totalPages>1){
+  const btns=[];
+  btns.push(`<button type="button" class="pg-btn" data-pg-act="prev" ${slice.currentPage<=1?'disabled':''}>${esc(t('pgPrev'))}</button>`);
+  const maxPages=slice.totalPages;
+  const cur=slice.currentPage;
+  const pagesToShow=[];
+  if(maxPages<=9){
+   for(let p=1;p<=maxPages;p++)pagesToShow.push(p);
+  }else{
+   pagesToShow.push(1);
+   let s=Math.max(2,cur-2),e=Math.min(maxPages-1,cur+2);
+   if(s>2)pagesToShow.push('...');
+   for(let p=s;p<=e;p++)pagesToShow.push(p);
+   if(e<maxPages-1)pagesToShow.push('...');
+   pagesToShow.push(maxPages);
+  }
+  for(const p of pagesToShow){
+   if(p==='...'){
+    btns.push(`<span style="color:var(--mu);padding:0 4px;font-weight:700">…</span>`);
+   }else{
+    btns.push(`<button type="button" class="pg-btn ${p===cur?'act':''}" data-pg-num="${p}">${p}</button>`);
+   }
+  }
+  btns.push(`<button type="button" class="pg-btn" data-pg-act="next" ${slice.currentPage>=slice.totalPages?'disabled':''}>${esc(t('pgNext'))}</button>`);
+  navHtml=`<div class="pg-nav">${btns.join('')}</div>`;
+ }
+ const modesHtml=`<div class="pg-modes"><button type="button" class="pg-mode-btn ${!slice.showAll?'on':''}" data-pg-mode="paged">${esc(t('pgModePaged',slice.pageSize))}</button><button type="button" class="pg-mode-btn ${slice.showAll?'on':''}" data-pg-mode="all">${esc(t('pgModeAll',slice.totalItems))}</button></div>`;
+ return `<div class="pg-info"><span class="pg-badge">${esc(t('pgBadge',slice.currentPage,slice.totalPages))}</span><span>${esc(rangeTxt)}</span><span class="pg-gpu-tag">${esc(t('pgGpuTag'))}</span></div>${navHtml}${modesHtml}`;
+}
+
+function refreshPaginationUi(){
+ const topBar=$('#paginationTopBar');
+ const botBar=$('#paginationBottomBar');
+ const gridEl=$('#grid');
+ if(!items.length){
+  if(topBar)topBar.style.display='none';
+  if(botBar)botBar.style.display='none';
+  if(gridEl)gridEl.style.paddingBottom='110px';
+  return;
+ }
+ const slice=getPaginationSlice();
+ const html=buildPaginationBarHtml(slice);
+ if(topBar){
+  topBar.style.display='flex';
+  topBar.innerHTML=html;
+ }
+ const showBottom=items.length>12||slice.totalPages>1;
+ if(botBar){
+  botBar.style.display=showBottom?'flex':'none';
+  if(showBottom)botBar.innerHTML=html;
+ }
+ if(gridEl){
+  gridEl.style.paddingBottom=showBottom?'16px':'110px';
+ }
+}
+
+function goToPage(pageNum){
+ const slice=getPaginationSlice();
+ const target=Math.max(1,Math.min(slice.totalPages,Math.round(Number(pageNum)||1)));
+ if(!paginationState.showAll&&paginationState.currentPage===target)return slice;
+ paginationState.showAll=false;
+ paginationState.currentPage=target;
+ render();
+ try{window.scrollTo({top:0,behavior:'smooth'})}catch(e){}
+ return getPaginationSlice();
+}
+
+function setPaginationShowAll(showAllFlag){
+ const next=!!showAllFlag;
+ if(paginationState.showAll===next)return getPaginationSlice();
+ paginationState.showAll=next;
+ if(!next)paginationState.currentPage=1;
+ render();
+ return getPaginationSlice();
+}
+
+function handlePaginationBarClick(e){
+ const numBtn=e.target.closest('[data-pg-num]');
+ if(numBtn){
+  e.stopPropagation();
+  goToPage(Number(numBtn.dataset.pgNum));
+  return;
+ }
+ const actBtn=e.target.closest('[data-pg-act]');
+ if(actBtn){
+  e.stopPropagation();
+  const act=actBtn.dataset.pgAct;
+  const slice=getPaginationSlice();
+  if(act==='prev'&&slice.currentPage>1)goToPage(slice.currentPage-1);
+  else if(act==='next'&&slice.currentPage<slice.totalPages)goToPage(slice.currentPage+1);
+  return;
+ }
+ const modeBtn=e.target.closest('[data-pg-mode]');
+ if(modeBtn){
+  e.stopPropagation();
+  const m=modeBtn.dataset.pgMode;
+  setPaginationShowAll(m==='all');
+ }
+}
+if($('#paginationTopBar'))$('#paginationTopBar').onclick=handlePaginationBarClick;
+if($('#paginationBottomBar'))$('#paginationBottomBar').onclick=handlePaginationBarClick;
+
+function refreshDupFilterToggleUi(){
+ const en=!!dupFilterState.enabled;
+ const btn=$('#scanDuplicatesBtn');
+ const barBtn=$('#barScanDupBtn');
+ if(btn)btn.classList.toggle('dup-on',en);
+ if(barBtn)barBtn.classList.toggle('dup-on',en);
+ const label=en?t('btnScanDuplicatesOn'):t('btnScanDuplicates');
+ if($('#scanDupTxt'))$('#scanDupTxt').textContent=label;
+ if($('#barScanDupTxt'))$('#barScanDupTxt').textContent=label;
+}
+
+function normalizeGiftFileName(rawName){
+ const trimmed=String(rawName||'').trim();
+ const extMatch=trimmed.match(/\.([^.]+)$/);
+ const ext=extMatch?extMatch[1].toLowerCase().trim():'';
+ let base=extMatch?trimmed.slice(0,-extMatch[0].length):trimmed;
+ base=base.replace(/^(?:copy\s+of\s+|نسخة\s+من\s+|نسخه\s+من\s+)/i,'').trim();
+ let prev='';
+ while(prev!==base){
+  prev=base;
+  base=base
+   .replace(/\s*(?:-\s*)?(?:copy|نسخة|نسخه|مكرر)(?:\s*\(\d+\)|\s*\[\d+\]|\s+\d+)?$/i,'')
+   .replace(/[_\-\s]+(?:copy|dup|duplicate)(?:[_\-\s]*\d+)?$/i,'')
+   .replace(/\s*\(\d+\)$/,'')
+   .replace(/\s*\[\d+\]$/,'')
+   .trim();
+ }
+ const normalizedBase=base.toLowerCase().replace(/[\s_-]+/g,'_').replace(/^_+|_+$/g,'')||'gift';
+ const normalizedFull=ext?`${normalizedBase}.${ext}`:normalizedBase;
+ return{normalizedFull,normalizedBase,ext};
+}
+
+function computeGiftBinarySignature(u){
+ if(!u||!u.length)return{contentHash:'empty:0',byteLength:0,magicFormat:'unknown'};
+ const len=u.length;
+ const magicFormat=sniff(u)||'unknown';
+ let h1=0x811c9dc5>>>0,h2=0x01000193>>>0;
+ if(len<=524288){
+  for(let i=0;i<len;i++){
+   const b=u[i];
+   h1^=b;h1=Math.imul(h1,0x01000193)>>>0;
+   h2^=(b^(i&0xff));h2=Math.imul(h2,0x811c9dc5)>>>0;
+  }
+ }else{
+  const chunk=65536;
+  for(let i=0;i<chunk;i++){h1^=u[i];h1=Math.imul(h1,0x01000193)>>>0}
+  const mid=Math.floor(len/2)-Math.floor(chunk/2);
+  for(let i=mid;i<mid+chunk;i++){h2^=u[i];h2=Math.imul(h2,0x811c9dc5)>>>0}
+  for(let i=len-chunk;i<len;i++){
+   const b=u[i];
+   h1^=b;h1=Math.imul(h1,0x01000193)>>>0;
+   h2^=b;h2=Math.imul(h2,0x811c9dc5)>>>0;
+  }
+  const step=Math.max(1,Math.floor(len/8192));
+  for(let i=0;i<len;i+=step){h1^=u[i];h1=Math.imul(h1,0x01000193)>>>0}
+ }
+ return{
+  contentHash:`${magicFormat}:${len}:${h1.toString(16).padStart(8,'0')}${h2.toString(16).padStart(8,'0')}`,
+  byteLength:len,
+  magicFormat
+ };
+}
+
+function formatFileSizeShort(bytes){
+ const b=Number(bytes)||0;
+ if(b<1024)return b+' B';
+ if(b<1048576)return (b/1024).toFixed(1)+' KB';
+ return (b/1048576).toFixed(2)+' MB';
+}
+
+function refreshDuplicateBannerUi(){
+ const banner=$('#dupAlertBanner');
+ if(!banner)return;
+ const groups=pendingDupState.groups||[];
+ const totalExtra=groups.reduce((s,g)=>s+(g.extraCopies||0),0);
+ if(!pendingDupState.active||!groups.length||totalExtra<=0){
+  banner.style.display='none';
+  return;
+ }
+ banner.style.display='block';
+ const firstG=groups[0];
+ if($('#dupBannerTitle'))$('#dupBannerTitle').textContent=t('dupBannerTitle',totalExtra,groups.length);
+ if($('#dupBannerCountBadge'))$('#dupBannerCountBadge').textContent=t('dupBannerBadge',totalExtra);
+ if($('#dupBannerQuestion'))$('#dupBannerQuestion').textContent=t('dupBannerQuestion',firstG.originalName,firstG.totalCopies);
+ if($('#dupConfirmKeepOneBtn'))$('#dupConfirmKeepOneBtn').textContent=t('dupConfirmKeepOne');
+ if($('#dupKeepAllBtn')){
+  const keepBtn=$('#dupKeepAllBtn');
+  keepBtn.textContent=t('dupKeepAll',totalExtra);
+  keepBtn.style.display=pendingDupState.heldEntries.length?'inline-flex':'none';
+ }
+ const listEl=$('#dupGroupsList');
+ if(listEl){
+  listEl.innerHTML=groups.map(g=>{
+   const reasonTxt=g.matchReason==='exact_content_and_name'
+    ?t('dupMatchExactBoth')
+    :g.matchReason==='exact_content'
+    ?t('dupMatchExactShape')
+    :t('dupMatchVisualShape');
+   const sizeTxt=g.byteLength?` · ${formatFileSizeShort(g.byteLength)}`:'';
+   const dupNamesHint=g.duplicateNames&&g.duplicateNames.length?esc(g.duplicateNames.join(' ، ')):'';
+   return `<div class="dup-group-chip" title="${dupNamesHint}"><span>🎁</span><b>${esc(g.originalName)}</b><span class="dup-copies-tag">${esc(t('dupCopiesBadge',g.totalCopies,g.extraCopies))}</span><span class="dup-match-tag">${esc(reasonTxt)}${esc(sizeTxt)}</span></div>`;
+  }).join('');
+ }
+}
+
+function confirmKeepOnlyOneCopy(){
+ const groups=pendingDupState.groups||[];
+ const heldCount=pendingDupState.heldEntries.length;
+ const gridDupIds=[...(pendingDupState.inGridDuplicateIds||[])];
+ // Remove any duplicate cards that were in the grid
+ gridDupIds.forEach(id=>removeCard(id));
+ // Mark primary kept items as verified unique single copies
+ groups.forEach(g=>{
+  const primaryIt=items.find(x=>x.id==g.primaryId);
+  if(primaryIt){
+   primaryIt.verifiedSingleCopy=true;
+   primaryIt.totalDetectedCopies=g.totalCopies;
+   delete primaryIt.isDuplicateCopy;
+   updateCard(primaryIt);
+  }
+ });
+ items.forEach(it=>{
+  if(it.isDuplicateCopy){
+   delete it.isDuplicateCopy;
+   updateCard(it);
+  }
+ });
+ const totalDeleted=heldCount+gridDupIds.length;
+ pendingDupState.active=false;
+ pendingDupState.groups=[];
+ pendingDupState.heldEntries=[];
+ pendingDupState.inGridDuplicateIds=[];
+ refreshDuplicateBannerUi();
+ updateBar();
+ if(totalDeleted>0){
+  toast(t('toastDupDeleted',totalDeleted));
+ }
+ return{deletedCount:totalDeleted,remainingCount:items.length};
+}
+
+async function allowAllHeldDuplicates(silent){
+ const held=[...(pendingDupState.heldEntries||[])];
+ pendingDupState.active=false;
+ pendingDupState.groups=[];
+ pendingDupState.heldEntries=[];
+ pendingDupState.inGridDuplicateIds=[];
+ refreshDuplicateBannerUi();
+ if(!held.length)return;
+ const a=held.map(entry=>({
+  id:nid++,
+  file:entry.file,
+  name:entry.name,
+  fmt:'',
+  sel:false,
+  dur:0,
+  vis:true,
+  userPaused:false,
+  contentHash:entry.contentHash,
+  byteLength:entry.byteLength,
+  normalizedName:entry.normalizedName,
+  magicFormat:entry.magicFormat,
+  isDuplicateCopy:!silent
+ }));
+ items.push(...a);
+ const visibleNew=a.filter(it=>isItemOnCurrentPage(it.id));
+ if(visibleNew.length)appendCards(visibleNew);
+ updateBar();
+ let i=0,workers=Array.from({length:Math.min(6,a.length)},async()=>{
+  while(i<a.length){
+   const it=a[i++];
+   await analyze(it);
+   if(it.rej){removeCard(it.id)}
+   else if(isItemOnCurrentPage(it.id)){updateCard(it);ensure(it.id,true)}
+   else{updateBar()}
+  }
+ });
+ await Promise.all(workers);
+ if(!silent)toast(t('toastDupKeptAll',a.length));
+}
+
+function scanExistingForDuplicates(showToastWhenClean){
+ const seenByHash=new Map();
+ const seenByNameAndShape=new Map();
+ const groupsMap=new Map();
+ const dupIds=[];
+
+ items.forEach(it=>{
+  delete it.isDuplicateCopy;
+  const norm=normalizeGiftFileName(it.name);
+  it.normalizedName=norm.normalizedFull;
+  const hashKey=it.contentHash||'';
+  const shapeKey=`${norm.normalizedFull}|${it.fmt||it.magicFormat||norm.ext}|${it.w||0}x${it.h||0}|${Math.round((it.dur||0)*10)}`;
+
+  let primary=null,reason='exact_content_and_name';
+  if(hashKey&&seenByHash.has(hashKey)){
+   primary=seenByHash.get(hashKey);
+   reason=(primary.normalizedName===norm.normalizedFull)?'exact_content_and_name':'exact_content';
+  }else if(seenByNameAndShape.has(shapeKey)){
+   primary=seenByNameAndShape.get(shapeKey);
+   reason='same_name_and_shape';
+  }
+
+  if(!primary){
+   if(hashKey)seenByHash.set(hashKey,it);
+   seenByNameAndShape.set(shapeKey,it);
+  }else{
+   it.isDuplicateCopy=true;
+   dupIds.push(it.id);
+   let g=groupsMap.get(primary.id);
+   if(!g){
+    g={
+     primaryId:primary.id,
+     originalName:primary.name,
+     normalizedName:primary.normalizedName||norm.normalizedFull,
+     totalCopies:1,
+     extraCopies:0,
+     byteLength:primary.byteLength||(primary.file&&primary.file.size)||0,
+     matchReason:reason,
+     duplicateNames:[]
+    };
+    groupsMap.set(primary.id,g);
+   }
+   g.totalCopies++;
+   g.extraCopies++;
+   g.duplicateNames.push(it.name);
+  }
+  updateCard(it);
+ });
+
+ if(dupIds.length>0){
+  pendingDupState.active=true;
+  pendingDupState.groups=Array.from(groupsMap.values());
+  pendingDupState.heldEntries=[];
+  pendingDupState.inGridDuplicateIds=dupIds;
+  refreshDuplicateBannerUi();
+  return{hasDuplicates:true,duplicateCount:dupIds.length};
+ }
+
+ if(pendingDupState.active&&pendingDupState.heldEntries.length>0){
+  refreshDuplicateBannerUi();
+  return{hasDuplicates:true,duplicateCount:pendingDupState.heldEntries.length};
+ }
+
+ if(showToastWhenClean){
+  if(!items.length)toast(t('toastUploadFirst'));
+  else toast(t('toastNoDuplicatesFound',items.length));
+ }
+ return{hasDuplicates:false,duplicateCount:0};
+}
+
+function toggleDuplicateFilterMode(forceState){
+ const nextState=(typeof forceState==='boolean')?forceState:!dupFilterState.enabled;
+ dupFilterState.enabled=nextState;
+ refreshDupFilterToggleUi();
+ if(dupFilterState.enabled){
+  toast(t('toastDupFilterEnabled'));
+  if(items.length>0){
+   scanExistingForDuplicates(false);
+  }
+ }else{
+  if(pendingDupState.heldEntries&&pendingDupState.heldEntries.length>0){
+   allowAllHeldDuplicates(true);
+  }
+  pendingDupState.active=false;
+  pendingDupState.groups=[];
+  pendingDupState.heldEntries=[];
+  pendingDupState.inGridDuplicateIds=[];
+  items.forEach(it=>{
+   if(it.isDuplicateCopy||it.verifiedSingleCopy){
+    delete it.isDuplicateCopy;
+    delete it.verifiedSingleCopy;
+    updateCard(it);
+   }
+  });
+  refreshDuplicateBannerUi();
+  toast(t('toastDupFilterDisabled'));
+ }
+ return dupFilterState.enabled;
+}
+
 async function analyze(it){
  try{
   const rawU=new Uint8Array(await it.file.arrayBuffer());
   const u=unwrapGiftBytes(rawU);
   if(u!==rawU)it.file=new File([u],it.name,{type:it.file.type||''});
+  if(!it.contentHash){
+   const sigInfo=computeGiftBinarySignature(u);
+   it.contentHash=sigInfo.contentHash;
+   it.byteLength=sigInfo.byteLength;
+   it.magicFormat=sigInfo.magicFormat;
+  }
+  if(!it.normalizedName){
+   it.normalizedName=normalizeGiftFileName(it.name).normalizedFull;
+  }
   let f=sniff(u);
   const extMatch=(it.name||'').match(/\.([^.]+)$/),ext=extMatch?extMatch[1].toLowerCase():'';
   if(!f&&(ext==='vap'||ext==='yyeva'))f='mp4';
@@ -943,6 +1516,7 @@ async function analyze(it){
   else{[it.w,it.h]=await imgDims(it.url);it.dur=f=='gif'?gifDur(u):f=='apng'?pngInfo(u).t:f=='webpa'?webpDur(u):0;if(f=='svg'&&/<animate|@keyframes/.test(new TextDecoder().decode(u)))it.dur=0}
  }catch(e){it.err=e.message||String(e)}
 }
+
 async function addFiles(fl){
  const unpacked=await unpackIncomingFilesAndArchives(fl,0);
  const effectiveFiles=unpacked.files;
@@ -953,24 +1527,193 @@ async function addFiles(fl){
    toast(t('toastNoGiftsInArchive'));
   }
  }
- const a=[...effectiveFiles].map(f=>({id:nid++,file:f,name:f.name,fmt:'',sel:false,dur:0,vis:true,userPaused:false}));
- if(!a.length)return;
- items.push(...a);
- appendCards(a);
+ if(!effectiveFiles||!effectiveFiles.length)return;
+
+ const filterActive=!!dupFilterState.enabled;
+ const seenByHash=new Map();
+ const seenByNameAndSize=new Map();
+ if(filterActive){
+  for(const ex of items){
+   if(!ex.contentHash&&ex.file){
+    try{
+     const u=unwrapGiftBytes(new Uint8Array(await ex.file.arrayBuffer()));
+     const sigInfo=computeGiftBinarySignature(u);
+     ex.contentHash=sigInfo.contentHash;
+     ex.byteLength=sigInfo.byteLength;
+     ex.magicFormat=sigInfo.magicFormat;
+    }catch(e){}
+   }
+   const norm=normalizeGiftFileName(ex.name);
+   ex.normalizedName=norm.normalizedFull;
+   if(ex.contentHash)seenByHash.set(ex.contentHash,ex);
+   if(ex.byteLength)seenByNameAndSize.set(`${norm.normalizedFull}|${ex.magicFormat||norm.ext}|${ex.byteLength}`,ex);
+  }
+ }
+
+ const uniqueNewItems=[];
+ const heldDuplicates=[];
+ const groupsMap=new Map();
+ let ignoredStaticCount=0;
+
+ for(const f of [...effectiveFiles]){
+  if(!f)continue;
+  let u=null;
+  try{
+   const rawU=new Uint8Array(await f.arrayBuffer());
+   u=unwrapGiftBytes(rawU);
+  }catch(e){}
+  if(!u||!u.length)continue;
+
+  let sniffFmt=sniff(u);
+  if(sniffFmt==='png'||sniffFmt==='jpg'||sniffFmt==='webp'){
+   ignoredStaticCount++;
+   continue;
+  }
+
+  const sigInfo=computeGiftBinarySignature(u);
+  const norm=normalizeGiftFileName(f.name);
+  const sizeKey=`${norm.normalizedFull}|${sigInfo.magicFormat||norm.ext}|${sigInfo.byteLength}`;
+
+  let matchedPrimary=null,matchReason='exact_content_and_name';
+  if(filterActive){
+   if(seenByHash.has(sigInfo.contentHash)){
+    matchedPrimary=seenByHash.get(sigInfo.contentHash);
+    matchReason=(matchedPrimary.normalizedName===norm.normalizedFull)?'exact_content_and_name':'exact_content';
+   }else if(seenByNameAndSize.has(sizeKey)){
+    matchedPrimary=seenByNameAndSize.get(sizeKey);
+    matchReason='same_name_and_shape';
+   }
+  }
+
+  const cleanFile=(u.byteLength!==f.size)?new File([u],f.name,{type:f.type||''}):f;
+
+  if(!matchedPrimary){
+   const newItem={
+    id:nid++,
+    file:cleanFile,
+    name:f.name,
+    fmt:'',
+    sel:false,
+    dur:0,
+    vis:true,
+    userPaused:false,
+    contentHash:sigInfo.contentHash,
+    byteLength:sigInfo.byteLength,
+    normalizedName:norm.normalizedFull,
+    magicFormat:sigInfo.magicFormat
+   };
+   uniqueNewItems.push(newItem);
+   if(filterActive){
+    seenByHash.set(sigInfo.contentHash,newItem);
+    seenByNameAndSize.set(sizeKey,newItem);
+   }
+  }else{
+   // تم اكتشاف نسخة مكررة أثناء تفعيل زر فحص المكرر (اللون الأزرق)!
+   heldDuplicates.push({
+    file:cleanFile,
+    name:f.name,
+    contentHash:sigInfo.contentHash,
+    byteLength:sigInfo.byteLength,
+    normalizedName:norm.normalizedFull,
+    magicFormat:sigInfo.magicFormat,
+    primaryId:matchedPrimary.id
+   });
+   let g=groupsMap.get(matchedPrimary.id);
+   if(!g){
+    g={
+     primaryId:matchedPrimary.id,
+     originalName:matchedPrimary.name,
+     normalizedName:matchedPrimary.normalizedName||norm.normalizedFull,
+     totalCopies:1,
+     extraCopies:0,
+     byteLength:sigInfo.byteLength,
+     matchReason,
+     duplicateNames:[]
+    };
+    groupsMap.set(matchedPrimary.id,g);
+   }
+   g.totalCopies++;
+   g.extraCopies++;
+   g.duplicateNames.push(f.name);
+   matchedPrimary.totalDetectedCopies=g.totalCopies;
+  }
+ }
+
+ if(ignoredStaticCount>0){
+  toast(t('toastIgnoredStatic',ignoredStaticCount));
+ }
+
+ if(filterActive&&heldDuplicates.length>0){
+  pendingDupState.active=true;
+  pendingDupState.groups=Array.from(groupsMap.values());
+  pendingDupState.heldEntries=heldDuplicates;
+  pendingDupState.inGridDuplicateIds=[];
+  refreshDuplicateBannerUi();
+ }
+
+ if(!uniqueNewItems.length)return;
+
+ items.push(...uniqueNewItems);
+ // نضيف فقط الكروت التي تقع في الصفحة الحالية (بحد أقصى 50 إطار في الصفحة لحماية المعالج وكارت الشاشة)
+ const newOnCurrentPage=uniqueNewItems.filter(it=>isItemOnCurrentPage(it.id));
+ if(newOnCurrentPage.length)appendCards(newOnCurrentPage);
  updateBar();
- let i=0,workers=Array.from({length:Math.min(6,a.length)},async()=>{
-  while(i<a.length){
-   const it=a[i++];
+ let i=0,workers=Array.from({length:Math.min(6,uniqueNewItems.length)},async()=>{
+  while(i<uniqueNewItems.length){
+   const it=uniqueNewItems[i++];
    await analyze(it);
    if(it.rej){removeCard(it.id)}
-   else{updateCard(it);ensure(it.id,true)}
+   else if(isItemOnCurrentPage(it.id)){updateCard(it);ensure(it.id,true)}
+   else{updateBar()}
   }
  });
  await Promise.all(workers);
- const rj=a.filter(x=>x.rej);
- if(rj.length){items=items.filter(x=>!x.rej);updateBar();toast(t('toastIgnoredStatic', rj.length))}
+ const rj=uniqueNewItems.filter(x=>x.rej);
+ if(rj.length){items=items.filter(x=>!x.rej);render();toast(t('toastIgnoredStatic', rj.length))}
+
+ // 2. فحص إضافي بعد تحليل أبعاد وشكل الهدية إذا كان زر فحص المكرر مفعّلاً (أزرق)
+ if(dupFilterState.enabled){
+  const shapeSeen=new Map();
+  const postDupIds=[];
+  for(const it of items){
+   if(it.rej||it.err)continue;
+   const norm=it.normalizedName||normalizeGiftFileName(it.name).normalizedFull;
+   const visualKey=`${norm}|${it.fmt||''}|${it.w||0}x${it.h||0}|${Math.round((it.dur||0)*10)}`;
+   if(!shapeSeen.has(visualKey)){
+    shapeSeen.set(visualKey,it);
+   }else if(!it.isDuplicateCopy){
+    const prim=shapeSeen.get(visualKey);
+    it.isDuplicateCopy=true;
+    postDupIds.push(it.id);
+    let g=groupsMap.get(prim.id);
+    if(!g){
+     g={
+      primaryId:prim.id,
+      originalName:prim.name,
+      normalizedName:norm,
+      totalCopies:1,
+      extraCopies:0,
+      byteLength:prim.byteLength||(prim.file&&prim.file.size)||0,
+      matchReason:'same_name_and_shape',
+      duplicateNames:[]
+     };
+     groupsMap.set(prim.id,g);
+    }
+    g.totalCopies++;
+    g.extraCopies++;
+    g.duplicateNames.push(it.name);
+    updateCard(it);
+   }
+  }
+  if(postDupIds.length>0){
+   pendingDupState.active=true;
+   pendingDupState.groups=Array.from(groupsMap.values());
+   pendingDupState.inGridDuplicateIds=[...(pendingDupState.inGridDuplicateIds||[]),...postDupIds];
+   refreshDuplicateBannerUi();
+  }
+ }
 }
-function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2547;color:#fff;padding:10px 18px;border-radius:12px;z-index:99;border:1px solid #fff3;font-family:system-ui,sans-serif;direction:'+(document.documentElement.dir||'rtl');document.body.append(d);setTimeout(()=>d.remove(),4000)}
+function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#14141c;color:#e8e8ee;padding:10px 18px;border-radius:12px;z-index:99;border:1px solid rgba(124,92,255,.55);box-shadow:0 10px 28px rgba(0,0,0,.65);font-family: inherit;direction:'+(document.documentElement.dir||'rtl');document.body.append(d);setTimeout(()=>d.remove(),4000)}
 
 /* المشغلات مع دعم الرسم الفوري والتدرج الدقيق للفريمات أثناء التصدير بجودة عالية */
 let _pag=null;
@@ -1234,10 +1977,11 @@ function drop(id){const P=players.get(id);if(P&&P!=1)P.destroy();players.delete(
 const io=new IntersectionObserver(es=>es.forEach(e=>{const id=+e.target.dataset.id,it=items.find(x=>x.id==id);if(it)it.vis=e.isIntersecting;if(e.isIntersecting&&!isExporting)ensure(id)}),{rootMargin:'800px'});
 const each=fn=>players.forEach(p=>p!=1&&fn(p));
 
-/* مراقب تلقائي لضمان استمرار تشغيل جميع الملفات المرفوعة معاً بدون توقف (يتوقف مؤقتاً أثناء التصدير لمنع التقطيع) */
+/* مراقب تلقائي لضمان استمرار تشغيل ملفات الصفحة المعروضة حالياً فقط (لحماية المعالج وكارت الشاشة) */
 setInterval(()=>{
  if(!playing||isExporting)return;
- for(const it of items){
+ const pageItems=getVisiblePageItems();
+ for(const it of pageItems){
   if(it.err||it.playErr||!it.fmt||it.userPaused)continue;
   const P=players.get(it.id);
   if(!P)ensure(it.id);
@@ -1254,21 +1998,27 @@ function formatDurBadge(it){
 }
 
 /* الواجهة التفاعلية بدون إعادة بناء الشبكة أو إيقاف المشغلات */
+function cardDupBadgeHtml(it){
+ if(it.isDuplicateCopy)return `<span class="dup-card-badge">${esc(t('cardDuplicateFlagBadge'))}</span>`;
+ if(it.verifiedSingleCopy)return `<span class="uniq-card-badge">${esc(t('cardUniqueVerifiedBadge'))}</span>`;
+ return '';
+}
 function cardInnerHtml(it){
  const itMuted=it.muted!==undefined?it.muted:muted;
  const soundBtn=it.audio?`<button data-a="m" title="${itMuted?t('cardAudioUnmute'):t('cardAudioMute')}">${itMuted?'🔇':'🔊'}</button>`:'';
- return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span><input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="${t('cardPlay')}">▶</button><button data-a="s" title="${t('cardPause')}">⏸</button><button data-a="r" title="${t('cardRestart')}">🔄</button>${soundBtn}<button data-a="df" title="${t('cardDownloadGift')}">📁</button><button data-a="di" title="${t('cardDownloadImage')}">🖼</button><button data-a="x" title="${t('cardDelete')}" style="margin-inline-start:auto">✖</button></div>`;
+ return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span>${cardDupBadgeHtml(it)}<input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="${t('cardPlay')}">▶</button><button data-a="s" title="${t('cardPause')}">⏸</button><button data-a="r" title="${t('cardRestart')}">🔄</button>${soundBtn}<button data-a="df" title="${t('cardDownloadGift')}">📁</button><button data-a="di" title="${t('cardDownloadImage')}">🖼</button><button data-a="x" title="${t('cardDelete')}" style="margin-inline-start:auto">✖</button></div>`;
 }
 function updateBar(){
  $('#drop').style.display=items.length?'none':'block';
  $('#bar').style.display=items.length?'flex':'none';
  const selCount=items.filter(i=>i.sel).length;
  $('#cnt').textContent=t('barItemCount', items.length)+(selCount?' · '+t('barSelectedCount', selCount):'');
+ refreshPaginationUi();
 }
 function appendCards(list){
  const g=$('#grid'),frag=document.createDocumentFragment();
  for(const it of list){
-  const c=E('div','card'+(it.sel?' sel':''),cardInnerHtml(it));
+  const c=E('div','card'+(it.sel?' sel':'')+(it.isDuplicateCopy?' is-dup':''),cardInnerHtml(it));
   c.dataset.id=it.id;c.draggable=true;frag.append(c);
  }
  g.append(frag);
@@ -1278,7 +2028,15 @@ function appendCards(list){
  });
 }
 function updateCard(it){
- const c=document.querySelector('.card[data-id="'+it.id+'"]');if(!c)return;
+ const c=document.querySelector('.card[data-id="'+it.id+'"]');if(!c){updateBar();return;}
+ c.classList.toggle('is-dup',!!it.isDuplicateCopy);
+ const oldBadge=c.querySelector('.dup-card-badge,.uniq-card-badge');
+ if(oldBadge)oldBadge.remove();
+ const badgeHtml=cardDupBadgeHtml(it);
+ if(badgeHtml){
+  const tagEl=c.querySelector('.tag');
+  if(tagEl)tagEl.insertAdjacentHTML('afterend',badgeHtml);
+ }
  const tag=c.querySelector('.tag');if(tag)tag.textContent=it.kind||NAMES[it.fmt]||'؟';
  const meta=c.querySelector('.meta');if(meta)meta.innerHTML=`<b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}`;
  if(it.audio&&!c.querySelector('button[data-a="m"]')){
@@ -1298,13 +2056,30 @@ function removeCard(id){
  const P=players.get(id);if(P&&P!=1)P.destroy();players.delete(id);
  const c=document.querySelector('.card[data-id="'+id+'"]');if(c){io.unobserve(c);c.remove()}
  items=items.filter(x=>x.id!=id);
- updateBar();
+ const pg=getPaginationSlice();
+ const mountedCards=document.querySelectorAll('#grid .card').length;
+ if(!paginationState.showAll && mountedCards < pg.visibleItems.length){
+  render();
+ } else {
+  updateBar();
+ }
 }
 function render(){
- io.disconnect();players.forEach(p=>p!=1&&p.destroy());players.clear();
+ io.disconnect();
+ players.forEach(p=>p!=1&&p.destroy&&p.destroy());
+ players.clear();
+ alphaTasks.clear();
+ customPreviewTasks.clear();
  const g=$('#grid');g.innerHTML='';
- appendCards(items);
- for(const it of items){if(!it.err&&it.fmt){const c=document.querySelector('.card[data-id="'+it.id+'"]');if(c)io.observe(c);ensure(it.id,true)}}
+ const pageItems=getVisiblePageItems();
+ appendCards(pageItems);
+ for(const it of pageItems){
+  if(!it.err&&it.fmt){
+   const c=document.querySelector('.card[data-id="'+it.id+'"]');
+   if(c)io.observe(c);
+   ensure(it.id,true);
+  }
+ }
  updateBar();
 }
 function applyBg(){const b=bg;let v;
@@ -1474,6 +2249,59 @@ window.__setCustomDurationState=(en,sec)=>{
  return window.__getCustomDurationState();
 };
 
+if($('#dupConfirmKeepOneBtn'))$('#dupConfirmKeepOneBtn').onclick=e=>{
+ e.stopPropagation();
+ confirmKeepOnlyOneCopy();
+};
+if($('#dupKeepAllBtn'))$('#dupKeepAllBtn').onclick=e=>{
+ e.stopPropagation();
+ allowAllHeldDuplicates();
+};
+if($('#dupDismissBtn'))$('#dupDismissBtn').onclick=e=>{
+ e.stopPropagation();
+ confirmKeepOnlyOneCopy();
+};
+if($('#scanDuplicatesBtn'))$('#scanDuplicatesBtn').onclick=e=>{
+ e.stopPropagation();
+ toggleDuplicateFilterMode();
+};
+if($('#barScanDupBtn'))$('#barScanDupBtn').onclick=e=>{
+ e.stopPropagation();
+ toggleDuplicateFilterMode();
+};
+
+window.__getDuplicateState=()=>({
+ filterEnabled:dupFilterState.enabled,
+ active:pendingDupState.active,
+ groups:pendingDupState.groups.map(g=>({...g})),
+ heldCount:pendingDupState.heldEntries.length,
+ inGridDuplicateCount:pendingDupState.inGridDuplicateIds.length,
+ loadedItemsCount:items.length,
+ loadedItemNames:items.map(x=>x.name),
+ verifiedSingleCopyNames:items.filter(x=>x.verifiedSingleCopy).map(x=>x.name)
+});
+window.__toggleDuplicateFilter=(forceVal)=>{
+ if(typeof forceVal==='boolean'&&dupFilterState.enabled===forceVal)return dupFilterState.enabled;
+ return toggleDuplicateFilterMode();
+};
+window.__confirmKeepOneCopy=()=>confirmKeepOnlyOneCopy();
+window.__scanForDuplicates=()=>scanExistingForDuplicates(true);
+window.__getPaginationState=()=>{
+ const pg=getPaginationSlice();
+ return {
+  currentPage:pg.currentPage,
+  pageSize:pg.pageSize,
+  totalPages:pg.totalPages,
+  totalItems:pg.totalItems,
+  showAll:pg.showAll,
+  visibleDomCardsCount:document.querySelectorAll('#grid .card').length,
+  startRank:pg.displayFrom,
+  endRank:pg.displayTo
+ };
+};
+window.__goToPage=(p)=>goToPage(p);
+window.__setPaginationShowAll=(v)=>setPaginationShowAll(v);
+
 addEventListener('click',()=>{$('#pop').classList.remove('o');$('#wmpop').classList.remove('o');$('#durpop').classList.remove('o')});
 addEventListener('resize',()=>refreshAllWatermarks());
 
@@ -1531,9 +2359,9 @@ g.onchange=e=>{const s=e.target;if(!s.dataset.al)return;const it=items.find(a=>a
 g.ondragstart=e=>{const c=e.target.closest('.card');if(c){dragId=+c.dataset.id;c.classList.add('dg')}};
 g.ondragend=e=>e.target.classList?.remove('dg');g.ondragover=e=>{if(dragId)e.preventDefault()};
 g.ondrop=e=>{const c=e.target.closest('.card');if(!c||!dragId)return;e.preventDefault();e.stopPropagation();const a=items.findIndex(i=>i.id==dragId),b0=items.findIndex(i=>i.id==+c.dataset.id);if(a<0||b0<0||a==b0){dragId=0;return}const [m]=items.splice(a,1);items.splice(b0,0,m);const dragEl=document.querySelector('.card[data-id="'+dragId+'"]');if(dragEl&&c.parentNode==g){if(a<b0)g.insertBefore(dragEl,c.nextSibling);else g.insertBefore(dragEl,c)}dragId=0};
-$('#pa').onclick=()=>{playing=true;items.forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.play())})};
+$('#pa').onclick=()=>{playing=true;getVisiblePageItems().forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.play())})};
 $('#sa').onclick=()=>{playing=false;each(p=>p.pause())};
-$('#ra').onclick=()=>{playing=true;items.forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.restart())})};
+$('#ra').onclick=()=>{playing=true;getVisiblePageItems().forEach(it=>{it.userPaused=false;ensure(it.id,true).then(P=>P&&P.restart())})};
 function updateMuteUi(){
  const mb=$('#muBtn');
  if(mb){
@@ -1564,6 +2392,8 @@ $('#mu').onchange=e=>{
 };
 updateMuteUi();
 refreshCustomDurationUi();
+refreshDupFilterToggleUi();
+refreshPaginationUi();
 $('#zm').oninput=e=>{g.style.setProperty('--w',e.target.value+'px');setTimeout(refreshAllWatermarks,30)};
 
 /* التسجيل والتصدير الاحترافي فريم-بفريم بدون أي تقطيع أو تعليق حتى مع عدد كبير من الفيديوهات والجودة العالية */
@@ -2545,7 +3375,7 @@ $('#ex').onclick=async()=>{
  }catch(e){ds.textContent='خطأ: '+(e.message||e)}
  finally{
   isExporting=false;
-  items.forEach(it=>{if(!it.err&&it.fmt&&it.vis!==false)ensure(it.id)});
+  getVisiblePageItems().forEach(it=>{if(!it.err&&it.fmt&&it.vis!==false)ensure(it.id)});
  }
  $('#ex').disabled=false;
  if(out){

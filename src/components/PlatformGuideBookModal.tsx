@@ -76,7 +76,9 @@ export default function PlatformGuideBook({
     const frameStyle: React.CSSProperties = {
       position: 'relative',
       width: '100%',
-      height: '220px',
+      height: '236px',
+      minHeight: '236px',
+      flexShrink: 0,
       borderRadius: '12px',
       background: '#07070a',
       border: '1px solid #1e1e28',
@@ -99,7 +101,7 @@ export default function PlatformGuideBook({
             style={{
               background: '#0d0d12',
               borderRadius: '8px',
-              border: highlightedCallout === 3 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              border: highlightedCallout === 4 ? '1px solid #7c5cff' : '1px solid #1e1e28',
               padding: '8px',
               display: 'flex',
               flexDirection: 'column',
@@ -107,7 +109,7 @@ export default function PlatformGuideBook({
             }}
           >
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#b79cff' }}>
-              {isAr ? 'الطبقات والصوت' : 'Layers & Audio'}
+              {isAr ? 'الطبقات والصوت والدفعات' : 'Layers, Audio & Batch'}
             </div>
             <div
               style={{
@@ -119,7 +121,7 @@ export default function PlatformGuideBook({
                 color: '#e8e8ee',
               }}
             >
-              {isAr ? 'تنعيم الحواف + علامة مائية' : 'Edge Feather + Watermark'}
+              {isAr ? 'تنعيم الحواف + علامة مائية + Batch' : 'Edge Feather + Watermark + Batch'}
             </div>
             <div
               style={{
@@ -154,7 +156,7 @@ export default function PlatformGuideBook({
               background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
               borderRadius: '8px',
               border:
-                highlightedCallout === 1 || highlightedCallout === 4
+                highlightedCallout === 1 || highlightedCallout === 2 || highlightedCallout === 5
                   ? '1px solid #7c5cff'
                   : '1px solid #1e1e28',
               display: 'flex',
@@ -166,7 +168,7 @@ export default function PlatformGuideBook({
           >
             <span
               style={{
-                fontSize: '9px',
+                fontSize: '8.5px',
                 padding: '2px 8px',
                 borderRadius: '99px',
                 background: '#14141c',
@@ -175,13 +177,15 @@ export default function PlatformGuideBook({
                 fontWeight: 600,
               }}
             >
-              {isAr ? 'شاشة المعاينة الحية (كليك شمال للتصدير)' : 'Live Stage (Left-Click to Export)'}
+              {isAr
+                ? '📦 يدعم فتح ZIP مغلق + كليك شمال / Tab / Ctrl شمال للتصدير'
+                : '📦 Auto ZIP Extract + Left-Click / Tab / Left-Ctrl Export'}
             </span>
 
             <div
               style={{
-                width: '68px',
-                height: '68px',
+                width: '66px',
+                height: '66px',
                 borderRadius: '50%',
                 background: 'radial-gradient(circle, rgba(124, 92, 255, 0.28), transparent 70%)',
                 border: '1px solid rgba(124, 92, 255, 0.4)',
@@ -219,7 +223,7 @@ export default function PlatformGuideBook({
               >
                 <div style={{ width: '60%', height: '100%', background: '#7c5cff' }} />
               </div>
-              <span>60 FPS</span>
+              <span>60 FPS · Zoom 100%</span>
             </div>
           </div>
 
@@ -228,7 +232,7 @@ export default function PlatformGuideBook({
             style={{
               background: '#0d0d12',
               borderRadius: '8px',
-              border: highlightedCallout === 2 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              border: highlightedCallout === 3 ? '1px solid #7c5cff' : '1px solid #1e1e28',
               padding: '8px',
               display: 'flex',
               flexDirection: 'column',
@@ -279,11 +283,11 @@ export default function PlatformGuideBook({
                 background: '#7c5cff',
                 color: '#ffffff',
                 fontWeight: 700,
-                fontSize: '9px',
+                fontSize: '8.5px',
                 textAlign: 'center',
               }}
             >
-              {isAr ? 'بدء التحويل ⚡ [Tab / كليك شمال]' : 'Convert ⚡ [Tab / Left-Click]'}
+              {isAr ? 'بدء التحويل ⚡ [Tab / Ctrl شمال]' : 'Convert ⚡ [Tab / Left-Ctrl]'}
             </div>
           </div>
 
@@ -297,7 +301,7 @@ export default function PlatformGuideBook({
         <div
           style={{
             ...frameStyle,
-            gridTemplateRows: 'auto 1fr',
+            gridTemplateRows: 'auto auto 1fr',
           }}
         >
           {/* Top Bar */}
@@ -306,22 +310,22 @@ export default function PlatformGuideBook({
               background: '#0d0d12',
               borderRadius: '8px',
               border: '1px solid #1e1e28',
-              padding: '6px 10px',
+              padding: '5px 9px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              gap: '6px',
+              gap: '5px',
               flexWrap: 'wrap',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
               <span
                 style={{
-                  padding: '3px 8px',
+                  padding: '3px 7px',
                   borderRadius: '6px',
                   background: '#7c5cff',
                   color: '#fff',
-                  fontSize: '8.5px',
+                  fontSize: '8px',
                   fontWeight: 700,
                 }}
               >
@@ -329,31 +333,123 @@ export default function PlatformGuideBook({
               </span>
               <span
                 style={{
-                  padding: '3px 7px',
+                  padding: '3px 6px',
                   borderRadius: '6px',
                   background: '#14141c',
                   border: '1px solid #1e1e28',
                   color: '#b79cff',
-                  fontSize: '8.5px',
+                  fontSize: '8px',
                 }}
               >
-                {isAr ? 'مدة الفيديو' : 'Duration'}
+                {isAr ? '⏱️ مدة الفيديو' : '⏱️ Duration'}
+              </span>
+              <span
+                style={{
+                  padding: '3px 6px',
+                  borderRadius: '6px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  color: '#80808f',
+                  fontSize: '8px',
+                }}
+              >
+                {isAr ? '💧 العلامة المائية' : '💧 Grid Watermark'}
               </span>
               <span
                 style={{
                   padding: '3px 7px',
                   borderRadius: '6px',
-                  background: '#14141c',
-                  border: '1px solid #1e1e28',
-                  color: '#80808f',
-                  fontSize: '8.5px',
+                  background: 'linear-gradient(135deg, #1d4ed8, #2563eb, #0284c7)',
+                  border: '1px solid #38bdf8',
+                  boxShadow: '0 0 10px rgba(56, 189, 248, 0.45)',
+                  color: '#fff',
+                  fontSize: '8px',
+                  fontWeight: 800,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
                 }}
               >
-                {isAr ? 'العلامة المائية' : 'Watermark'}
+                <span>🔍 {isAr ? 'فحص المكرر: مفعل' : 'Scan Duplicates: ON'}</span>
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: '#38bdf8',
+                    boxShadow: '0 0 6px #38bdf8',
+                  }}
+                />
+              </span>
+              <span
+                style={{
+                  padding: '3px 6px',
+                  borderRadius: '6px',
+                  background: 'rgba(124, 92, 255, 0.14)',
+                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  color: '#d8b4fe',
+                  fontSize: '8px',
+                  fontWeight: 700,
+                }}
+              >
+                {isAr ? '📦 رفع هدايا / ZIP' : '📦 Upload / ZIP'}
               </span>
             </div>
-            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#e8e8ee' }}>
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#e8e8ee' }}>
               🎁 {isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
+            </span>
+          </div>
+
+          {/* 50-Frame Pagination & Duplicate Filter Status Banner Mockup */}
+          <div
+            style={{
+              background: 'linear-gradient(135deg, rgba(16, 22, 42, 0.96), rgba(20, 30, 62, 0.96))',
+              border:
+                highlightedCallout === 1 || highlightedCallout === 2
+                  ? '1.5px solid #38bdf8'
+                  : '1px solid rgba(59, 130, 246, 0.4)',
+              borderRadius: '8px',
+              padding: '5px 9px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '6px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  padding: '2px 7px',
+                  borderRadius: '999px',
+                  background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                  color: '#fff',
+                  fontSize: '7.5px',
+                  fontWeight: 800,
+                }}
+              >
+                {isAr ? '📄 الصفحة 1 من 3 (50 إطار/صفحة)' : '📄 Page 1 of 3 (50 frames/page)'}
+              </span>
+              <span style={{ fontSize: '7.5px', color: '#93c5fd', fontWeight: 700 }}>
+                {isAr
+                  ? '⚡ حماية المعالج وكارت الشاشة — أو اضغط (🌐 عرض كل الملفات)'
+                  : '⚡ CPU/GPU Protection — or click (🌐 Show All Files)'}
+              </span>
+            </div>
+            <span
+              style={{
+                padding: '2px 7px',
+                borderRadius: '6px',
+                background: 'linear-gradient(135deg, #10b981, #059669)',
+                color: '#fff',
+                fontSize: '7.5px',
+                fontWeight: 800,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isAr
+                ? '✅ حذف المكرر وتثبيت نسخة (1)'
+                : '✅ Delete Duplicates & Keep (1)'}
             </span>
           </div>
 
@@ -375,15 +471,29 @@ export default function PlatformGuideBook({
                 style={{
                   background: '#0d0d12',
                   borderRadius: '8px',
-                  border: idx === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
-                  padding: '8px',
+                  border:
+                    idx === 0 || highlightedCallout === 5
+                      ? '1px solid #7c5cff'
+                      : '1px solid #1e1e28',
+                  padding: '6px 8px',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8px' }}>
-                  <span style={{ color: '#b79cff', fontWeight: 700 }}>☑</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '7.5px' }}>
+                  <span
+                    style={{
+                      padding: '1px 5px',
+                      borderRadius: '4px',
+                      background: 'rgba(16, 185, 129, 0.16)',
+                      border: '1px solid rgba(16, 185, 129, 0.4)',
+                      color: '#6ee7b7',
+                      fontWeight: 700,
+                    }}
+                  >
+                    {isAr ? '✓ نسخة أساسية (1)' : '✓ Primary (1)'}
+                  </span>
                   <span
                     style={{
                       padding: '1px 5px',
@@ -395,12 +505,12 @@ export default function PlatformGuideBook({
                     {item.tag}
                   </span>
                 </div>
-                <div style={{ textAlign: 'center', fontSize: '26px', margin: '4px 0' }}>
+                <div style={{ textAlign: 'center', fontSize: '22px', margin: '2px 0' }}>
                   {item.icon}
                 </div>
                 <div
                   style={{
-                    fontSize: '8.5px',
+                    fontSize: '8px',
                     color: '#e8e8ee',
                     textAlign: 'center',
                     whiteSpace: 'nowrap',
@@ -490,7 +600,7 @@ export default function PlatformGuideBook({
               🦁
             </div>
             <span style={{ fontSize: '8.5px', color: '#b79cff', fontWeight: 600 }}>
-              {isAr ? 'معاينة البروز وتنعيم الحواف' : '3D Relief & Edge Feather'}
+              {isAr ? 'معاينة البروز 3D وتنعيم الحواف + الإطار' : '3D Relief, Edge Feather & Frame'}
             </span>
           </div>
 
@@ -556,83 +666,250 @@ export default function PlatformGuideBook({
       );
     }
 
-    // Chapter 4: SVGA Editor
+    if (chapter.id === 'svga_ae_editor') {
+      return (
+        <div
+          style={{
+            ...frameStyle,
+            gridTemplateColumns: '1fr 1.6fr',
+          }}
+        >
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+            }}
+          >
+            <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#b79cff' }}>
+              {isAr ? 'شجرة الطبقات (Sprites)' : 'Sprites Tree'}
+            </div>
+            {['crown_main', 'wings_left', 'wings_right', 'glow_fx'].map((l, i) => (
+              <div
+                key={l}
+                style={{
+                  padding: '4px 6px',
+                  borderRadius: '5px',
+                  background: '#14141c',
+                  border: i === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+                  fontSize: '8.5px',
+                  color: '#e8e8ee',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>{l}</span>
+                <span style={{ color: '#b79cff' }}>PNG</span>
+              </div>
+            ))}
+          </div>
+
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '6px',
+              }}
+            >
+              <span style={{ fontSize: '8.5px', color: '#80808f' }}>
+                {isAr ? 'معاينة المسرح والطبقات' : 'Stage & Keyframes'}
+              </span>
+              <span
+                style={{
+                  padding: '2px 7px',
+                  borderRadius: '5px',
+                  background: 'rgba(124, 92, 255, 0.18)',
+                  border: '1px solid #7c5cff',
+                  color: '#e8e8ee',
+                  fontSize: '8px',
+                  fontWeight: 700,
+                }}
+              >
+                {isAr ? '🚀 تصدير After Effects 2026 + SVGA' : '🚀 Export AE 2026 + SVGA'}
+              </span>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                display: 'grid',
+                placeItems: 'center',
+                background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
+                borderRadius: '6px',
+                fontSize: '30px',
+              }}
+            >
+              🏆
+            </div>
+            <div
+              style={{
+                marginTop: '6px',
+                background: '#14141c',
+                padding: '5px 8px',
+                borderRadius: '5px',
+                border: '1px solid #1e1e28',
+                fontSize: '8.5px',
+                color: '#b79cff',
+              }}
+            >
+              Timeline: Frame 45 / 120 ━━━●━━━━━━━━
+            </div>
+          </div>
+
+          {renderCalloutPins(chapter)}
+        </div>
+      );
+    }
+
+    // Chapter 5: PRO Membership, Custom Free Trial Attempts & Unified Navigation
     return (
       <div
         style={{
           ...frameStyle,
-          gridTemplateColumns: '1fr 1.6fr',
+          gridTemplateColumns: '1.15fr 1fr',
         }}
       >
         <div
           style={{
             background: '#0d0d12',
             borderRadius: '8px',
-            border: '1px solid #1e1e28',
-            padding: '8px',
+            border: highlightedCallout === 1 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+            padding: '10px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '5px',
+            justifyContent: 'space-between',
           }}
         >
-          <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#b79cff' }}>
-            {isAr ? 'شجرة الطبقات (Sprites)' : 'Sprites Tree'}
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#b79cff' }}>
+            {isAr
+              ? '👑 أدوات وصيغ PRO + المحاولات المجانية'
+              : '👑 PRO Tools & Free Trial Attempts'}
           </div>
-          {['crown_main', 'wings_left', 'wings_right', 'glow_fx'].map((l, i) => (
-            <div
-              key={l}
-              style={{
-                padding: '4px 6px',
-                borderRadius: '5px',
-                background: '#14141c',
-                border: i === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
-                fontSize: '8.5px',
-                color: '#e8e8ee',
-                display: 'flex',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span>{l}</span>
-              <span style={{ color: '#b79cff' }}>PNG</span>
-            </div>
-          ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {[
+              {
+                nameAr: '🎁 عرض ملفات الهدايا',
+                nameEn: '🎁 Gift Files Studio',
+                badgeAr: '🎁 3 محاولات مجانية',
+                badgeEn: '🎁 3 Free Tries',
+              },
+              {
+                nameAr: '🖼️ إنشاء صورة الهدية',
+                nameEn: '🖼️ Gift Image Creator',
+                badgeAr: '🎁 3 محاولات مجانية',
+                badgeEn: '🎁 3 Free Tries',
+              },
+              {
+                nameAr: '⚡ تصدير صيغة VAP / SVGA 2.0',
+                nameEn: '⚡ VAP / SVGA 2.0 Export',
+                badgeAr: '👑 PRO مفتوح للمشتركين',
+                badgeEn: '👑 PRO Unlimited',
+              },
+            ].map((row, idx) => (
+              <div
+                key={idx}
+                style={{
+                  padding: '5px 8px',
+                  borderRadius: '6px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  fontSize: '8.5px',
+                }}
+              >
+                <span style={{ color: '#e8e8ee', fontWeight: 600 }}>
+                  {isAr ? row.nameAr : row.nameEn}
+                </span>
+                <span
+                  style={{
+                    padding: '2px 6px',
+                    borderRadius: '99px',
+                    background: 'rgba(124, 92, 255, 0.16)',
+                    border: '1px solid rgba(124, 92, 255, 0.4)',
+                    color: '#d8b4fe',
+                    fontWeight: 700,
+                    fontSize: '7.5px',
+                  }}
+                >
+                  {isAr ? row.badgeAr : row.badgeEn}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: '8px', color: '#80808f' }}>
+            {isAr
+              ? 'يحدد المدير عدد المحاولات المجانية لكل أداة أو صيغة من لوحة التحكم'
+              : 'Admin configures free trial count per tool/format in Dashboard'}
+          </div>
         </div>
 
         <div
           style={{
             background: '#0d0d12',
             borderRadius: '8px',
-            border: '1px solid #1e1e28',
-            padding: '8px',
+            border:
+              highlightedCallout === 2 || highlightedCallout === 3
+                ? '1px solid #7c5cff'
+                : '1px solid #1e1e28',
+            padding: '10px',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
           }}
         >
-          <div
-            style={{
-              flex: 1,
-              display: 'grid',
-              placeItems: 'center',
-              background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
-              borderRadius: '6px',
-              fontSize: '30px',
-            }}
-          >
-            🏆
+          <div style={{ fontSize: '10px', fontWeight: 700, color: '#e8e8ee' }}>
+            {isAr ? '⚡ القائمة الموحدة + الترجمة الفورية' : '⚡ Unified Menu & Instant Translation'}
           </div>
           <div
             style={{
-              marginTop: '6px',
               background: '#14141c',
-              padding: '5px 8px',
-              borderRadius: '5px',
+              borderRadius: '7px',
               border: '1px solid #1e1e28',
-              fontSize: '8.5px',
-              color: '#b79cff',
+              padding: '6px 8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              fontSize: '8px',
+              color: '#cbd5e1',
             }}
           >
-            Timeline: Frame 45 / 120 ━━━●━━━━━━━━
+            <div>👤 {isAr ? 'الحساب والاشتراك (PRO)' : 'Account & PRO Status'}</div>
+            <div>⚙️ {isAr ? 'لوحة التحكم الإدارية' : 'Admin Dashboard'}</div>
+            <div>🌐 {isAr ? 'اللغة: العربية ⇄ English (ترجمة فورية)' : 'Language: AR ⇄ EN Sync'}</div>
+            <div>💬 {isAr ? 'التنبيهات والتواصل عبر واتساب' : 'Notifications & WhatsApp'}</div>
+          </div>
+          <div
+            style={{
+              padding: '4px 8px',
+              borderRadius: '6px',
+              background: 'rgba(16, 185, 129, 0.12)',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              color: '#6ee7b7',
+              fontSize: '8px',
+              textAlign: 'center',
+              fontWeight: 700,
+            }}
+          >
+            {isAr
+              ? '📖 زر الدليل يظهر في الرئيسية فقط ويختفي داخل الأدوات'
+              : '📖 Guide Button shows on Home only & auto-hides inside tools'}
           </div>
         </div>
 
@@ -738,8 +1015,8 @@ export default function PlatformGuideBook({
         >
           <div
             style={{
-              width: 'min(820px, 95vw)',
-              maxHeight: '90vh',
+              width: 'min(880px, 96vw)',
+              maxHeight: '92vh',
               overflowY: 'auto',
               background: '#0d0d12',
               border: '1px solid #1e1e28',
@@ -794,13 +1071,13 @@ export default function PlatformGuideBook({
                 <div>
                   <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#e8e8ee' }}>
                     {isAr
-                      ? 'دليل مميزات المنصة واختصارات التصدير الفوري'
-                      : 'Platform Features & Instant Export Guide'}
+                      ? 'دليل وكتالوج مميزات المنصة المصوّر + اختصارات التصدير الفوري'
+                      : 'Illustrated Platform Features Guide & Instant Export Shortcuts'}
                   </h2>
                   <p style={{ margin: '2px 0 0', fontSize: '11.5px', color: '#80808f' }}>
                     {isAr
-                      ? 'اختر الأداة بالأسفل لمشاهدة شرح مبسّط لوظائفها واختصارات التصدير السريع'
-                      : 'Select a tool below for a clean overview of its features and export shortcuts'}
+                      ? 'اضغط على أي ميزة بالأسفل لمشاهدة سكرين توضيحي مرقّم وشرح تفصيلي لكل وظيفة مضافة واختصارات الكيبورد والماوس'
+                      : 'Select any feature tab below for a numbered visual screen and detailed explanation of every tool and shortcut'}
                   </p>
                 </div>
               </div>
@@ -830,7 +1107,7 @@ export default function PlatformGuideBook({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(4, 1fr)',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
                 gap: '6px',
                 background: '#07070a',
                 padding: '5px',
@@ -860,7 +1137,7 @@ export default function PlatformGuideBook({
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: '6px',
-                      fontSize: '11.5px',
+                      fontSize: '11px',
                       fontWeight: isSelected ? 700 : 500,
                       transition: 'all 0.15s ease',
                       whiteSpace: 'nowrap',
@@ -928,16 +1205,17 @@ export default function PlatformGuideBook({
             {/* Annotated Screen Mockup */}
             {renderVisualScreenMockup(activeChapter)}
 
-            {/* Simple 2x2 Grid of Numbered Callouts */}
+            {/* Grid of Numbered Callouts */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
                 gap: '8px',
               }}
             >
               {activeChapter.callouts.map((c) => {
                 const isHi = highlightedCallout === c.num;
+                const badgeText = isAr ? c.badgeAr : c.badgeEn;
                 return (
                   <div
                     key={c.num}
@@ -956,36 +1234,56 @@ export default function PlatformGuideBook({
                       style={{
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px',
+                        justifyContent: 'space-between',
+                        gap: '6px',
                         marginBottom: '4px',
                       }}
                     >
-                      <span
-                        style={{
-                          width: '20px',
-                          height: '20px',
-                          borderRadius: '50%',
-                          background: isHi ? '#7c5cff' : '#1e1e28',
-                          color: isHi ? '#ffffff' : '#b79cff',
-                          fontWeight: 700,
-                          fontSize: '11px',
-                          display: 'grid',
-                          placeItems: 'center',
-                          flexShrink: 0,
-                        }}
-                      >
-                        {c.num}
-                      </span>
-                      <span style={{ fontWeight: 700, fontSize: '12px', color: '#e8e8ee' }}>
-                        {isAr ? c.titleAr : c.titleEn}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span
+                          style={{
+                            width: '20px',
+                            height: '20px',
+                            borderRadius: '50%',
+                            background: isHi ? '#7c5cff' : '#1e1e28',
+                            color: isHi ? '#ffffff' : '#b79cff',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            display: 'grid',
+                            placeItems: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {c.num}
+                        </span>
+                        <span style={{ fontWeight: 700, fontSize: '11.5px', color: '#e8e8ee' }}>
+                          {isAr ? c.titleAr : c.titleEn}
+                        </span>
+                      </div>
+                      {badgeText && (
+                        <span
+                          style={{
+                            fontSize: '9.5px',
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: '99px',
+                            background: 'rgba(124, 92, 255, 0.16)',
+                            border: '1px solid rgba(124, 92, 255, 0.35)',
+                            color: '#d8b4fe',
+                            whiteSpace: 'nowrap',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {badgeText}
+                        </span>
+                      )}
                     </div>
                     <p
                       style={{
                         margin: 0,
                         fontSize: '11px',
                         color: '#80808f',
-                        lineHeight: 1.5,
+                        lineHeight: 1.55,
                       }}
                     >
                       {isAr ? c.descAr : c.descEn}

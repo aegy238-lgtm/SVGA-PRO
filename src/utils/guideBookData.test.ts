@@ -18,7 +18,7 @@ test('shouldShowGuideBookButton returns true only on home view and hides on all 
   assert.equal(shouldShowGuideBookButton('gift-image'), false);
 });
 
-test('isQuickExportKeyEvent detects Tab and ArrowLeft when not typing in text inputs or open modals', () => {
+test('isQuickExportKeyEvent detects Tab, ArrowLeft, and ControlLeft when not typing in text inputs or open modals', () => {
   // Pressing Tab on body or button triggers export
   const tabOnBody = isQuickExportKeyEvent({
     key: 'Tab',
@@ -78,8 +78,17 @@ test('isQuickExportKeyEvent detects Tab and ArrowLeft when not typing in text in
   }
 });
 
-test('GUIDE_BOOK_CHAPTERS contains complete bilingual visual chapters and callouts for all platform features', () => {
-  assert.ok(GUIDE_BOOK_CHAPTERS.length >= 4);
+test('GUIDE_BOOK_CHAPTERS documents all platform features including Smart Duplicate Detection, ZIP Extraction, and PRO Free Attempts', () => {
+  assert.equal(GUIDE_BOOK_CHAPTERS.length, 5);
+  const chapterIds = GUIDE_BOOK_CHAPTERS.map((c) => c.id);
+  assert.deepEqual(chapterIds, [
+    'motion_converter',
+    'gifts_studio',
+    'gift_image_creator',
+    'svga_ae_editor',
+    'pro_and_system',
+  ]);
+
   for (const ch of GUIDE_BOOK_CHAPTERS) {
     assert.ok(ch.id);
     assert.ok(ch.titleAr.length > 5);
@@ -87,4 +96,15 @@ test('GUIDE_BOOK_CHAPTERS contains complete bilingual visual chapters and callou
     assert.ok(ch.callouts.length >= 3);
     assert.ok(ch.shortcuts.length >= 1);
   }
+
+  // Verify Gifts Studio chapter explicitly documents the Blue Duplicate Toggle & 50-Frame Pagination
+  const giftsChapter = GUIDE_BOOK_CHAPTERS.find((c) => c.id === 'gifts_studio')!;
+  assert.equal(giftsChapter.callouts.length, 5);
+  assert.ok(giftsChapter.callouts[0].titleAr.includes('فحص المكرر'));
+  assert.ok(giftsChapter.callouts[0].titleAr.includes('الأزرق'));
+  assert.ok(giftsChapter.callouts[0].descAr.includes('نسخة واحدة فقط'));
+  assert.ok(giftsChapter.callouts[0].titleEn.toLowerCase().includes('duplicate'));
+  assert.ok(giftsChapter.callouts[1].titleAr.includes('50 إطار'));
+  assert.ok(giftsChapter.callouts[1].descAr.includes('عرض كل الملفات'));
 });
+
