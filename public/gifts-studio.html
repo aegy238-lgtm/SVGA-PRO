@@ -1494,10 +1494,10 @@ $('#all').onclick=()=>{const v=!items.every(i=>i.sel);items.forEach(i=>{i.sel=v;
 $('#del').onclick=()=>{const rm=items.filter(i=>i.sel).map(i=>i.id);rm.forEach(removeCard)};
 const g=$('#grid');
 g.onclick=e=>{const c=e.target.closest('.card');if(!c)return;const id=+c.dataset.id,it=items.find(a=>a.id==id),a=e.target.dataset.a;if(!it)return;
- if(e.target.classList.contains('ck')){it.sel=e.target.checked;c.classList.toggle('sel',it.sel);updateBar()}
- if(a=='p'){it.userPaused=false;ensure(id,true).then(P=>P&&P.play())}
- if(a=='s'){it.userPaused=true;const P=players.get(id);P&&P!=1&&P.pause()}
- if(a=='r'){it.userPaused=false;ensure(id,true).then(P=>P&&P.restart())}
+ if(e.target.classList.contains('ck')){it.sel=e.target.checked;c.classList.toggle('sel',it.sel);updateBar();return}
+ if(a=='p'){it.userPaused=false;ensure(id,true).then(P=>P&&P.play());return}
+ if(a=='s'){it.userPaused=true;const P=players.get(id);P&&P!=1&&P.pause();return}
+ if(a=='r'){it.userPaused=false;ensure(id,true).then(P=>P&&P.restart());return}
  if(a=='m'){
   const curMuted=it.muted!==undefined?it.muted:muted;
   it.muted=!curMuted;
@@ -1508,10 +1508,19 @@ g.onclick=e=>{const c=e.target.closest('.card');if(!c)return;const id=+c.dataset
    mBtn.textContent=it.muted?'🔇':'🔊';
    mBtn.title=it.muted?'تشغيل صوت هذه الهدية':'كتم صوت هذه الهدية';
   }
+  return;
  }
- if(a=='x')removeCard(id);
- if(a=='df'&&it.file)save(it.name,it.file);
- if(a=='di')snap(it)};
+ if(a=='x'){removeCard(id);return}
+ if(a=='df'&&it.file){save(it.name,it.file);return}
+ if(a=='di'){snap(it);return}
+ // Left-clicking directly on the gift preview stage (.st) triggers instant export in the selected mode
+ if(e.button===0&&e.target.closest('.st')&&!e.target.closest('button,input,select,label')){
+  const exBtn=$('#ex');
+  if(exBtn&&!exBtn.disabled){
+   toast(currentLang==='en'?'⚡ Instant Export (Left-Click)…':'⚡ تصدير فوري (كليك شمال) بالصيغة المحددة…');
+   exBtn.click();
+  }
+ }};
 async function snap(it){
  const H0=+$('#q').value,h=Math.min(2160,Math.max(720,Math.round((H0||it.h||720)/2)*2)),w=Math.min(4096,Math.max(720,Math.round(h*((it.w/it.h)||1)/2)*2));
  toast('جارٍ التقاط صورة فائقة الوضوح للهدية…');
@@ -2360,6 +2369,25 @@ window.addEventListener('message', e => {
   latestProStatus = e.data.status;
   isParentPro = !!e.data.effectiveIsPro;
   syncModeUi();
+ } else if (e.data && e.data.type === 'MOTIONTOOLS_TRIGGER_QUICK_EXPORT') {
+  const exBtn = $('#ex');
+  if (exBtn && !exBtn.disabled) {
+   exBtn.click();
+  }
+ }
+});
+
+window.addEventListener('keydown', e => {
+ if (e.ctrlKey || e.altKey || e.metaKey) return;
+ const tag = (e.target && e.target.tagName ? e.target.tagName : '').toUpperCase();
+ if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+ if (e.key === 'Tab' || e.key === 'ArrowLeft') {
+  const exBtn = $('#ex');
+  if (exBtn && !exBtn.disabled && items.some(i => !i.err && i.fmt)) {
+   e.preventDefault();
+   toast(currentLang === 'en' ? '⚡ Instant Export [Tab]…' : '⚡ تصدير فوري بالصيغة المحددة [Tab]…');
+   exBtn.click();
+  }
  }
 });
 
@@ -2368,7 +2396,8 @@ function syncModeUi(){
  const dict=I18N[currentLang]||I18N.ar;
  const modeInfo=dict.exportModes&&dict.exportModes[m];
  const label=modeInfo?(modeInfo.button||modeInfo.btn||modeInfo.option):(currentLang==='en'?'⬇ Export':'⬇ تصدير');
- let exText = label;
+ const shortcutBadge = currentLang === 'en' ? ' ⚡ [Tab / Left-Click]' : ' ⚡ [Tab / كليك شمال]';
+ let exText = label + shortcutBadge;
  try {
   const parentStatus = window.parent && typeof window.parent.__getFeatureFreeAttemptsStatus === 'function'
     ? window.parent.__getFeatureFreeAttemptsStatus('gifts_studio')
@@ -2380,14 +2409,19 @@ function syncModeUi(){
   if (parentStatus && parentStatus.rule && parentStatus.rule.isPro) {
    if (!isPro) {
     if (parentStatus.rule.allowFreeAttempts && parentStatus.remainingAttempts > 0) {
-     exText = `${label} (${parentStatus.remainingAttempts} ${currentLang === 'en' ? 'Free' : 'مجاناً'})`;
+     exText = `${label} (${parentStatus.remainingAttempts} ${currentLang === 'en' ? 'Free' : 'مجاناً'})${shortcutBadge}`;
     } else if (parentStatus.remainingAttempts <= 0) {
-     exText = `${label} 🔒 (PRO)`;
+     exText = `${label} 🔒 (PRO)${shortcutBadge}`;
     }
    }
   }
  } catch(e){}
- if($('#ex'))$('#ex').textContent=exText;
+ if($('#ex')){
+  $('#ex').textContent=exText;
+  $('#ex').title=currentLang==='en'
+   ? 'Quick Export Shortcut: Press Tab or Left-Click on a gift preview'
+   : 'اختصار التصدير الفوري: اضغط زر Tab أو كليك شمال على معاينة الهدية';
+ }
  const qEl=$('#q');
  if(qEl){
   qEl.style.opacity='1';

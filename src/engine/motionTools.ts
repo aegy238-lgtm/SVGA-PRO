@@ -104,6 +104,9 @@ export function initMotionToolsFixed() {
     try {
       history.replaceState(null, '', '#' + v);
     } catch (e) {}
+    try {
+      window.dispatchEvent(new CustomEvent('motionviewchange', { detail: v }));
+    } catch (e) {}
   }
   (window as any).__showNavView = show;
   document.addEventListener('click', (e) => {
@@ -4260,7 +4263,7 @@ export function initMotionToolsFixed() {
         source = S,
         playing = !S.paused,
         time = S.vid ? S.vid.currentTime : 0,
-        label = btn.textContent;
+        labelHtml = btn.innerHTML;
       working = true;
       window.__busy = 1;
       btn.disabled = true;
@@ -4343,7 +4346,7 @@ export function initMotionToolsFixed() {
         working = false;
         window.__busy = 0;
         btn.disabled = false;
-        btn.textContent = label;
+        btn.innerHTML = labelHtml;
         $('#saveProject').disabled = $('#openProject').disabled = false;
         if (source === S) {
           if (source.vid)
@@ -4357,6 +4360,22 @@ export function initMotionToolsFixed() {
         }
       }
     };
+
+    // Left-Click ("تريك شمال / كليك شمال") instant export on #view preview stage
+    const stageViewEl = $('#view');
+    if (stageViewEl) {
+      stageViewEl.addEventListener('click', (ev: MouseEvent) => {
+        if (ev.button !== 0) return;
+        if ((window as any).__leftClickExportEnabled === false) return;
+        if (working || !cur || !S) return;
+        const fmtSelect = $('#fmt') as HTMLSelectElement | null;
+        const selectedFmtLabel =
+          fmtSelect?.options?.[fmtSelect.selectedIndex]?.text || fmtSelect?.value || 'Original';
+        toast('⚡ تصدير فوري (كليك شمال): ' + selectedFmtLabel);
+        $('#start')?.click();
+      });
+    }
+
     $('#trim').onchange = () => {
       $('#trimRange').hidden = !$('#trim').checked;
     };

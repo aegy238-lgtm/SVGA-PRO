@@ -20,6 +20,8 @@ import {
   ProSubscriptionModal,
   UserAuthModal,
 } from './components/PlatformModals';
+import PlatformGuideBook from './components/PlatformGuideBookModal';
+import { isQuickExportKeyEvent } from './utils/guideBookData';
 import {
   ActivityLogEntry,
   BroadcastNotification,
@@ -97,6 +99,8 @@ export default function App() {
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [screenShieldActive, setScreenShieldActive] = useState(false);
   const [guestAttemptTrigger, setGuestAttemptTrigger] = useState(0);
+  const [activeView, setActiveView] = useState<string>('home');
+  const [leftClickExportEnabled, setLeftClickExportEnabled] = useState<boolean>(true);
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
@@ -602,6 +606,7 @@ export default function App() {
       document.querySelectorAll('nav a[data-v]').forEach((a) => {
         a.classList.toggle('on', (a as HTMLElement).dataset.v === 'editor');
       });
+      setActiveView('editor');
     };
 
     (window as any).__checkConversionAccess = (targetFmt: string, sourceFileName?: string) => {
@@ -772,11 +777,97 @@ export default function App() {
         setMotionAssetsMap({ ...detail });
       }
     };
+    const handleViewChange = (e: Event) => {
+      const nextView = (e as CustomEvent).detail;
+      if (typeof nextView === 'string' && nextView) {
+        setActiveView(nextView);
+      }
+    };
     window.addEventListener('motionassetschange', handleAssetsChange);
+    window.addEventListener('motionviewchange', handleViewChange);
     return () => {
       window.removeEventListener('motionassetschange', handleAssetsChange);
+      window.removeEventListener('motionviewchange', handleViewChange);
     };
   }, []);
+
+  useEffect(() => {
+    (window as any).__leftClickExportEnabled = leftClickExportEnabled;
+  }, [leftClickExportEnabled]);
+
+  // Global Tab & Left-Arrow ("تريك شمال / زر Tab") Quick Export Shortcut
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const anyModalOpen =
+        adminOpen ||
+        authOpen ||
+        notifOpen ||
+        proModalOpen ||
+        edgeFeatherModalOpen ||
+        batchModalOpen ||
+        watermarkModalOpen ||
+        aeModalOpen ||
+        !!document.getElementById('platformGuideBookModal') ||
+        (document.getElementById('mo') && !(document.getElementById('mo') as HTMLElement).hidden);
+
+      const targetEl = e.target as HTMLElement | null;
+      const shouldTrigger = isQuickExportKeyEvent({
+        key: e.key,
+        targetTagName: targetEl?.tagName,
+        isContentEditable: targetEl?.isContentEditable,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        hasOpenModal: Boolean(anyModalOpen),
+      });
+
+      if (!shouldTrigger) return;
+
+      const currentOnView = document.querySelector('.view.on')?.id || activeView;
+      if (currentOnView === 'convert') {
+        const startBtn = document.getElementById('start') as HTMLButtonElement | null;
+        if (startBtn && !startBtn.disabled) {
+          e.preventDefault();
+          startBtn.click();
+        }
+      } else if (currentOnView === 'gift-image') {
+        const exportBtn = document.getElementById(
+          'giftCreatorExportAllZipBtn'
+        ) as HTMLButtonElement | null;
+        if (exportBtn && !exportBtn.disabled) {
+          e.preventDefault();
+          exportBtn.click();
+        }
+      } else if (currentOnView === 'gifts') {
+        const frame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
+        if (frame?.contentWindow) {
+          e.preventDefault();
+          frame.contentWindow.postMessage({ type: 'MOTIONTOOLS_TRIGGER_QUICK_EXPORT' }, '*');
+        }
+      } else if (currentOnView === 'editor') {
+        const svgaExportBtn = document.querySelector(
+          '#editor button[id*="Export"], #editor button[data-export-svga]'
+        ) as HTMLButtonElement | null;
+        if (svgaExportBtn && !svgaExportBtn.disabled) {
+          e.preventDefault();
+          svgaExportBtn.click();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    activeView,
+    adminOpen,
+    authOpen,
+    notifOpen,
+    proModalOpen,
+    edgeFeatherModalOpen,
+    batchModalOpen,
+    watermarkModalOpen,
+    aeModalOpen,
+  ]);
 
   const switchToEditor = () => {
     document.querySelectorAll('.view').forEach((el) => {
@@ -785,6 +876,7 @@ export default function App() {
     document.querySelectorAll('nav a[data-v]').forEach((a) => {
       a.classList.toggle('on', (a as HTMLElement).dataset.v === 'editor');
     });
+    setActiveView('editor');
   };
 
   const handleApplyEdgeFeather = (nextCfg: EdgeFeatherConfig) => {
@@ -1765,7 +1857,107 @@ export default function App() {
             </aside>
 
             <div className="stage" id="stage" style={{ position: 'relative' }}>
-              <div id="view" data-placeholder={t.dropToPreview}></div>
+              <div
+                id="quickExportStageBar"
+                style={{
+                  position: 'absolute',
+                  top: '12px',
+                  left: '12px',
+                  right: '12px',
+                  zIndex: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  pointerEvents: 'none',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  id="toggleLeftClickExportBtn"
+                  onClick={() => setLeftClickExportEnabled((prev) => !prev)}
+                  style={{
+                    pointerEvents: 'auto',
+                    padding: '5px 12px',
+                    borderRadius: '999px',
+                    border: leftClickExportEnabled
+                      ? '1px solid rgba(16, 185, 129, 0.65)'
+                      : '1px solid rgba(148, 163, 184, 0.3)',
+                    background: leftClickExportEnabled
+                      ? 'rgba(6, 78, 59, 0.82)'
+                      : 'rgba(15, 23, 42, 0.82)',
+                    color: leftClickExportEnabled ? '#6ee7b7' : '#94a3b8',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    backdropFilter: 'blur(8px)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+                  }}
+                  title={
+                    isAr
+                      ? 'عند التفعيل: الضغط كليك شمال على شاشة المعاينة يصدّر الملف فوراً بالصيغة المحددة'
+                      : 'When enabled: Left-clicking the preview exports immediately in the selected format'
+                  }
+                >
+                  <span>🖱️</span>
+                  <span>
+                    {isAr
+                      ? `تصدير بكليك شمال: ${leftClickExportEnabled ? 'مفعّل ⚡' : 'متوقف'}`
+                      : `Left-Click Export: ${leftClickExportEnabled ? 'ON ⚡' : 'OFF'}`}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  id="quickStageInstantExportBtn"
+                  onClick={() => document.getElementById('start')?.click()}
+                  style={{
+                    pointerEvents: 'auto',
+                    padding: '5px 13px',
+                    borderRadius: '999px',
+                    border: '1px solid rgba(168, 85, 247, 0.65)',
+                    background:
+                      'linear-gradient(135deg, rgba(124, 58, 237, 0.88), rgba(219, 39, 119, 0.85))',
+                    color: '#ffffff',
+                    fontSize: '11.5px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    backdropFilter: 'blur(8px)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.35)',
+                  }}
+                  title={
+                    isAr
+                      ? 'اضغط هنا أو اضغط زر Tab أو كليك شمال على المعاينة للتصدير الفوري حسب الصيغة المختارة'
+                      : 'Click here, press Tab, or Left-Click the preview for instant export in selected format'
+                  }
+                >
+                  <span>⚡</span>
+                  <span>
+                    {isAr
+                      ? 'تصدير فوري بالصيغة المحددة [Tab / كليك شمال]'
+                      : 'Instant Export [Tab / Left-Click]'}
+                  </span>
+                </button>
+              </div>
+              <div
+                id="view"
+                data-placeholder={t.dropToPreview}
+                style={{ cursor: leftClickExportEnabled ? 'pointer' : 'default' }}
+                title={
+                  leftClickExportEnabled
+                    ? isAr
+                      ? '🖱️ اضغط كليك شمال لتصدير الملف فوراً بالصيغة المحددة (أو اضغط زر Tab)'
+                      : '🖱️ Left-Click to export immediately in selected format (or press Tab)'
+                    : undefined
+                }
+              ></div>
               <div className="bar">
                 <button className="pill" id="pp" style={{ padding: '3px 10px' }}>
                   {t.pause}
@@ -1986,8 +2178,16 @@ export default function App() {
                 <label>{t.compressionQuality}</label>
                 <input type="number" id="qual" defaultValue="100" min="1" max="100" />
               </div>
-              <button className="go" id="start">
-                {t.startConversion}
+              <button
+                className="go"
+                id="start"
+                title={
+                  isAr
+                    ? 'اختصار التصدير السريع: اضغط زر Tab أو كليك شمال على المعاينة'
+                    : 'Quick export shortcut: Press Tab or Left-Click on preview'
+                }
+              >
+                {t.startConversion} ⚡ [{isAr ? 'Tab / كليك شمال' : 'Tab / Left-Click'}]
               </button>
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
                 <button className="pill" id="saveProject">
@@ -2240,6 +2440,23 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* Interactive Platform Guide Book (Only visible on Home landing screen) */}
+      <PlatformGuideBook
+        activeView={activeView}
+        isAr={isAr}
+        onNavigateToView={(viewKey) => {
+          if (typeof (window as any).__checkNavViewAccess === 'function') {
+            const allowed = (window as any).__checkNavViewAccess(viewKey);
+            if (!allowed) return;
+          }
+          if (typeof (window as any).__showNavView === 'function') {
+            (window as any).__showNavView(viewKey);
+          } else {
+            setActiveView(viewKey);
+          }
+        }}
+      />
 
       <div id="toast" role="status"></div>
     </>

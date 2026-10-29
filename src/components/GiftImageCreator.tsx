@@ -1110,6 +1110,11 @@ export default function GiftImageCreator({
             id="giftCreatorExportSelectedBtn"
             disabled={items.length === 0 || batchProgress.active}
             onClick={() => handleBatchExportZip(true)}
+            title={
+              isAr
+                ? 'تصدير الصور المحددة فوراً حسب الصيغة المختارة'
+                : 'Export selected images immediately in chosen format'
+            }
             style={{
               padding: '8px 13px',
               borderRadius: '10px',
@@ -1138,6 +1143,11 @@ export default function GiftImageCreator({
             id="giftCreatorExportAllZipBtn"
             disabled={items.length === 0 || batchProgress.active}
             onClick={() => handleBatchExportZip(false)}
+            title={
+              isAr
+                ? 'اختصار التصدير الفوري: اضغط زر Tab أو كليك شمال للتصدير بالصيغة المحددة'
+                : 'Quick export shortcut: Press Tab or Left-Click to export in selected format'
+            }
             style={{
               padding: '8px 16px',
               borderRadius: '10px',
@@ -1159,11 +1169,11 @@ export default function GiftImageCreator({
             <span>
               {items.length <= 1
                 ? isAr
-                  ? `تنزيل الصورة (${settings.exportFormat.toUpperCase()})`
-                  : `Download Image (${settings.exportFormat.toUpperCase()})`
+                  ? `تنزيل الصورة (${settings.exportFormat.toUpperCase()}) ⚡ [Tab / كليك شمال]`
+                  : `Download Image (${settings.exportFormat.toUpperCase()}) ⚡ [Tab / Left-Click]`
                 : isAr
-                  ? `تنزيل جميع الصور ZIP (${items.length})`
-                  : `Download All ZIP (${items.length})`}
+                  ? `تنزيل جميع الصور ZIP (${items.length}) ⚡ [Tab / كليك شمال]`
+                  : `Download All ZIP (${items.length}) ⚡ [Tab / Left-Click]`}
             </span>
           </button>
         </div>
