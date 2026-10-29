@@ -916,9 +916,8 @@ export default function GiftImageCreator({
       <header
         style={{
           padding: '10px 18px',
-          background: 'linear-gradient(180deg, rgba(22, 24, 38, 0.96), rgba(14, 15, 24, 0.96))',
-          borderBottom: '1px solid rgba(124, 92, 255, 0.25)',
-          boxShadow: '0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          background: '#0d0d12',
+          borderBottom: '1px solid #1e1e28',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -932,15 +931,14 @@ export default function GiftImageCreator({
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <div
             style={{
-              width: '38px',
-              height: '38px',
-              borderRadius: '11px',
-              background: 'linear-gradient(135deg, #7c5cff 0%, #4f46e5 55%, #10b981 100%)',
-              boxShadow:
-                '0 6px 16px rgba(124, 92, 255, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.4)',
+              width: '36px',
+              height: '36px',
+              borderRadius: '10px',
+              background: 'rgba(124, 92, 255, 0.16)',
+              border: '1px solid rgba(124, 92, 255, 0.4)',
               display: 'grid',
               placeItems: 'center',
-              fontSize: '20px',
+              fontSize: '18px',
               flexShrink: 0,
             }}
           >
@@ -950,10 +948,9 @@ export default function GiftImageCreator({
             <h2
               style={{
                 margin: 0,
-                fontSize: '15px',
-                fontWeight: 800,
-                letterSpacing: '-0.01em',
-                color: '#f8fafc',
+                fontSize: '14.5px',
+                fontWeight: 700,
+                color: '#e8e8ee',
               }}
             >
               {isAr ? 'إنشاء صورة الهدية ثلاثية الأبعاد' : '3D Gift Image Creator Studio'}
@@ -961,7 +958,7 @@ export default function GiftImageCreator({
             <div
               style={{
                 fontSize: '11.5px',
-                color: '#94a3b8',
+                color: '#80808f',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px',
@@ -974,13 +971,13 @@ export default function GiftImageCreator({
                   : `Total: ${items.length} images`}
               </span>
               <span>·</span>
-              <span style={{ color: '#a78bfa', fontWeight: 700 }}>
+              <span style={{ color: '#b79cff', fontWeight: 700 }}>
                 {isAr ? `المحدد: ${selectedCount}` : `Selected: ${selectedCount}`}
               </span>
               <span>·</span>
               <span
                 id="giftCreatorProcessedBadge"
-                style={{ color: '#34d399', fontWeight: 700 }}
+                style={{ color: '#e8e8ee', fontWeight: 600 }}
               >
                 {batchProgress.active
                   ? isAr
@@ -1001,13 +998,12 @@ export default function GiftImageCreator({
             id="giftCreatorAddImagesBtn"
             onClick={() => fileInputRef.current?.click()}
             style={{
-              padding: '8px 14px',
-              borderRadius: '10px',
-              border: '1px solid rgba(124, 92, 255, 0.6)',
-              background: 'linear-gradient(180deg, #28204d 0%, #1a1533 100%)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.15)',
-              color: '#e9d5ff',
-              fontWeight: 700,
+              padding: '7px 13px',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              background: '#14141c',
+              color: '#e8e8ee',
+              fontWeight: 600,
               fontSize: '12px',
               cursor: 'pointer',
               display: 'inline-flex',
@@ -1024,17 +1020,12 @@ export default function GiftImageCreator({
             id="giftCreatorUploadOverlayTopBtn"
             onClick={() => overlayInputRef.current?.click()}
             style={{
-              padding: '8px 13px',
-              borderRadius: '10px',
-              border: overlay.enabled
-                ? '1px solid rgba(16, 185, 129, 0.7)'
-                : '1px solid rgba(255, 255, 255, 0.14)',
-              background: overlay.enabled
-                ? 'linear-gradient(180deg, rgba(16, 185, 129, 0.25), rgba(6, 95, 70, 0.3))'
-                : 'linear-gradient(180deg, #1e2030, #141622)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.08)',
-              color: overlay.enabled ? '#6ee7b7' : '#cbd5e1',
-              fontWeight: 700,
+              padding: '7px 13px',
+              borderRadius: '8px',
+              border: overlay.enabled ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              background: overlay.enabled ? 'rgba(124, 92, 255, 0.16)' : '#14141c',
+              color: overlay.enabled ? '#b79cff' : '#e8e8ee',
+              fontWeight: 600,
               fontSize: '12px',
               cursor: 'pointer',
               display: 'inline-flex',
@@ -1070,22 +1061,12 @@ export default function GiftImageCreator({
                 ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }}
             style={{
-              padding: '8px 13px',
-              borderRadius: '10px',
-              border:
-                settings.edgeSoftness > 0
-                  ? '1.5px solid rgba(244, 114, 182, 0.85)'
-                  : '1px solid rgba(167, 139, 250, 0.45)',
-              background:
-                settings.edgeSoftness > 0
-                  ? 'linear-gradient(135deg, rgba(219, 39, 119, 0.32), rgba(124, 92, 255, 0.32))'
-                  : 'linear-gradient(180deg, #231d38, #161426)',
-              boxShadow:
-                settings.edgeSoftness > 0
-                  ? '0 4px 14px rgba(236, 72, 153, 0.35), inset 0 1px 0 rgba(255,255,255,0.2)'
-                  : '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.08)',
-              color: settings.edgeSoftness > 0 ? '#fbcfe8' : '#e9d5ff',
-              fontWeight: 800,
+              padding: '7px 13px',
+              borderRadius: '8px',
+              border: settings.edgeSoftness > 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              background: settings.edgeSoftness > 0 ? 'rgba(124, 92, 255, 0.16)' : '#14141c',
+              color: settings.edgeSoftness > 0 ? '#b79cff' : '#e8e8ee',
+              fontWeight: 600,
               fontSize: '12px',
               cursor: 'pointer',
               display: 'inline-flex',
@@ -1116,12 +1097,12 @@ export default function GiftImageCreator({
                 : 'Export selected images immediately in chosen format'
             }
             style={{
-              padding: '8px 13px',
-              borderRadius: '10px',
-              border: '1px solid rgba(56, 189, 248, 0.5)',
-              background: 'linear-gradient(180deg, rgba(14, 116, 144, 0.35), rgba(15, 23, 42, 0.8))',
-              color: '#7dd3fc',
-              fontWeight: 700,
+              padding: '7px 13px',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              background: '#14141c',
+              color: '#b79cff',
+              fontWeight: 600,
               fontSize: '12px',
               cursor: items.length === 0 ? 'not-allowed' : 'pointer',
               opacity: items.length === 0 ? 0.5 : 1,
@@ -1149,15 +1130,13 @@ export default function GiftImageCreator({
                 : 'Quick export shortcut: Press Tab or Left-Click to export in selected format'
             }
             style={{
-              padding: '8px 16px',
-              borderRadius: '10px',
-              border: '1px solid rgba(167, 139, 250, 0.75)',
-              background: 'linear-gradient(135deg, #7c5cff 0%, #6366f1 60%, #059669 100%)',
-              boxShadow:
-                '0 6px 18px rgba(124, 92, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35)',
+              padding: '7px 16px',
+              borderRadius: '8px',
+              border: '1px solid #7c5cff',
+              background: '#7c5cff',
               color: '#ffffff',
-              fontWeight: 800,
-              fontSize: '12.5px',
+              fontWeight: 700,
+              fontSize: '12px',
               cursor: items.length === 0 ? 'not-allowed' : 'pointer',
               opacity: items.length === 0 ? 0.5 : 1,
               display: 'inline-flex',
@@ -1184,34 +1163,24 @@ export default function GiftImageCreator({
         <div
           id="giftCreatorProBanner"
           style={{
-            padding: '7px 18px',
-            background: isPro
-              ? 'linear-gradient(90deg, rgba(245, 158, 11, 0.16) 0%, rgba(124, 92, 255, 0.12) 100%)'
-              : attemptStatus.remainingAttempts > 0
-                ? 'linear-gradient(90deg, rgba(16, 185, 129, 0.16) 0%, rgba(59, 130, 246, 0.12) 100%)'
-                : 'linear-gradient(90deg, rgba(239, 68, 68, 0.18) 0%, rgba(220, 38, 38, 0.12) 100%)',
-            borderBottom: isPro
-              ? '1px solid rgba(245, 158, 11, 0.35)'
-              : attemptStatus.remainingAttempts > 0
-                ? '1px solid rgba(16, 185, 129, 0.35)'
-                : '1px solid rgba(239, 68, 68, 0.4)',
+            padding: '6px 18px',
+            background: '#111118',
+            borderBottom: '1px solid #1e1e28',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            fontSize: '12px',
-            fontWeight: 700,
+            fontSize: '11.5px',
+            fontWeight: 600,
             gap: '8px',
             flexWrap: 'wrap',
             flexShrink: 0,
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span>{isPro ? '👑' : attemptStatus.remainingAttempts > 0 ? '🎁' : '🔒'}</span>
-            <span
-              style={{
-                color: isPro ? '#fde047' : attemptStatus.remainingAttempts > 0 ? '#6ee7b7' : '#fca5a5',
-              }}
-            >
+            <span style={{ color: '#b79cff' }}>
+              {isPro ? '👑' : attemptStatus.remainingAttempts > 0 ? '✨' : '🔒'}
+            </span>
+            <span style={{ color: '#e8e8ee' }}>
               {isPro
                 ? isAr
                   ? 'عضوية برو مفعلة: استخدام وتصدير غير محدود لجميع صور الهدايا'
@@ -1221,8 +1190,8 @@ export default function GiftImageCreator({
                     ? `ميزة برو متاحة لك تجريبياً: متبقي لديك (${attemptStatus.remainingAttempts}) محاولة مجانية للتصدير والتحميل`
                     : `Pro Trial: You have (${attemptStatus.remainingAttempts}) free export attempts remaining`
                   : isAr
-                    ? 'استنفدت جميع محاولاتك المجانية! اشترك الآن في باقة برو للتصدير والتحميل غير المحدود'
-                    : 'Free trial attempts exhausted! Subscribe to Pro for unlimited export & downloads'}
+                    ? 'استنفدت جميع محاولاتك المجانية — اشترك في باقة برو للتصدير غير المحدود'
+                    : 'Free trial attempts exhausted — Subscribe to Pro for unlimited exports'}
             </span>
           </div>
 
@@ -1238,16 +1207,15 @@ export default function GiftImageCreator({
               style={{
                 padding: '3px 12px',
                 borderRadius: '99px',
-                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                border: 0,
-                color: '#000',
-                fontWeight: 800,
+                background: 'rgba(124, 92, 255, 0.2)',
+                border: '1px solid #7c5cff',
+                color: '#ece3ff',
+                fontWeight: 700,
                 fontSize: '11px',
                 cursor: 'pointer',
-                boxShadow: '0 2px 8px rgba(245, 158, 11, 0.3)',
               }}
             >
-              👑 {isAr ? 'ترقية إلى برو' : 'Upgrade to Pro'}
+              {isAr ? 'ترقية إلى برو' : 'Upgrade to Pro'}
             </button>
           )}
         </div>

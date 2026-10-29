@@ -1064,16 +1064,16 @@ export default function App() {
         <span
           style={{
             fontSize: '9px',
-            fontWeight: 800,
-            padding: '1px 5px',
+            fontWeight: 700,
+            padding: '1px 6px',
             borderRadius: '99px',
-            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.35), rgba(217, 119, 6, 0.25))',
-            border: '1px solid #f59e0b',
-            color: '#fde047',
+            background: 'rgba(124, 92, 255, 0.16)',
+            border: '1px solid rgba(124, 92, 255, 0.45)',
+            color: '#b79cff',
             whiteSpace: 'nowrap',
           }}
         >
-          👑 PRO
+          PRO
         </span>
       );
     }
@@ -1082,12 +1082,12 @@ export default function App() {
         <span
           style={{
             fontSize: '9px',
-            fontWeight: 800,
+            fontWeight: 700,
             padding: '1px 6px',
             borderRadius: '99px',
-            background: 'linear-gradient(135deg, #10b981, #059669)',
-            color: '#ffffff',
-            boxShadow: '0 1px 6px rgba(16, 185, 129, 0.35)',
+            background: 'rgba(124, 92, 255, 0.2)',
+            border: '1px solid #7c5cff',
+            color: '#ece3ff',
             whiteSpace: 'nowrap',
           }}
           title={
@@ -1104,12 +1104,12 @@ export default function App() {
       <span
         style={{
           fontSize: '9px',
-          fontWeight: 800,
-          padding: '1px 5px',
+          fontWeight: 700,
+          padding: '1px 6px',
           borderRadius: '99px',
-          background: 'rgba(239, 68, 68, 0.2)',
-          border: '1px solid rgba(239, 68, 68, 0.6)',
-          color: '#fca5a5',
+          background: '#14141c',
+          border: '1px solid #2b2b3d',
+          color: '#80808f',
           whiteSpace: 'nowrap',
         }}
         title={
@@ -1118,7 +1118,7 @@ export default function App() {
             : 'Pro Feature (Trial exhausted)'
         }
       >
-        🔒 {isAr ? 'برو' : 'PRO'}
+        🔒 PRO
       </span>
     );
   };
@@ -1179,14 +1179,17 @@ export default function App() {
             data-v="gifts"
             id="giftsStudioNavBtn"
             style={{
-              padding: '3px 9px',
-              borderRadius: '6px',
+              padding: '3px 10px',
+              borderRadius: '7px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '4px',
+              gap: '5px',
+              background: '#14141c',
+              border: '1px solid #1e1e28',
+              fontWeight: 600,
+              transition: 'border-color 0.15s ease, color 0.15s ease',
             }}
           >
-            <span>🎁</span>
             <span>{t.navGiftsStudio}</span>
             {renderNavProBadge(giftStudioAttemptStatus)}
           </a>
@@ -1199,13 +1202,12 @@ export default function App() {
               display: 'inline-flex',
               alignItems: 'center',
               gap: '5px',
-              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.2), rgba(16, 185, 129, 0.14))',
-              border: '1px solid rgba(124, 92, 255, 0.4)',
-              boxShadow: '0 2px 8px rgba(124, 92, 255, 0.18), inset 0 1px 0 rgba(255,255,255,0.12)',
-              fontWeight: 700,
+              background: '#14141c',
+              border: '1px solid #1e1e28',
+              fontWeight: 600,
+              transition: 'border-color 0.15s ease, color 0.15s ease',
             }}
           >
-            <span>🖼️</span>
             <span>{t.navGiftImageCreator}</span>
             {renderNavProBadge(giftImageAttemptStatus)}
           </a>

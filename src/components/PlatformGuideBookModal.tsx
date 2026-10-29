@@ -18,7 +18,7 @@ export default function PlatformGuideBook({
 }: PlatformGuideBookProps) {
   const [open, setOpen] = useState(false);
   const [activeChapterId, setActiveChapterId] = useState<string>(GUIDE_BOOK_CHAPTERS[0].id);
-  const [highlightedCallout, setHighlightedCallout] = useState<number | null>(1);
+  const [highlightedCallout, setHighlightedCallout] = useState<number>(1);
 
   // Strictly only show on the main home view; hide immediately when entering any feature
   const isVisibleOnScreen = shouldShowGuideBookButton(activeView);
@@ -31,731 +31,6 @@ export default function PlatformGuideBook({
     GUIDE_BOOK_CHAPTERS.find((c) => c.id === activeChapterId) || GUIDE_BOOK_CHAPTERS[0];
 
   const currentIndex = GUIDE_BOOK_CHAPTERS.findIndex((c) => c.id === activeChapter.id);
-
-  const renderVisualScreenMockup = (chapter: GuideBookChapter) => {
-    if (chapter.id === 'motion_converter') {
-      return (
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: '290px',
-            borderRadius: '14px',
-            background: '#090a12',
-            border: '1px solid rgba(124, 92, 255, 0.45)',
-            overflow: 'hidden',
-            display: 'grid',
-            gridTemplateColumns: '1fr 1.6fr 1.1fr',
-            gap: '8px',
-            padding: '10px',
-            boxShadow: 'inset 0 0 40px rgba(124, 92, 255, 0.12)',
-          }}
-        >
-          {/* Left Panel Mockup: Layers, Audio, Edge Feather, Watermark */}
-          <div
-            style={{
-              background: '#12131f',
-              borderRadius: '10px',
-              border:
-                highlightedCallout === 3
-                  ? '1.5px solid #a78bfa'
-                  : '1px solid rgba(255,255,255,0.08)',
-              padding: '8px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '6px',
-            }}
-          >
-            <div style={{ fontSize: '10px', fontWeight: 800, color: '#c4b5fd' }}>
-              🎨 {isAr ? 'صور وطبقات الملف + الصوت' : 'Image & Audio Assets'}
-            </div>
-            <div
-              style={{
-                padding: '4px 6px',
-                borderRadius: '6px',
-                background: 'rgba(124, 92, 255, 0.16)',
-                border: '1px solid rgba(124, 92, 255, 0.35)',
-                fontSize: '9.5px',
-                color: '#e9d5ff',
-              }}
-            >
-              🌫️ {isAr ? 'تنعيم الحواف (Edge Feather)' : 'Edge Feather'}
-            </div>
-            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-              <span
-                style={{
-                  fontSize: '8.5px',
-                  padding: '2px 6px',
-                  borderRadius: '99px',
-                  background: '#1e2036',
-                  color: '#cbd5e1',
-                }}
-              >
-                💧 {isAr ? 'علامة مائية' : 'Watermark'}
-              </span>
-              <span
-                style={{
-                  fontSize: '8.5px',
-                  padding: '2px 6px',
-                  borderRadius: '99px',
-                  background: '#1e2036',
-                  color: '#cbd5e1',
-                }}
-              >
-                ⚡ Batch
-              </span>
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: '4px',
-                marginTop: '2px',
-                flex: 1,
-              }}
-            >
-              {['crown_01.png', 'wings_02.png', 'glow_03.png', 'star_04.png'].map((sp) => (
-                <div
-                  key={sp}
-                  style={{
-                    background: '#0b0c14',
-                    borderRadius: '6px',
-                    border: '1px solid #23253a',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '4px',
-                    fontSize: '8px',
-                    color: '#94a3b8',
-                  }}
-                >
-                  <span style={{ fontSize: '14px' }}>✨</span>
-                  <span>{sp}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Center Stage Mockup: Live Preview + Left Click Instant Export */}
-          <div
-            style={{
-              background:
-                'repeating-conic-gradient(#1a1b26 0 25%, #12131c 0 50%) 0 0 / 16px 16px',
-              borderRadius: '10px',
-              border:
-                highlightedCallout === 1
-                  ? '2px solid #10b981'
-                  : '1px solid rgba(255,255,255,0.12)',
-              position: 'relative',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '10px',
-            }}
-          >
-            <div
-              style={{
-                position: 'absolute',
-                top: '7px',
-                left: '8px',
-                right: '8px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: '9px',
-                  fontWeight: 800,
-                  padding: '2px 8px',
-                  borderRadius: '99px',
-                  background: 'rgba(16, 185, 129, 0.22)',
-                  border: '1px solid #10b981',
-                  color: '#6ee7b7',
-                }}
-              >
-                🖱️ {isAr ? 'كليك شمال هنا = تصدير فوري!' : 'Left-Click Here = Instant Export!'}
-              </span>
-              <span
-                style={{
-                  fontSize: '9px',
-                  fontWeight: 800,
-                  padding: '2px 7px',
-                  borderRadius: '99px',
-                  background: 'rgba(245, 158, 11, 0.22)',
-                  border: '1px solid #f59e0b',
-                  color: '#fde047',
-                }}
-              >
-                ⌨️ Tab
-              </span>
-            </div>
-
-            <div
-              style={{
-                width: '96px',
-                height: '96px',
-                borderRadius: '18px',
-                background:
-                  'radial-gradient(circle, rgba(124,92,255,0.38) 0%, rgba(16,185,129,0.15) 70%, transparent 100%)',
-                border: '1px dashed rgba(167, 139, 250, 0.5)',
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: '42px',
-                boxShadow: '0 0 30px rgba(124, 92, 255, 0.35)',
-              }}
-            >
-              👑
-            </div>
-            <div
-              style={{
-                marginTop: '6px',
-                fontSize: '10px',
-                fontWeight: 800,
-                color: '#f8fafc',
-                textAlign: 'center',
-              }}
-            >
-              {isAr ? 'شاشة معاينة الهدية الحية' : 'Live Gift Preview Stage'}
-            </div>
-
-            {/* Bottom Stage Controls */}
-            <div
-              style={{
-                position: 'absolute',
-                bottom: '7px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                background: 'rgba(10, 11, 18, 0.88)',
-                padding: '3px 10px',
-                borderRadius: '99px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                fontSize: '8.5px',
-                color: '#cbd5e1',
-              }}
-            >
-              <span>⏯️ Pause</span>
-              <span>🔊 Sound</span>
-              <span>🔍 100%</span>
-              <span>🎨 BG</span>
-            </div>
-          </div>
-
-          {/* Right Panel Mockup: Format & Conversion Settings */}
-          <div
-            style={{
-              background: '#12131f',
-              borderRadius: '10px',
-              border:
-                highlightedCallout === 2
-                  ? '1.5px solid #f59e0b'
-                  : '1px solid rgba(255,255,255,0.08)',
-              padding: '8px',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-              gap: '5px',
-            }}
-          >
-            <div style={{ fontSize: '10px', fontWeight: 800, color: '#fde047' }}>
-              ⚙️ {isAr ? 'إعدادات التحويل والصيغة' : 'Format & Export Settings'}
-            </div>
-            <div
-              style={{
-                fontSize: '9px',
-                color: '#94a3b8',
-                display: 'flex',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span>{isAr ? 'الأبعاد:' : 'Size:'}</span>
-              <span style={{ color: '#fff', fontWeight: 700 }}>750 × 750</span>
-            </div>
-            <div
-              style={{
-                fontSize: '9px',
-                color: '#94a3b8',
-                display: 'flex',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span>FPS:</span>
-              <span style={{ color: '#fff', fontWeight: 700 }}>30 FPS</span>
-            </div>
-            <div
-              style={{
-                padding: '5px 7px',
-                borderRadius: '6px',
-                background: '#1b1d30',
-                border: '1px solid #7c5cff',
-                fontSize: '9.5px',
-                color: '#e9d5ff',
-                fontWeight: 700,
-                display: 'flex',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span>{isAr ? 'الصيغة:' : 'Format:'}</span>
-              <span>SVGA / VAP / MP4 ▾</span>
-            </div>
-            <div
-              style={{
-                padding: '7px 8px',
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg, #7c5cff, #10b981)',
-                color: '#fff',
-                fontSize: '9.5px',
-                fontWeight: 900,
-                textAlign: 'center',
-                boxShadow: '0 4px 14px rgba(124, 92, 255, 0.4)',
-              }}
-            >
-              ⚡ {isAr ? 'بدء التحويل [Tab / كليك شمال]' : 'Export [Tab / Left-Click]'}
-            </div>
-          </div>
-
-          {renderCalloutPins(chapter)}
-        </div>
-      );
-    }
-
-    if (chapter.id === 'gifts_studio') {
-      return (
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: '290px',
-            borderRadius: '14px',
-            background: '#090c18',
-            border: '1px solid rgba(16, 185, 129, 0.45)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '10px',
-          }}
-        >
-          {/* Top Studio Bar Mockup */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              background: '#111628',
-              padding: '7px 10px',
-              borderRadius: '10px',
-              border: '1px solid rgba(255,255,255,0.08)',
-              gap: '6px',
-              flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span
-                style={{
-                  padding: '4px 10px',
-                  borderRadius: '99px',
-                  background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
-                  color: '#fff',
-                  fontSize: '9.5px',
-                  fontWeight: 800,
-                }}
-              >
-                ⬇ {isAr ? 'تصدير هدية + صورة [Tab]' : 'Export Pack [Tab]'}
-              </span>
-              <span
-                style={{
-                  padding: '3px 8px',
-                  borderRadius: '99px',
-                  background: '#1b2238',
-                  color: '#cbd5e1',
-                  fontSize: '9px',
-                }}
-              >
-                🎁 {isAr ? 'هدية + صورة / فيديو / فولدرات ▾' : 'Export Mode ▾'}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span
-                style={{
-                  padding: '3px 9px',
-                  borderRadius: '99px',
-                  background: 'rgba(16, 185, 129, 0.18)',
-                  border: '1px solid #10b981',
-                  color: '#6ee7b7',
-                  fontSize: '9px',
-                  fontWeight: 800,
-                }}
-              >
-                ⏱️ {isAr ? 'مدة الفيديو: مفعّل (8 ث)' : 'Video Duration: ON (8s)'}
-              </span>
-              <span
-                style={{
-                  padding: '3px 9px',
-                  borderRadius: '99px',
-                  background: 'rgba(124, 92, 255, 0.2)',
-                  border: '1px solid #7c5cff',
-                  color: '#e9d5ff',
-                  fontSize: '9px',
-                  fontWeight: 800,
-                }}
-              >
-                ➕ {isAr ? 'رفع هدايا أو ملفات مغلقة ZIP' : 'Upload Gifts & ZIP'}
-              </span>
-            </div>
-          </div>
-
-          {/* Cards Grid Mockup */}
-          <div
-            style={{
-              flex: 1,
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: '8px',
-            }}
-          >
-            {[
-              { name: 'royal_dragon.svga', fmt: 'SVGA', dur: '6.5s', icon: '🐉' },
-              { name: 'luxury_castle.vap', fmt: 'VAP Alpha', dur: '8.0s', icon: '🏰' },
-              { name: 'golden_lion_pack.zip', fmt: 'ZIP Extracted', dur: '5.2s', icon: '🦁' },
-            ].map((card) => (
-              <div
-                key={card.name}
-                style={{
-                  background: '#111628',
-                  borderRadius: '10px',
-                  border: '1px solid #232c48',
-                  padding: '8px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8.5px' }}>
-                  <span
-                    style={{
-                      background: 'rgba(124,92,255,0.25)',
-                      color: '#c4b5fd',
-                      padding: '1px 6px',
-                      borderRadius: '4px',
-                      fontWeight: 800,
-                    }}
-                  >
-                    {card.fmt}
-                  </span>
-                  <span style={{ color: '#6ee7b7' }}>{card.dur}</span>
-                </div>
-                <div
-                  style={{
-                    height: '95px',
-                    borderRadius: '8px',
-                    background:
-                      'repeating-conic-gradient(#181f36 0 25%, #101526 0 50%) 0 0 / 12px 12px',
-                    display: 'grid',
-                    placeItems: 'center',
-                    fontSize: '34px',
-                  }}
-                >
-                  {card.icon}
-                </div>
-                <div
-                  style={{
-                    fontSize: '9px',
-                    fontWeight: 700,
-                    color: '#e2e8f0',
-                    textAlign: 'center',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {card.name}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {renderCalloutPins(chapter)}
-        </div>
-      );
-    }
-
-    if (chapter.id === 'gift_image_creator') {
-      return (
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: '290px',
-            borderRadius: '14px',
-            background: '#0b0a14',
-            border: '1px solid rgba(236, 72, 153, 0.45)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '10px',
-          }}
-        >
-          {/* Header Bar */}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: '#161326',
-              padding: '7px 10px',
-              borderRadius: '10px',
-              border: '1px solid rgba(236, 72, 153, 0.3)',
-            }}
-          >
-            <span
-              style={{
-                padding: '4px 10px',
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg, #7c5cff, #059669)',
-                color: '#fff',
-                fontSize: '9.5px',
-                fontWeight: 800,
-              }}
-            >
-              📦 {isAr ? 'تنزيل جميع الصور ZIP [Tab]' : 'Download All ZIP [Tab]'}
-            </span>
-            <span
-              style={{
-                padding: '4px 10px',
-                borderRadius: '8px',
-                background: 'rgba(236, 72, 153, 0.25)',
-                border: '1px solid #f472b6',
-                color: '#fbcfe8',
-                fontSize: '9.5px',
-                fontWeight: 800,
-              }}
-            >
-              🌫️ {isAr ? 'تنعيم الحواف الشفافة: مفعّل (24px)' : 'Soft Edge Feather: ON (24px)'}
-            </span>
-            <span style={{ fontSize: '10px', fontWeight: 800, color: '#f8fafc' }}>
-              🖼️ {isAr ? 'إنشاء صورة الهدية 3D' : '3D Gift Image Studio'}
-            </span>
-          </div>
-
-          {/* Content Area */}
-          <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '8px' }}>
-            <div
-              style={{
-                background:
-                  'repeating-conic-gradient(#19162b 0 25%, #110f1f 0 50%) 0 0 / 14px 14px',
-                borderRadius: '10px',
-                border: '1px solid #2b2448',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                position: 'relative',
-              }}
-            >
-              <div
-                style={{
-                  width: '112px',
-                  height: '112px',
-                  borderRadius: '50%',
-                  background: 'radial-gradient(circle, #ec4899 0%, #7c5cff 60%, transparent 72%)',
-                  display: 'grid',
-                  placeItems: 'center',
-                  fontSize: '44px',
-                  boxShadow: '0 0 32px rgba(236, 72, 153, 0.45)',
-                  border: '2px solid rgba(253, 224, 71, 0.75)',
-                }}
-              >
-                💎
-              </div>
-              <span style={{ fontSize: '9.5px', color: '#fbcfe8', marginTop: '6px', fontWeight: 700 }}>
-                {isAr
-                  ? 'حواف متدرجة الشفافية + طبقة إطار ذهبي مشترك'
-                  : 'Feathered Alpha Edges + Shared VIP Frame'}
-              </span>
-            </div>
-
-            <div
-              style={{
-                background: '#141122',
-                borderRadius: '10px',
-                border: '1px solid #2b2448',
-                padding: '8px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-              }}
-            >
-              <div style={{ fontSize: '9.5px', fontWeight: 800, color: '#f472b6' }}>
-                ✨ {isAr ? 'قوالب تشكيل الهدايا (10 أشكال)' : '10 Gift Mask Shapes'}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
-                {[
-                  isAr ? '⚪ دائري ناعم' : '⚪ Circle',
-                  isAr ? '🛡️ درع ملكي' : '🛡️ Royal Shield',
-                  isAr ? '💎 ماسة سداسية' : '💎 Diamond',
-                  isAr ? '👑 تاج VIP' : '👑 VIP Crown',
-                  isAr ? '❤️ قلب ثلاثي' : '❤️ 3D Heart',
-                  isAr ? '⭐ نجمة ذهبية' : '⭐ Gold Star',
-                ].map((s) => (
-                  <div
-                    key={s}
-                    style={{
-                      padding: '5px',
-                      borderRadius: '6px',
-                      background: '#1f1a36',
-                      border: '1px solid rgba(236,72,153,0.3)',
-                      fontSize: '8.5px',
-                      color: '#e9d5ff',
-                      textAlign: 'center',
-                      fontWeight: 700,
-                    }}
-                  >
-                    {s}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {renderCalloutPins(chapter)}
-        </div>
-      );
-    }
-
-    // SVGA AE Editor Mockup
-    return (
-      <div
-        style={{
-          position: 'relative',
-          width: '100%',
-          height: '290px',
-          borderRadius: '14px',
-          background: '#0a0b12',
-          border: '1px solid rgba(245, 158, 11, 0.45)',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
-          padding: '10px',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            background: '#151624',
-            padding: '7px 10px',
-            borderRadius: '10px',
-            border: '1px solid rgba(245, 158, 11, 0.35)',
-          }}
-        >
-          <div style={{ display: 'flex', gap: '6px' }}>
-            <span
-              style={{
-                padding: '4px 10px',
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                color: '#000',
-                fontSize: '9.5px',
-                fontWeight: 900,
-              }}
-            >
-              🚀 {isAr ? 'تصدير SVGA / After Effects [Tab]' : 'Export SVGA / AE [Tab]'}
-            </span>
-          </div>
-          <span style={{ fontSize: '10px', fontWeight: 800, color: '#fde047' }}>
-            🎬 {isAr ? 'محرر طبقات وفريمات SVGA المتقدم' : 'Advanced SVGA Timeline Editor'}
-          </span>
-        </div>
-
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '8px' }}>
-          <div
-            style={{
-              background: '#121320',
-              borderRadius: '8px',
-              border: '1px solid #262840',
-              padding: '6px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '4px',
-            }}
-          >
-            <div style={{ fontSize: '9px', fontWeight: 800, color: '#fde047' }}>
-              🗂️ {isAr ? 'شجرة الطبقات (Sprites)' : 'Sprites Tree'}
-            </div>
-            {['layer_crown_main', 'layer_wings_left', 'layer_wings_right', 'layer_particles'].map(
-              (l) => (
-                <div
-                  key={l}
-                  style={{
-                    padding: '4px 6px',
-                    borderRadius: '5px',
-                    background: '#1a1c30',
-                    fontSize: '8.5px',
-                    color: '#cbd5e1',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <span>👁️ {l}</span>
-                  <span style={{ color: '#6ee7b7' }}>PNG</span>
-                </div>
-              )
-            )}
-          </div>
-
-          <div
-            style={{
-              background: '#121320',
-              borderRadius: '8px',
-              border: '1px solid #262840',
-              padding: '8px',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-            }}
-          >
-            <div
-              style={{
-                flex: 1,
-                display: 'grid',
-                placeItems: 'center',
-                background: 'repeating-conic-gradient(#191b2e 0 25%, #111322 0 50%) 0 0 / 14px 14px',
-                borderRadius: '6px',
-                fontSize: '36px',
-              }}
-            >
-              🏆
-            </div>
-            <div
-              style={{
-                marginTop: '6px',
-                background: '#0c0d16',
-                padding: '5px 8px',
-                borderRadius: '6px',
-                border: '1px solid #2e3252',
-                fontSize: '8.5px',
-                color: '#fde047',
-              }}
-            >
-              🎞️ Timeline: Frame 45 / 120 ━━━●━━━━━━━━━━
-            </div>
-          </div>
-        </div>
-
-        {renderCalloutPins(chapter)}
-      </div>
-    );
-  };
 
   const renderCalloutPins = (chapter: GuideBookChapter) => {
     return chapter.callouts.map((c) => {
@@ -771,24 +46,23 @@ export default function PlatformGuideBook({
             top: c.posTop,
             left: c.posLeft,
             transform: 'translate(-50%, -50%)',
-            width: isHi ? '30px' : '25px',
-            height: isHi ? '30px' : '25px',
+            width: isHi ? '28px' : '24px',
+            height: isHi ? '28px' : '24px',
             borderRadius: '50%',
-            background: isHi
-              ? 'linear-gradient(135deg, #f59e0b, #ef4444)'
-              : 'linear-gradient(135deg, #7c5cff, #4f46e5)',
-            border: '2px solid #ffffff',
-            color: '#ffffff',
-            fontWeight: 900,
-            fontSize: '12px',
+            background: isHi ? '#7c5cff' : '#14141c',
+            border: isHi ? '2px solid #ece3ff' : '1.5px solid #7c5cff',
+            color: isHi ? '#ffffff' : '#b79cff',
+            fontWeight: 800,
+            fontSize: '11.5px',
             cursor: 'pointer',
             display: 'grid',
             placeItems: 'center',
             boxShadow: isHi
-              ? '0 0 20px rgba(245, 158, 11, 0.95), 0 4px 10px rgba(0,0,0,0.6)'
-              : '0 4px 12px rgba(0,0,0,0.6)',
+              ? '0 0 0 4px rgba(124, 92, 255, 0.25), 0 4px 12px rgba(0,0,0,0.65)'
+              : '0 3px 10px rgba(0,0,0,0.55)',
             zIndex: 15,
-            transition: 'all 0.18s ease',
+            transition: 'all 0.16s ease',
+            padding: 0,
           }}
           title={isAr ? c.titleAr : c.titleEn}
         >
@@ -796,6 +70,575 @@ export default function PlatformGuideBook({
         </button>
       );
     });
+  };
+
+  const renderVisualScreenMockup = (chapter: GuideBookChapter) => {
+    const frameStyle: React.CSSProperties = {
+      position: 'relative',
+      width: '100%',
+      height: '220px',
+      borderRadius: '12px',
+      background: '#07070a',
+      border: '1px solid #1e1e28',
+      overflow: 'hidden',
+      display: 'grid',
+      gap: '8px',
+      padding: '10px',
+    };
+
+    if (chapter.id === 'motion_converter') {
+      return (
+        <div
+          style={{
+            ...frameStyle,
+            gridTemplateColumns: '1fr 1.6fr 1.1fr',
+          }}
+        >
+          {/* Left Panel: Assets & Effects */}
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: highlightedCallout === 3 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <div style={{ fontSize: '10px', fontWeight: 700, color: '#b79cff' }}>
+              {isAr ? 'الطبقات والصوت' : 'Layers & Audio'}
+            </div>
+            <div
+              style={{
+                padding: '4px 6px',
+                borderRadius: '6px',
+                background: '#14141c',
+                border: '1px solid #1e1e28',
+                fontSize: '9px',
+                color: '#e8e8ee',
+              }}
+            >
+              {isAr ? 'تنعيم الحواف + علامة مائية' : 'Edge Feather + Watermark'}
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '4px',
+                flex: 1,
+              }}
+            >
+              {['img_01', 'img_02', 'img_03', 'img_04'].map((sp) => (
+                <div
+                  key={sp}
+                  style={{
+                    background: '#14141c',
+                    borderRadius: '6px',
+                    border: '1px solid #1e1e28',
+                    display: 'grid',
+                    placeItems: 'center',
+                    fontSize: '8.5px',
+                    color: '#80808f',
+                  }}
+                >
+                  {sp}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Center Stage: Live Preview */}
+          <div
+            style={{
+              background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
+              borderRadius: '8px',
+              border:
+                highlightedCallout === 1 || highlightedCallout === 4
+                  ? '1px solid #7c5cff'
+                  : '1px solid #1e1e28',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '10px',
+            }}
+          >
+            <span
+              style={{
+                fontSize: '9px',
+                padding: '2px 8px',
+                borderRadius: '99px',
+                background: '#14141c',
+                border: '1px solid #1e1e28',
+                color: '#b79cff',
+                fontWeight: 600,
+              }}
+            >
+              {isAr ? 'شاشة المعاينة الحية (كليك شمال للتصدير)' : 'Live Stage (Left-Click to Export)'}
+            </span>
+
+            <div
+              style={{
+                width: '68px',
+                height: '68px',
+                borderRadius: '50%',
+                background: 'radial-gradient(circle, rgba(124, 92, 255, 0.28), transparent 70%)',
+                border: '1px solid rgba(124, 92, 255, 0.4)',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '26px',
+              }}
+            >
+              👑
+            </div>
+
+            <div
+              style={{
+                width: '100%',
+                padding: '4px 8px',
+                borderRadius: '6px',
+                background: '#0d0d12',
+                border: '1px solid #1e1e28',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '8.5px',
+                color: '#80808f',
+              }}
+            >
+              <span>▶</span>
+              <div
+                style={{
+                  flex: 1,
+                  height: '3px',
+                  background: '#1e1e28',
+                  borderRadius: '99px',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ width: '60%', height: '100%', background: '#7c5cff' }} />
+              </div>
+              <span>60 FPS</span>
+            </div>
+          </div>
+
+          {/* Right Panel: Format & Export */}
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: highlightedCallout === 2 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#e8e8ee' }}>
+                {isAr ? 'إعدادات التحويل' : 'Export Settings'}
+              </div>
+              <div
+                style={{
+                  padding: '4px 6px',
+                  borderRadius: '5px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  fontSize: '8.5px',
+                  color: '#80808f',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>{isAr ? 'الأبعاد' : 'Size'}</span>
+                <span style={{ color: '#e8e8ee' }}>750 × 750</span>
+              </div>
+              <div
+                style={{
+                  padding: '4px 6px',
+                  borderRadius: '5px',
+                  background: '#14141c',
+                  border: '1px solid #7c5cff',
+                  fontSize: '8.5px',
+                  color: '#b79cff',
+                  fontWeight: 700,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>{isAr ? 'الصيغة' : 'Format'}</span>
+                <span>SVGA / VAP ▾</span>
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: '6px',
+                borderRadius: '6px',
+                background: '#7c5cff',
+                color: '#ffffff',
+                fontWeight: 700,
+                fontSize: '9px',
+                textAlign: 'center',
+              }}
+            >
+              {isAr ? 'بدء التحويل ⚡ [Tab / كليك شمال]' : 'Convert ⚡ [Tab / Left-Click]'}
+            </div>
+          </div>
+
+          {renderCalloutPins(chapter)}
+        </div>
+      );
+    }
+
+    if (chapter.id === 'gifts_studio') {
+      return (
+        <div
+          style={{
+            ...frameStyle,
+            gridTemplateRows: 'auto 1fr',
+          }}
+        >
+          {/* Top Bar */}
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              padding: '6px 10px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '6px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  background: '#7c5cff',
+                  color: '#fff',
+                  fontSize: '8.5px',
+                  fontWeight: 700,
+                }}
+              >
+                {isAr ? '⬇ تصدير هدية + صورة [Tab]' : '⬇ Export Gift + Image [Tab]'}
+              </span>
+              <span
+                style={{
+                  padding: '3px 7px',
+                  borderRadius: '6px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  color: '#b79cff',
+                  fontSize: '8.5px',
+                }}
+              >
+                {isAr ? 'مدة الفيديو' : 'Duration'}
+              </span>
+              <span
+                style={{
+                  padding: '3px 7px',
+                  borderRadius: '6px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  color: '#80808f',
+                  fontSize: '8.5px',
+                }}
+              >
+                {isAr ? 'العلامة المائية' : 'Watermark'}
+              </span>
+            </div>
+            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#e8e8ee' }}>
+              🎁 {isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
+            </span>
+          </div>
+
+          {/* Cards Grid */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: '8px',
+            }}
+          >
+            {[
+              { name: 'royal_lion.svga', tag: 'SVGA', icon: '🦁' },
+              { name: 'dragon_vip.mp4', tag: 'VAP', icon: '🐉' },
+              { name: 'castle_king.svga', tag: 'SVGA', icon: '🏰' },
+            ].map((item, idx) => (
+              <div
+                key={idx}
+                style={{
+                  background: '#0d0d12',
+                  borderRadius: '8px',
+                  border: idx === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+                  padding: '8px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8px' }}>
+                  <span style={{ color: '#b79cff', fontWeight: 700 }}>☑</span>
+                  <span
+                    style={{
+                      padding: '1px 5px',
+                      borderRadius: '4px',
+                      background: '#14141c',
+                      color: '#80808f',
+                    }}
+                  >
+                    {item.tag}
+                  </span>
+                </div>
+                <div style={{ textAlign: 'center', fontSize: '26px', margin: '4px 0' }}>
+                  {item.icon}
+                </div>
+                <div
+                  style={{
+                    fontSize: '8.5px',
+                    color: '#e8e8ee',
+                    textAlign: 'center',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {item.name}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {renderCalloutPins(chapter)}
+        </div>
+      );
+    }
+
+    if (chapter.id === 'gift_image_creator') {
+      return (
+        <div
+          style={{
+            ...frameStyle,
+            gridTemplateColumns: '1fr 1.4fr 1.1fr',
+          }}
+        >
+          {/* Left Batch List */}
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#b79cff' }}>
+              {isAr ? 'دفعة الصور (Batch)' : 'Batch Queue'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', flex: 1 }}>
+              {['🦁', '👑', '🏎️', '💎'].map((ic, i) => (
+                <div
+                  key={i}
+                  style={{
+                    background: '#14141c',
+                    borderRadius: '6px',
+                    border: i === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+                    display: 'grid',
+                    placeItems: 'center',
+                    fontSize: '18px',
+                  }}
+                >
+                  {ic}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Center 3D Canvas */}
+          <div
+            style={{
+              background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
+              borderRadius: '8px',
+              border: '1px solid #7c5cff',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '8px',
+            }}
+          >
+            <div
+              style={{
+                width: '74px',
+                height: '74px',
+                borderRadius: '14px',
+                background: 'radial-gradient(circle, rgba(124, 92, 255, 0.25), transparent 72%)',
+                border: '1px solid rgba(124, 92, 255, 0.45)',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '34px',
+              }}
+            >
+              🦁
+            </div>
+            <span style={{ fontSize: '8.5px', color: '#b79cff', fontWeight: 600 }}>
+              {isAr ? 'معاينة البروز وتنعيم الحواف' : '3D Relief & Edge Feather'}
+            </span>
+          </div>
+
+          {/* Right Controls */}
+          <div
+            style={{
+              background: '#0d0d12',
+              borderRadius: '8px',
+              border: '1px solid #1e1e28',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#e8e8ee' }}>
+                {isAr ? 'إعدادات الصورة' : 'Image Controls'}
+              </div>
+              <div
+                style={{
+                  padding: '4px 6px',
+                  borderRadius: '5px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  fontSize: '8.5px',
+                  color: '#80808f',
+                }}
+              >
+                {isAr ? 'قوة البروز 3D: 85%' : '3D Depth: 85%'}
+              </div>
+              <div
+                style={{
+                  padding: '4px 6px',
+                  borderRadius: '5px',
+                  background: '#14141c',
+                  border: '1px solid #1e1e28',
+                  fontSize: '8.5px',
+                  color: '#80808f',
+                }}
+              >
+                {isAr ? 'تنعيم الحواف: 24px' : 'Edge Feather: 24px'}
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: '6px',
+                borderRadius: '6px',
+                background: '#7c5cff',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: '8.5px',
+                textAlign: 'center',
+              }}
+            >
+              {isAr ? 'تنزيل الصور ZIP ⚡ [Tab]' : 'Download ZIP ⚡ [Tab]'}
+            </div>
+          </div>
+
+          {renderCalloutPins(chapter)}
+        </div>
+      );
+    }
+
+    // Chapter 4: SVGA Editor
+    return (
+      <div
+        style={{
+          ...frameStyle,
+          gridTemplateColumns: '1fr 1.6fr',
+        }}
+      >
+        <div
+          style={{
+            background: '#0d0d12',
+            borderRadius: '8px',
+            border: '1px solid #1e1e28',
+            padding: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '5px',
+          }}
+        >
+          <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#b79cff' }}>
+            {isAr ? 'شجرة الطبقات (Sprites)' : 'Sprites Tree'}
+          </div>
+          {['crown_main', 'wings_left', 'wings_right', 'glow_fx'].map((l, i) => (
+            <div
+              key={l}
+              style={{
+                padding: '4px 6px',
+                borderRadius: '5px',
+                background: '#14141c',
+                border: i === 0 ? '1px solid #7c5cff' : '1px solid #1e1e28',
+                fontSize: '8.5px',
+                color: '#e8e8ee',
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span>{l}</span>
+              <span style={{ color: '#b79cff' }}>PNG</span>
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            background: '#0d0d12',
+            borderRadius: '8px',
+            border: '1px solid #1e1e28',
+            padding: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div
+            style={{
+              flex: 1,
+              display: 'grid',
+              placeItems: 'center',
+              background: 'repeating-conic-gradient(#12121a 0 25%, #0a0a0f 0 50%) 0 0 / 14px 14px',
+              borderRadius: '6px',
+              fontSize: '30px',
+            }}
+          >
+            🏆
+          </div>
+          <div
+            style={{
+              marginTop: '6px',
+              background: '#14141c',
+              padding: '5px 8px',
+              borderRadius: '5px',
+              border: '1px solid #1e1e28',
+              fontSize: '8.5px',
+              color: '#b79cff',
+            }}
+          >
+            Timeline: Frame 45 / 120 ━━━●━━━━━━━━
+          </div>
+        </div>
+
+        {renderCalloutPins(chapter)}
+      </div>
+    );
   };
 
   return (
@@ -824,46 +667,43 @@ export default function PlatformGuideBook({
           }
           title={
             isAr
-              ? '📖 دليل شرح وظائف ومميزات الموقع بالصور + اختصارات التصدير'
-              : '📖 Illustrated Platform Features & Shortcuts Guidebook'
+              ? 'دليل مميزات المنصة واختصارات التصدير'
+              : 'Platform Features & Shortcuts Guide'
           }
           style={{
-            width: '52px',
-            height: '52px',
+            width: '48px',
+            height: '48px',
             borderRadius: '50%',
-            border: '1.5px solid rgba(154, 124, 255, 0.45)',
-            background:
-              'radial-gradient(circle at 30% 25%, rgba(154, 124, 255, 0.26) 0%, rgba(20, 20, 32, 0.94) 68%, rgba(11, 11, 18, 0.98) 100%)',
-            color: '#e0d4ff',
+            border: '1px solid #2b2b3d',
+            background: 'radial-gradient(circle at 30% 25%, #231d3d 0%, #0d0d12 75%)',
+            color: '#e8e8ee',
             cursor: 'pointer',
             display: 'grid',
             placeItems: 'center',
-            boxShadow:
-              '0 10px 28px rgba(0, 0, 0, 0.65), 0 0 22px rgba(154, 124, 255, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16)',
-            backdropFilter: 'blur(12px)',
-            transition: 'transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(124, 92, 255, 0.2)',
+            transition: 'all 0.18s ease',
             padding: 0,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'translateY(-2px) scale(1.05)';
-            e.currentTarget.style.borderColor = 'rgba(167, 139, 250, 0.85)';
+            e.currentTarget.style.borderColor = '#7c5cff';
+            e.currentTarget.style.transform = 'translateY(-2px)';
             e.currentTarget.style.boxShadow =
-              '0 12px 32px rgba(0, 0, 0, 0.75), 0 0 28px rgba(154, 124, 255, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.25)';
+              '0 10px 28px rgba(0, 0, 0, 0.75), 0 0 18px rgba(124, 92, 255, 0.35)';
           }}
           onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = '#2b2b3d';
             e.currentTarget.style.transform = 'none';
-            e.currentTarget.style.borderColor = 'rgba(154, 124, 255, 0.45)';
             e.currentTarget.style.boxShadow =
-              '0 10px 28px rgba(0, 0, 0, 0.65), 0 0 22px rgba(154, 124, 255, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.16)';
+              '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(124, 92, 255, 0.2)';
           }}
         >
           <svg
-            width="23"
-            height="23"
+            width="20"
+            height="20"
             viewBox="0 0 24 24"
             fill="none"
-            stroke="#c4b5fd"
-            strokeWidth="1.85"
+            stroke="#b79cff"
+            strokeWidth="1.8"
             strokeLinecap="round"
             strokeLinejoin="round"
           >
@@ -873,15 +713,13 @@ export default function PlatformGuideBook({
         </button>
       </div>
 
-      {/* Full Illustrated Guidebook Modal */}
+      {/* Minimal, Cohesive Dark-Glass Guidebook Modal */}
       {open && (
         <div
           id="platformGuideBookModal"
           role="dialog"
           aria-modal="true"
-          aria-label={
-            isAr ? 'كتالوج ودليل شرح مميزات الموقع بالصور' : 'Illustrated Platform Guidebook'
-          }
+          aria-label={isAr ? 'دليل مميزات المنصة' : 'Platform Features Guide'}
           dir={isAr ? 'rtl' : 'ltr'}
           onClick={(e) => {
             if (e.target === e.currentTarget) setOpen(false);
@@ -890,8 +728,8 @@ export default function PlatformGuideBook({
             position: 'fixed',
             inset: 0,
             zIndex: 9995,
-            background: 'rgba(4, 5, 12, 0.86)',
-            backdropFilter: 'blur(12px)',
+            background: 'rgba(7, 7, 10, 0.82)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -900,57 +738,69 @@ export default function PlatformGuideBook({
         >
           <div
             style={{
-              width: 'min(980px, 96vw)',
-              maxHeight: '92vh',
+              width: 'min(820px, 95vw)',
+              maxHeight: '90vh',
               overflowY: 'auto',
-              background: 'linear-gradient(180deg, #131424 0%, #0b0c16 100%)',
-              border: '1px solid rgba(124, 92, 255, 0.5)',
-              borderRadius: '20px',
-              padding: '22px',
-              boxShadow: '0 28px 80px rgba(0, 0, 0, 0.85)',
-              color: '#f8fafc',
+              background: '#0d0d12',
+              border: '1px solid #1e1e28',
+              borderRadius: '16px',
+              padding: '20px',
+              boxShadow: '0 24px 64px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(124, 92, 255, 0.12)',
+              color: '#e8e8ee',
               display: 'flex',
               flexDirection: 'column',
-              gap: '16px',
+              gap: '14px',
             }}
           >
-            {/* Modal Header */}
+            {/* Simple Clean Header */}
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: '12px',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-                paddingBottom: '14px',
-                flexWrap: 'wrap',
+                paddingBottom: '12px',
+                borderBottom: '1px solid #1e1e28',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <div
                   style={{
-                    width: '44px',
-                    height: '44px',
-                    borderRadius: '12px',
-                    background: 'linear-gradient(135deg, #7c5cff 0%, #f59e0b 100%)',
+                    width: '34px',
+                    height: '34px',
+                    borderRadius: '9px',
+                    background: 'rgba(124, 92, 255, 0.14)',
+                    border: '1px solid rgba(124, 92, 255, 0.35)',
                     display: 'grid',
                     placeItems: 'center',
-                    fontSize: '24px',
-                    boxShadow: '0 6px 20px rgba(124, 92, 255, 0.4)',
+                    color: '#b79cff',
+                    flexShrink: 0,
                   }}
                 >
-                  📖
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                  </svg>
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 900, color: '#ffffff' }}>
+                  <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#e8e8ee' }}>
                     {isAr
-                      ? 'دليل وكتالوج مميزات المنصة المصوّر + اختصارات التصدير الفوري'
-                      : 'Illustrated Platform Features Guidebook & Export Shortcuts'}
+                      ? 'دليل مميزات المنصة واختصارات التصدير الفوري'
+                      : 'Platform Features & Instant Export Guide'}
                   </h2>
-                  <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#94a3b8' }}>
+                  <p style={{ margin: '2px 0 0', fontSize: '11.5px', color: '#80808f' }}>
                     {isAr
-                      ? 'اضغط على أي ميزة بالأسفل لمشاهدة سكرين توضيحي مرقّم وشرح تفصيلي لكل وظيفة واختصارات الكيبورد والماوس'
-                      : 'Select any feature tab below to inspect its numbered visual screen and detailed functional guide'}
+                      ? 'اختر الأداة بالأسفل لمشاهدة شرح مبسّط لوظائفها واختصارات التصدير السريع'
+                      : 'Select a tool below for a clean overview of its features and export shortcuts'}
                   </p>
                 </div>
               </div>
@@ -960,26 +810,32 @@ export default function PlatformGuideBook({
                 id="closeGuideBookModalBtn"
                 onClick={() => setOpen(false)}
                 style={{
-                  width: '34px',
-                  height: '34px',
-                  borderRadius: '50%',
-                  border: '1px solid rgba(255, 255, 255, 0.16)',
-                  background: '#1a1b2e',
-                  color: '#cbd5e1',
-                  fontSize: '18px',
+                  width: '30px',
+                  height: '30px',
+                  borderRadius: '8px',
+                  border: '1px solid #1e1e28',
+                  background: '#14141c',
+                  color: '#80808f',
+                  fontSize: '16px',
                   cursor: 'pointer',
+                  display: 'grid',
+                  placeItems: 'center',
                 }}
               >
-                ×
+                ✕
               </button>
             </div>
 
-            {/* Chapter Tabs Selector */}
+            {/* Clean Segmented Tabs Bar */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '8px',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '6px',
+                background: '#07070a',
+                padding: '5px',
+                borderRadius: '10px',
+                border: '1px solid #1e1e28',
               }}
             >
               {GUIDE_BOOK_CHAPTERS.map((chap, idx) => {
@@ -994,356 +850,248 @@ export default function PlatformGuideBook({
                       setHighlightedCallout(1);
                     }}
                     style={{
-                      padding: '10px 12px',
-                      borderRadius: '12px',
-                      border: isSelected
-                        ? `2px solid ${chap.accentColor}`
-                        : '1px solid rgba(255, 255, 255, 0.09)',
-                      background: isSelected
-                        ? 'rgba(124, 92, 255, 0.18)'
-                        : 'rgba(20, 22, 36, 0.75)',
-                      color: '#ffffff',
+                      padding: '8px 10px',
+                      borderRadius: '7px',
+                      border: isSelected ? '1px solid #7c5cff' : '1px solid transparent',
+                      background: isSelected ? 'rgba(124, 92, 255, 0.16)' : 'transparent',
+                      color: isSelected ? '#e8e8ee' : '#80808f',
                       cursor: 'pointer',
-                      textAlign: isAr ? 'right' : 'left',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '10px',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      fontSize: '11.5px',
+                      fontWeight: isSelected ? 700 : 500,
                       transition: 'all 0.15s ease',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
                     }}
                   >
-                    <span style={{ fontSize: '22px' }}>{chap.icon}</span>
-                    <div style={{ overflow: 'hidden' }}>
-                      <div
-                        style={{
-                          fontSize: '10px',
-                          fontWeight: 800,
-                          color: isSelected ? '#fde047' : '#94a3b8',
-                        }}
-                      >
-                        {isAr ? `صفحة ${idx + 1} • ${chap.badgeAr}` : `Page ${idx + 1} • ${chap.badgeEn}`}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: '12px',
-                          fontWeight: 800,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {isAr ? chap.titleAr : chap.titleEn}
-                      </div>
-                    </div>
+                    <span>{chap.icon}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {isAr ? chap.badgeAr : `${idx + 1}. ${chap.badgeEn}`}
+                    </span>
                   </button>
                 );
               })}
             </div>
 
-            {/* Active Chapter Content: Visual Screen + Callout Explanations */}
+            {/* Active Tool Summary Bar */}
             <div
               style={{
-                background: '#0e101d',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: '16px',
-                padding: '16px',
                 display: 'flex',
-                flexDirection: 'column',
-                gap: '16px',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                background: '#14141c',
+                border: '1px solid #1e1e28',
+                borderRadius: '10px',
+                padding: '10px 14px',
+                flexWrap: 'wrap',
               }}
             >
-              {/* Chapter Title & Summary */}
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  justifyContent: 'space-between',
-                  gap: '12px',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: '260px' }}>
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '3px 10px',
-                      borderRadius: '99px',
-                      background: 'rgba(124, 92, 255, 0.2)',
-                      border: '1px solid rgba(124, 92, 255, 0.45)',
-                      color: '#c4b5fd',
-                      fontSize: '11px',
-                      fontWeight: 800,
-                      marginBottom: '6px',
-                    }}
-                  >
-                    <span>{activeChapter.icon}</span>
-                    <span>{isAr ? activeChapter.badgeAr : activeChapter.badgeEn}</span>
-                  </div>
-                  <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 900, color: '#fff' }}>
-                    {isAr ? activeChapter.titleAr : activeChapter.titleEn}
-                  </h3>
-                  <p style={{ margin: 0, fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.6 }}>
-                    {isAr ? activeChapter.summaryAr : activeChapter.summaryEn}
-                  </p>
+              <div style={{ flex: 1, minWidth: '220px' }}>
+                <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#e8e8ee' }}>
+                  {activeChapter.icon} {isAr ? activeChapter.titleAr : activeChapter.titleEn}
                 </div>
-
-                {activeChapter.targetView !== 'home' && (
-                  <button
-                    type="button"
-                    id={`guideTryFeatureBtn_${activeChapter.id}`}
-                    onClick={() => {
-                      setOpen(false);
-                      onNavigateToView(activeChapter.targetView);
-                    }}
-                    style={{
-                      padding: '9px 16px',
-                      borderRadius: '10px',
-                      border: '1px solid rgba(16, 185, 129, 0.6)',
-                      background: 'linear-gradient(135deg, #10b981, #059669)',
-                      color: '#042f2e',
-                      fontWeight: 900,
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                      boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
-                    }}
-                  >
-                    🚀 {isAr ? 'الانتقال لهذه الميزة الآن' : 'Open This Tool Now'}
-                  </button>
-                )}
+                <div style={{ fontSize: '11.5px', color: '#80808f', marginTop: '2px' }}>
+                  {isAr ? activeChapter.summaryAr : activeChapter.summaryEn}
+                </div>
               </div>
 
-              {/* Interactive Annotated Screen Preview */}
-              <div>
-                <div
+              {activeChapter.targetView !== 'home' && (
+                <button
+                  type="button"
+                  id={`guideTryFeatureBtn_${activeChapter.id}`}
+                  onClick={() => {
+                    setOpen(false);
+                    onNavigateToView(activeChapter.targetView);
+                  }}
                   style={{
+                    padding: '7px 14px',
+                    borderRadius: '8px',
+                    border: '1px solid #7c5cff',
+                    background: '#7c5cff',
+                    color: '#ffffff',
+                    fontWeight: 700,
                     fontSize: '11.5px',
-                    fontWeight: 800,
-                    color: '#fde047',
-                    marginBottom: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  <span>
-                    🖥️{' '}
-                    {isAr
-                      ? 'سكرين توضيحي تفاعلي لواجهة الميزة (اضغط على الأرقام ١ - ٤ لمعرفة وظيفة كل جزء):'
-                      : 'Interactive Annotated Screen Preview (Click numbers 1–4 to inspect each function):'}
-                  </span>
-                </div>
-                {renderVisualScreenMockup(activeChapter)}
-              </div>
-
-              {/* Detailed Numbered Explanations Grid */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-                  gap: '10px',
-                }}
-              >
-                {activeChapter.callouts.map((c) => {
-                  const isHi = highlightedCallout === c.num;
-                  return (
-                    <div
-                      key={c.num}
-                      onMouseEnter={() => setHighlightedCallout(c.num)}
-                      onClick={() => setHighlightedCallout(c.num)}
-                      style={{
-                        padding: '12px',
-                        borderRadius: '12px',
-                        background: isHi
-                          ? 'linear-gradient(180deg, rgba(124, 92, 255, 0.2) 0%, rgba(18, 20, 36, 0.95) 100%)'
-                          : '#141627',
-                        border: isHi
-                          ? '1.5px solid #f59e0b'
-                          : '1px solid rgba(255, 255, 255, 0.08)',
-                        cursor: 'pointer',
-                        transition: 'all 0.15s ease',
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          marginBottom: '6px',
-                          gap: '6px',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                          <span
-                            style={{
-                              width: '22px',
-                              height: '22px',
-                              borderRadius: '50%',
-                              background: isHi ? '#f59e0b' : '#7c5cff',
-                              color: isHi ? '#000' : '#fff',
-                              fontWeight: 900,
-                              fontSize: '11.5px',
-                              display: 'grid',
-                              placeItems: 'center',
-                              flexShrink: 0,
-                            }}
-                          >
-                            {c.num}
-                          </span>
-                          <span style={{ fontWeight: 800, fontSize: '12.5px', color: '#fff' }}>
-                            {isAr ? c.titleAr : c.titleEn}
-                          </span>
-                        </div>
-                        {(c.badgeAr || c.badgeEn) && (
-                          <span
-                            style={{
-                              fontSize: '9.5px',
-                              padding: '2px 7px',
-                              borderRadius: '99px',
-                              background: 'rgba(255,255,255,0.08)',
-                              color: '#fde047',
-                              fontWeight: 700,
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {isAr ? c.badgeAr : c.badgeEn}
-                          </span>
-                        )}
-                      </div>
-                      <p
-                        style={{
-                          margin: 0,
-                          fontSize: '11.5px',
-                          color: '#cbd5e1',
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {isAr ? c.descAr : c.descEn}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Shortcuts Bar for this feature */}
-              <div
-                style={{
-                  background:
-                    'linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(124, 92, 255, 0.14))',
-                  border: '1px solid rgba(16, 185, 129, 0.4)',
-                  borderRadius: '12px',
-                  padding: '10px 14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  flexWrap: 'wrap',
-                  gap: '10px',
-                }}
-              >
-                <div style={{ fontSize: '12px', fontWeight: 800, color: '#6ee7b7' }}>
-                  ⚡ {isAr ? 'اختصارات التصدير الفوري في هذه الميزة:' : 'Instant Export Shortcuts:'}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  {activeChapter.shortcuts.map((sc, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        background: '#0b0d17',
-                        border: sc.highlight
-                          ? '1px solid #f59e0b'
-                          : '1px solid rgba(255,255,255,0.15)',
-                        padding: '4px 10px',
-                        borderRadius: '8px',
-                        fontSize: '11px',
-                      }}
-                    >
-                      <kbd
-                        style={{
-                          background: 'rgba(245, 158, 11, 0.2)',
-                          color: '#fde047',
-                          padding: '1px 6px',
-                          borderRadius: '5px',
-                          fontWeight: 900,
-                        }}
-                      >
-                        {isAr ? sc.keysAr : sc.keysEn}
-                      </kbd>
-                      <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
-                        {isAr ? sc.actionAr : sc.actionEn}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+                  {isAr ? 'فتح الأداة الآن ←' : 'Open Tool →'}
+                </button>
+              )}
             </div>
 
-            {/* Footer Pagination Controls */}
+            {/* Annotated Screen Mockup */}
+            {renderVisualScreenMockup(activeChapter)}
+
+            {/* Simple 2x2 Grid of Numbered Callouts */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+                gap: '8px',
+              }}
+            >
+              {activeChapter.callouts.map((c) => {
+                const isHi = highlightedCallout === c.num;
+                return (
+                  <div
+                    key={c.num}
+                    onMouseEnter={() => setHighlightedCallout(c.num)}
+                    onClick={() => setHighlightedCallout(c.num)}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: '10px',
+                      background: isHi ? 'rgba(124, 92, 255, 0.1)' : '#14141c',
+                      border: isHi ? '1px solid #7c5cff' : '1px solid #1e1e28',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '20px',
+                          height: '20px',
+                          borderRadius: '50%',
+                          background: isHi ? '#7c5cff' : '#1e1e28',
+                          color: isHi ? '#ffffff' : '#b79cff',
+                          fontWeight: 700,
+                          fontSize: '11px',
+                          display: 'grid',
+                          placeItems: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {c.num}
+                      </span>
+                      <span style={{ fontWeight: 700, fontSize: '12px', color: '#e8e8ee' }}>
+                        {isAr ? c.titleAr : c.titleEn}
+                      </span>
+                    </div>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: '11px',
+                        color: '#80808f',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {isAr ? c.descAr : c.descEn}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Unified Minimal Footer: Shortcuts + Page Navigation */}
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: '10px',
+                paddingTop: '10px',
+                borderTop: '1px solid #1e1e28',
+                flexWrap: 'wrap',
               }}
             >
-              <button
-                type="button"
-                disabled={currentIndex <= 0}
-                onClick={() => {
-                  if (currentIndex > 0) {
-                    setActiveChapterId(GUIDE_BOOK_CHAPTERS[currentIndex - 1].id);
-                    setHighlightedCallout(1);
-                  }
-                }}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '10px',
-                  border: '1px solid rgba(255,255,255,0.15)',
-                  background: '#181a2c',
-                  color: '#fff',
-                  fontWeight: 700,
-                  fontSize: '12px',
-                  cursor: currentIndex <= 0 ? 'not-allowed' : 'pointer',
-                  opacity: currentIndex <= 0 ? 0.45 : 1,
-                }}
-              >
-                {isAr ? '→ الميزة السابقة' : '← Previous Feature'}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                {activeChapter.shortcuts.map((sc, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: '#14141c',
+                      border: '1px solid #1e1e28',
+                      padding: '4px 9px',
+                      borderRadius: '7px',
+                      fontSize: '11px',
+                    }}
+                  >
+                    <kbd
+                      style={{
+                        background: 'rgba(124, 92, 255, 0.18)',
+                        color: '#b79cff',
+                        border: '1px solid rgba(124, 92, 255, 0.35)',
+                        padding: '1px 6px',
+                        borderRadius: '4px',
+                        fontWeight: 700,
+                        fontSize: '10.5px',
+                      }}
+                    >
+                      {isAr ? sc.keysAr : sc.keysEn}
+                    </kbd>
+                    <span style={{ color: '#80808f' }}>
+                      {isAr ? sc.actionAr : sc.actionEn}
+                    </span>
+                  </div>
+                ))}
+              </div>
 
-              <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 700 }}>
-                {isAr
-                  ? `صفحة ${currentIndex + 1} من ${GUIDE_BOOK_CHAPTERS.length}`
-                  : `Page ${currentIndex + 1} of ${GUIDE_BOOK_CHAPTERS.length}`}
-              </span>
-
-              <button
-                type="button"
-                disabled={currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1}
-                onClick={() => {
-                  if (currentIndex < GUIDE_BOOK_CHAPTERS.length - 1) {
-                    setActiveChapterId(GUIDE_BOOK_CHAPTERS[currentIndex + 1].id);
-                    setHighlightedCallout(1);
-                  }
-                }}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '10px',
-                  border: '1px solid rgba(124, 92, 255, 0.5)',
-                  background: 'rgba(124, 92, 255, 0.22)',
-                  color: '#fff',
-                  fontWeight: 700,
-                  fontSize: '12px',
-                  cursor:
-                    currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1 ? 'not-allowed' : 'pointer',
-                  opacity: currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1 ? 0.45 : 1,
-                }}
-              >
-                {isAr ? 'الميزة التالية ←' : 'Next Feature →'}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  disabled={currentIndex <= 0}
+                  onClick={() => {
+                    if (currentIndex > 0) {
+                      setActiveChapterId(GUIDE_BOOK_CHAPTERS[currentIndex - 1].id);
+                      setHighlightedCallout(1);
+                    }
+                  }}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: '7px',
+                    border: '1px solid #1e1e28',
+                    background: '#14141c',
+                    color: '#e8e8ee',
+                    fontSize: '11.5px',
+                    cursor: currentIndex <= 0 ? 'not-allowed' : 'pointer',
+                    opacity: currentIndex <= 0 ? 0.4 : 1,
+                  }}
+                >
+                  {isAr ? 'السابق' : 'Prev'}
+                </button>
+                <span style={{ fontSize: '11px', color: '#80808f', padding: '0 4px' }}>
+                  {currentIndex + 1} / {GUIDE_BOOK_CHAPTERS.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1}
+                  onClick={() => {
+                    if (currentIndex < GUIDE_BOOK_CHAPTERS.length - 1) {
+                      setActiveChapterId(GUIDE_BOOK_CHAPTERS[currentIndex + 1].id);
+                      setHighlightedCallout(1);
+                    }
+                  }}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: '7px',
+                    border: '1px solid #7c5cff',
+                    background: 'rgba(124, 92, 255, 0.16)',
+                    color: '#e8e8ee',
+                    fontSize: '11.5px',
+                    cursor:
+                      currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1 ? 'not-allowed' : 'pointer',
+                    opacity: currentIndex >= GUIDE_BOOK_CHAPTERS.length - 1 ? 0.4 : 1,
+                  }}
+                >
+                  {isAr ? 'التالي' : 'Next'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
