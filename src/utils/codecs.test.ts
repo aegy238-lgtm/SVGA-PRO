@@ -13,6 +13,13 @@ import {
   readMeta,
   lotJson,
   SvgaMovie,
+  encodeLosslessWebPFrame,
+  muxAnimatedWebPFrames,
+  parseAnimatedWebPInfo,
+  demuxAnimatedWebPToSingleFrames,
+  encodeAnimatedApng,
+  parseApngInfo,
+  decodeApngFramesRgba,
 } from './codecs.ts';
 import {
   composeAffineTransform,
@@ -391,4 +398,97 @@ describe('MotionTools Core Codecs & Binary Helpers', () => {
     assert.ok(Math.abs(parsed.sp[0].fr[0].t[0] - 1.2) < 0.01);
     assert.ok(Math.abs(parsed.sp[0].fr[0].t[3] - 1.2) < 0.01);
   });
+
+  it('encodes, muxes, parses, and demuxes Animated WebP with proper 0x03 disposal/blend flags (no frame stacking)', () => {
+    const W = 8;
+    const H = 6;
+    const frame0Rgba = new Uint8Array(W * H * 4);
+    const frame1Rgba = new Uint8Array(W * H * 4);
+    for (let i = 0; i < frame0Rgba.length; i += 4) {
+      frame0Rgba[i] = 255; // Red
+      frame0Rgba[i + 1] = 40;
+      frame0Rgba[i + 2] = 20;
+      frame0Rgba[i + 3] = 200; // Semi-transparent
+
+      frame1Rgba[i] = 20;
+      frame1Rgba[i + 1] = 220; // Green
+      frame1Rgba[i + 2] = 255;
+      frame1Rgba[i + 3] = 180;
+    }
+
+    const webp0 = encodeLosslessWebPFrame(frame0Rgba, W, H);
+    const webp1 = encodeLosslessWebPFrame(frame1Rgba, W, H);
+
+    // Verify single-frame lossless WebP header
+    const singleInfo = parseAnimatedWebPInfo(webp0);
+    assert.ok(singleInfo);
+    assert.equal(singleInfo.isAnimated, false);
+    assert.equal(singleInfo.width, W);
+    assert.equal(singleInfo.height, H);
+    assert.equal(singleInfo.hasAlpha, true);
+
+    // Mux into multi-frame Animated WebP at 20 FPS (50ms per frame)
+    const animWebp = muxAnimatedWebPFrames([webp0, webp1], W, H, 20, 0);
+    const animInfo = parseAnimatedWebPInfo(animWebp);
+    assert.ok(animInfo);
+    assert.equal(animInfo.isAnimated, true);
+    assert.equal(animInfo.width, W);
+    assert.equal(animInfo.height, H);
+    assert.equal(animInfo.frameCount, 2);
+    assert.equal(animInfo.hasAlpha, true);
+    assert.deepEqual(animInfo.durationsMs, [50, 50]);
+    // Critical fix check: ANMF flag byte must be 0x03 (Dispose=1 to background, Blend=1 do not blend/overwrite)
+    assert.deepEqual(animInfo.frameFlags, [0x03, 0x03]);
+
+    // Demux back into standalone single-frame WebPs
+    const demuxed = demuxAnimatedWebPToSingleFrames(animWebp);
+    assert.equal(demuxed.width, W);
+    assert.equal(demuxed.height, H);
+    assert.equal(demuxed.frames.length, 2);
+    assert.deepEqual(demuxed.durationsMs, [50, 50]);
+    for (const f of demuxed.frames) {
+      assert.equal(new TextDecoder().decode(f.subarray(0, 4)), 'RIFF');
+      assert.equal(new TextDecoder().decode(f.subarray(8, 12)), 'WEBP');
+    }
+  });
+
+  it('encodes, parses, and decodes Animated PNG (APNG) via pako & upng-js with dispose_op=1 and blend_op=0', () => {
+    const W = 4;
+    const H = 4;
+    const frame0 = new Uint8Array(W * H * 4);
+    const frame1 = new Uint8Array(W * H * 4);
+    for (let i = 0; i < frame0.length; i += 4) {
+      frame0[i] = 250;
+      frame0[i + 1] = 100;
+      frame0[i + 2] = 50;
+      frame0[i + 3] = 255;
+
+      frame1[i] = 30;
+      frame1[i + 1] = 180;
+      frame1[i + 2] = 240;
+      frame1[i + 3] = 128;
+    }
+
+    const apngBytes = encodeAnimatedApng([frame0, frame1], W, H, 25, 1, 0);
+    const info = parseApngInfo(apngBytes);
+    assert.ok(info);
+    assert.equal(info.isApng, true);
+    assert.equal(info.width, W);
+    assert.equal(info.height, H);
+    assert.equal(info.numFrames, 2);
+    assert.equal(info.numPlays, 0);
+    assert.deepEqual(info.delaysMs, [40, 40]);
+    // Verify dispose_op=1 (clear to transparent background) and blend_op=0 (source overwrite)
+    assert.deepEqual(info.disposeOps, [1, 1]);
+    assert.deepEqual(info.blendOps, [0, 0]);
+
+    // Decode frames with upng-js and verify exact lossless RGBA round-trip
+    const decoded = decodeApngFramesRgba(apngBytes);
+    assert.equal(decoded.width, W);
+    assert.equal(decoded.height, H);
+    assert.equal(decoded.frames.length, 2);
+    assert.deepEqual(decoded.frames[0], frame0);
+    assert.deepEqual(decoded.frames[1], frame1);
+  });
 });
+

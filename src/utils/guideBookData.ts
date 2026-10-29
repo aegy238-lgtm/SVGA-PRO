@@ -127,9 +127,9 @@ export const GUIDE_BOOK_CHAPTERS: GuideBookChapter[] = [
     titleAr: 'معالجة وتحويل الهدايا والتصدير الفوري (كليك شمال / Tab / Ctrl شمال)',
     titleEn: 'Motion Gift Processing & Instant Export (Left-Click / Tab / Left-Ctrl)',
     summaryAr:
-      'استوديو متكامل لمعاينة وتحويل جميع صيغ الهدايا (SVGA, VAP, YYEVA, PAG, Lottie, MP4, WebM, GIF, WebP, PNG ZIP) مع استخراج الملفات المغلقة (ZIP) تلقائياً والتصدير الفوري بضغطة واحدة.',
+      'استوديو متكامل لمعاينة وتحويل جميع صيغ الهدايا (SVGA, VAP, YYEVA, PAG, Lottie, MP4, WebM, GIF, WebP, APNG, PNG ZIP) مع أزرار تصدير مباشر لصيغتي WebP و APNG واستخراج الملفات المغلقة (ZIP) تلقائياً.',
     summaryEn:
-      'Complete studio to preview and convert all gift formats with automatic ZIP extraction and instant 1-click export via Left-Click, Tab, Left-Ctrl, or Left Arrow.',
+      'Complete studio to preview and convert all gift formats (including Animated WebP & APNG quick export buttons) with automatic ZIP extraction and instant 1-click export via Left-Click, Tab, Left-Ctrl, or Left Arrow.',
     targetView: 'home',
     accentColor: '#7c5cff',
     screenshotImage: '/assets/aistudio/dsdsds_c54ede2f.png',
@@ -162,14 +162,14 @@ export const GUIDE_BOOK_CHAPTERS: GuideBookChapter[] = [
       },
       {
         num: 3,
-        titleAr: 'اختيار صيغة التصدير والأبعاد ومعدل الإطارات (FPS)',
-        titleEn: 'Format Selection, Dimensions & FPS Control',
+        titleAr: 'تحويل الصيغ + أزرار التصدير المباشر لصيغتي WebP و APNG المتحركة',
+        titleEn: 'Format Selection + Direct Animated WebP & APNG Export Buttons',
         descAr:
-          'من اللوحة اليمنى حدد الصيغة المطلوبة (SVGA, VAP, YYEVA, MP4, GIF, WebP, PNG ZIP)، وعدّل العرض والارتفاع، وقص المدة الزمنية بالثواني، واعكس الاتجاه (Mirror) أو قناة الشفافية (Alpha).',
+          'من اللوحة اليمنى حدد الصيغة المطلوبة (SVGA, VAP, YYEVA, MP4, GIF, WebP, APNG, PNG ZIP) أو اضغط مباشرة على زر (تصدير APNG) أو (تصدير WebP) لتصدير صورة متحركة شفافة عالية الدقة بدون تراكب الإطارات، مع تعديل الأبعاد ومعدل الإطارات (FPS).',
         descEn:
-          'From the right panel, select your target format, customize Width × Height, FPS, trim start/end seconds, and apply horizontal/vertical mirroring or alpha side.',
-        badgeAr: 'تحكم كامل 🎛️',
-        badgeEn: 'Full Control 🎛️',
+          'From the right panel, select your target format (including WebP & APNG) or click the dedicated Export APNG / Export WebP buttons for clean alpha-disposed animations, with full Width × Height and FPS control.',
+        badgeAr: 'WebP + APNG ⚡',
+        badgeEn: 'WebP + APNG ⚡',
         posTop: '62%',
         posLeft: '84%',
       },

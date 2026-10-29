@@ -234,7 +234,8 @@ export const ALL_SUPPORTED_FORMATS: FormatDefinition[] = [
   { key: 'mov', labelEn: 'MOV QuickTime', labelAr: 'فيديو MOV', ext: ['mov'] },
   { key: 'gif', labelEn: 'Animated GIF', labelAr: 'صورة متحركة GIF', ext: ['gif'] },
   { key: 'webp', labelEn: 'Animated WebP', labelAr: 'صورة متحركة WebP', ext: ['webp'] },
-  { key: 'zip', labelEn: 'PNG Sequence ZIP', labelAr: 'تسلسل صور PNG ZIP', ext: ['zip', 'png', 'apng'] },
+  { key: 'apng', labelEn: 'Animated PNG (APNG)', labelAr: 'صورة متحركة APNG', ext: ['apng'] },
+  { key: 'zip', labelEn: 'PNG Sequence ZIP', labelAr: 'تسلسل صور PNG ZIP', ext: ['zip', 'png'] },
 ];
 
 export type ProFeatureScope = 'access' | 'export';

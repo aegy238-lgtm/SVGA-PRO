@@ -15,6 +15,15 @@ import {
   metaFrom,
   readMeta as baseReadMeta,
   lotJson,
+  pako,
+  UPNG,
+  encodeLosslessWebPFrame,
+  muxAnimatedWebPFrames,
+  parseAnimatedWebPInfo,
+  demuxAnimatedWebPToSingleFrames,
+  encodeAnimatedApng,
+  parseApngInfo,
+  decodeApngFramesRgba,
 } from '../utils/codecs';
 import {
   clampMetaToVideoBounds,
@@ -37,6 +46,12 @@ let initialized = false;
 export function initMotionToolsFixed() {
   if (initialized) return;
   initialized = true;
+
+  // Bind bundled npm libraries (pako & upng-js) directly on window so APNG/WebP/PNG/SVGA tools never fail offline or wait on CDN
+  if (typeof window !== 'undefined') {
+    (window as any).pako = pako;
+    (window as any).UPNG = UPNG;
+  }
 
   const LIBS = {
     st: {},
@@ -668,51 +683,187 @@ export function initMotionToolsFixed() {
           'File Name': f.name,
         });
       } else if (/^(gif|webp|png|apng|jpg|jpeg)$/.test(ext)) {
-        const img = new Image();
-        img.src = u;
-        v.appendChild(img);
-        await img.decode();
-        let n = 1,
-          fps = 15,
-          dec = null,
-          bmp = null;
-        if (window.ImageDecoder) {
+        const rawBuf = new Uint8Array(await f.arrayBuffer());
+        let w = 0,
+          h = 0,
+          n = 1,
+          fps = 15;
+        let frameBitmaps: ImageBitmap[] = [];
+        let frameDurationsMs: number[] = [];
+
+        // 1. Check if PNG/APNG via header & UPNG decoder
+        const isPngSig =
+          rawBuf.length > 8 &&
+          rawBuf[0] === 0x89 &&
+          rawBuf[1] === 0x50 &&
+          rawBuf[2] === 0x4e &&
+          rawBuf[3] === 0x47;
+        const isWebpSig =
+          rawBuf.length > 12 &&
+          TD.decode(rawBuf.subarray(0, 4)) === 'RIFF' &&
+          TD.decode(rawBuf.subarray(8, 12)) === 'WEBP';
+
+        if (isPngSig) {
           try {
-            dec = new ImageDecoder({ data: await f.arrayBuffer(), type: f.type || 'image/' + ext });
-            await dec.tracks.ready;
-            n = dec.tracks.selectedTrack.frameCount;
-            const r = await dec.decode({ frameIndex: 0 });
-            const ms = r.image.duration / 1000;
-            if (ms > 0) fps = Math.round(1000 / ms);
-            r.image.close();
-          } catch (e) {
-            dec = null;
-            n = 1;
-          }
+            const apngInfo = parseApngInfo(rawBuf);
+            if (apngInfo && apngInfo.isApng && apngInfo.numFrames > 1) {
+              const decoded = decodeApngFramesRgba(rawBuf);
+              w = decoded.width;
+              h = decoded.height;
+              frameDurationsMs = decoded.delaysMs;
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+              for (const rgba of decoded.frames) {
+                const c = mk(w, h);
+                const cx = c.getContext('2d');
+                const id = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h);
+                cx.putImageData(id, 0, 0);
+                frameBitmaps.push(await createImageBitmap(c));
+              }
+              n = frameBitmaps.length;
+            }
+          } catch (_) {}
         }
+
+        // 2. Try browser ImageDecoder for animated WebP / GIF / APNG if not yet decoded
+        if (frameBitmaps.length === 0 && window.ImageDecoder) {
+          try {
+            const mimeType = isPngSig
+              ? 'image/png'
+              : isWebpSig
+              ? 'image/webp'
+              : ext === 'gif'
+              ? 'image/gif'
+              : f.type || 'image/' + (ext === 'apng' ? 'png' : ext);
+            const dec = new ImageDecoder({ data: rawBuf.slice().buffer, type: mimeType });
+            await dec.tracks.ready;
+            const total = dec.tracks.selectedTrack?.frameCount || 1;
+            if (total > 1) {
+              for (let fi = 0; fi < total; fi++) {
+                const r = await dec.decode({ frameIndex: fi });
+                if (!w) {
+                  w = r.image.displayWidth || r.image.codedWidth;
+                  h = r.image.displayHeight || r.image.codedHeight;
+                }
+                const durMs = r.image.duration ? Math.max(10, r.image.duration / 1000) : 67;
+                frameDurationsMs.push(durMs);
+                const c = mk(w, h);
+                c.getContext('2d').drawImage(r.image, 0, 0, w, h);
+                r.image.close();
+                frameBitmaps.push(await createImageBitmap(c));
+              }
+              n = frameBitmaps.length;
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+            }
+            dec.close?.();
+          } catch (_) {}
+        }
+
+        // 3. Fallback for Animated WebP if ImageDecoder was unavailable/failed: demux ANMF chunks into single-frame WebPs
+        if (frameBitmaps.length === 0 && isWebpSig) {
+          try {
+            const wInfo = parseAnimatedWebPInfo(rawBuf);
+            if (wInfo && wInfo.isAnimated && wInfo.frameCount > 1) {
+              const demuxed = demuxAnimatedWebPToSingleFrames(rawBuf);
+              w = demuxed.width;
+              h = demuxed.height;
+              frameDurationsMs = demuxed.durationsMs;
+              for (const sf of demuxed.frames) {
+                const bm = await createImageBitmap(new Blob([sf], { type: 'image/webp' }));
+                frameBitmaps.push(bm);
+              }
+              n = frameBitmaps.length;
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+            }
+          } catch (_) {}
+        }
+
+        // 4. Static or single-frame fallback via <img>
+        if (frameBitmaps.length === 0) {
+          const img = new Image();
+          img.src = u;
+          await img.decode();
+          w = img.naturalWidth || 400;
+          h = img.naturalHeight || 400;
+          frameBitmaps = [await createImageBitmap(img)];
+          frameDurationsMs = [67];
+          n = 1;
+        }
+
+        // Render interactive canvas player in #view so play/pause/seek and alpha checkerboard work cleanly
+        const sc = Math.min(2, 400 / Math.max(w, h));
+        const cv = mk(Math.round(w * sc), Math.round(h * sc));
+        const cx = cv.getContext('2d');
+        cv.style.background = 'transparent';
+        v.appendChild(cv);
+
+        let curIdx = 0;
+        let playing = n > 1;
+        let timerId: any = null;
+
+        const paintFrame = (idx: number) => {
+          const bm = frameBitmaps[idx] || frameBitmaps[0];
+          if (!bm) return;
+          cx.clearRect(0, 0, cv.width, cv.height);
+          cx.drawImage(bm, 0, 0, cv.width, cv.height);
+        };
+        paintFrame(0);
+
+        const stepLoop = () => {
+          if (!document.body.contains(cv)) return;
+          if (playing && !window.__busy && n > 1) {
+            curIdx = (curIdx + 1) % n;
+            paintFrame(curIdx);
+            const seekEl = $('#seek') as HTMLInputElement | null;
+            if (seekEl && n > 1) {
+              seekEl.value = String(Math.round((curIdx / (n - 1)) * 100));
+            }
+          }
+          const delay = frameDurationsMs[curIdx] || Math.round(1000 / fps);
+          timerId = setTimeout(stepLoop, Math.max(16, delay));
+        };
+        if (n > 1) {
+          timerId = setTimeout(stepLoop, frameDurationsMs[0] || Math.round(1000 / fps));
+        }
+
+        const detectedFmt =
+          isPngSig && (ext === 'apng' || n > 1)
+            ? 'APNG'
+            : isWebpSig && n > 1
+            ? 'Animated WebP'
+            : ext.toUpperCase();
+
         S = {
-          w: img.naturalWidth,
-          h: img.naturalHeight,
+          w,
+          h,
           fps,
           n,
           set: async (i) => {
-            if (dec && n > 1) bmp = (await dec.decode({ frameIndex: i })).image;
+            curIdx = Math.max(0, Math.min(n - 1, i));
+            paintFrame(curIdx);
           },
           draw: (c, W, H) => {
-            if (bmp) {
-              c.drawImage(bmp, 0, 0, W, H);
-              bmp.close();
-              bmp = null;
-            } else c.drawImage(img, 0, 0, W, H);
+            const bm = frameBitmaps[curIdx] || frameBitmaps[0];
+            if (bm) c.drawImage(bm, 0, 0, W, H);
           },
-          stop() {},
-          go() {},
+          stop: () => {
+            playing = false;
+          },
+          go: () => {
+            playing = true;
+          },
         };
         info({
-          Format: ext.toUpperCase(),
+          Format: detectedFmt,
           Resolution: S.w + ' × ' + S.h,
           Frames: n,
           'Frame Rate': fps + ' FPS',
+          Duration: (n / Math.max(1, fps)).toFixed(2) + ' S',
           'File Size': kb(f.size),
           'File Name': f.name,
         });
@@ -759,7 +910,10 @@ export function initMotionToolsFixed() {
       x.clearRect(0, 0, W, H);
       S.draw(x, W, H);
       await cb(c, x, k, t);
-      toast('Rendering ' + Math.round((100 * (k + 1)) / nk) + '%');
+      const pct = Math.round((100 * (k + 1)) / nk);
+      toast('Rendering ' + pct + '%');
+      const stEl = document.getElementById('exportStatus');
+      if (stEl) stEl.textContent = `Rendering frames… ${pct}% (${k + 1}/${nk})`;
     }
   }
   let gifEnc = function (fr, W, H, fps) {
@@ -951,11 +1105,15 @@ export function initMotionToolsFixed() {
         });
         await dl(gifEnc(fr, W, H, fps), base + '.gif');
       } else if (F === 'apng') {
-        const fr = [];
+        const fr: Uint8Array[] = [];
         await render(W, H, fps, async (c, x) => {
-          fr.push(x.getImageData(0, 0, W, H).data);
+          const imgData = x.getImageData(0, 0, W, H);
+          fr.push(new Uint8Array(imgData.data.buffer.slice(0)));
         });
-        await dl(await apngEnc(fr, W, H, fps), base + '.png');
+        const stEl = document.getElementById('exportStatus');
+        if (stEl) stEl.textContent = 'Encoding Animated PNG (APNG)…';
+        const apngBytes = encodeAnimatedApng(fr, W, H, fps, q, 0);
+        await dl(new Blob([apngBytes], { type: 'image/apng' }), base + '.apng');
       } else if (F === 'webm' || F === 'mp4') {
         const r = await record(W, H, fps, q, F, {
           size: [W, H],
@@ -2245,11 +2403,18 @@ export function initMotionToolsFixed() {
     'https://cdn.jsdelivr.net/npm/svgaplayerweb@2.3.1/build/svga.min.js',
   ];
   let readMeta = baseReadMeta;
+  let _vapScratchCanvas: HTMLCanvasElement | null = null;
+  let _vapScratchCtx: CanvasRenderingContext2D | null = null;
   function vapDraw(c, W, H, m, M) {
     const [cx, cy, cw, ch] = M.c,
-      [ax, ay, aw, ah] = M.a,
-      t = mk(cw, ch),
-      x = t.getContext('2d', { willReadFrequently: true });
+      [ax, ay, aw, ah] = M.a;
+    if (!_vapScratchCanvas || _vapScratchCanvas.width !== cw || _vapScratchCanvas.height !== ch) {
+      _vapScratchCanvas = mk(cw, ch);
+      _vapScratchCtx = _vapScratchCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const t = _vapScratchCanvas,
+      x = _vapScratchCtx!;
+    x.clearRect(0, 0, cw, ch);
     x.drawImage(m, cx, cy, cw, ch, 0, 0, cw, ch);
     const C = x.getImageData(0, 0, cw, ch);
     x.clearRect(0, 0, cw, ch);
@@ -2451,39 +2616,8 @@ export function initMotionToolsFixed() {
           f.readAsDataURL(b);
         });
     function webpMux(bufs, W, H, fps) {
-      const an = bufs.map((b) => {
-          const u = new Uint8Array(b),
-            dv = new DataView(b);
-          let p = 12;
-          const sub = [];
-          while (p < u.length) {
-            const t = TD.decode(u.subarray(p, p + 4)),
-              n = dv.getUint32(p + 4, true);
-            if (t === 'ALPH' || t === 'VP8 ' || t === 'VP8L') sub.push(ck4(t, u.subarray(p + 8, p + 8 + n)));
-            p += 8 + n + (n & 1);
-          }
-          return ck4(
-            'ANMF',
-            cat([
-              Uint8Array.from([
-                ...le(0, 3),
-                ...le(0, 3),
-                ...le(W - 1, 3),
-                ...le(H - 1, 3),
-                ...le(Math.round(1000 / fps), 3),
-                0,
-              ]),
-              ...sub,
-            ])
-          );
-        }),
-        body = cat([
-          T4('WEBP'),
-          ck4('VP8X', Uint8Array.from([0x12, 0, 0, 0, ...le(W - 1, 3), ...le(H - 1, 3)])),
-          ck4('ANIM', new Uint8Array(6)),
-          ...an,
-        ]);
-      return new Blob([cat([T4('RIFF'), Uint8Array.from(le(body.length, 4)), body])], { type: 'image/webp' });
+      const muxedBytes = muxAnimatedWebPFrames(bufs, W, H, fps, 0);
+      return new Blob([muxedBytes], { type: 'image/webp' });
     }
     const pv = (n) => {
         const o = [];
@@ -2516,7 +2650,7 @@ export function initMotionToolsFixed() {
     const prev = $('#start').onclick;
     $('#start').onclick = async () => {
       const F = $('#fmt').value;
-      if (!/^(lottie|dotlottie|svga|webp|mov|pag)$/.test(F)) return prev();
+      if (!/^(lottie|dotlottie|svga|webp|apng|mov|pag)$/.test(F)) return prev();
       if (!cur || !S) return toast('Upload a supported file first');
       if (F === 'pag')
         return toast('PAG export needs Tencent’s PAGExporter (After Effects plugin); no browser encoder exists');
@@ -2543,15 +2677,45 @@ export function initMotionToolsFixed() {
           const u = new Uint8Array(await r.blob.arrayBuffer());
           u.set([113, 116, 32, 32], 8);
           await dl(new Blob([u], { type: 'video/quicktime' }), base + '.mov');
-        } else {
-          const mime = F === 'webp' ? 'image/webp' : 'image/png',
-            fr = [];
-          await render(W, H, fps, async (c) => {
-            fr.push(mime === 'image/png' ? await window.pngQ(c, window.__cmp) : await bl(c, mime, q));
+        } else if (F === 'apng') {
+          const rgbaFrames: Uint8Array[] = [];
+          await render(W, H, fps, async (c, x) => {
+            const id = x.getImageData(0, 0, W, H);
+            rgbaFrames.push(new Uint8Array(id.data.buffer.slice(0)));
           });
-          if (F === 'webp')
-            await dl(webpMux(await Promise.all(fr.map((b) => b.arrayBuffer())), W, H, fps), base + '.webp');
-          else if (F === 'svga') {
+          const stEl = document.getElementById('exportStatus');
+          if (stEl) stEl.textContent = 'Encoding Animated PNG (APNG)…';
+          const apngBytes = encodeAnimatedApng(rgbaFrames, W, H, fps, q, 0);
+          await dl(new Blob([apngBytes], { type: 'image/apng' }), base + '.apng');
+        } else if (F === 'webp') {
+          const webpBuffers: Uint8Array[] = [];
+          await render(W, H, fps, async (c, x) => {
+            const blob = await bl(c, 'image/webp', q);
+            if (blob && blob.type === 'image/webp') {
+              const ab = await blob.arrayBuffer();
+              const u = new Uint8Array(ab);
+              if (
+                u.length >= 20 &&
+                TD.decode(u.subarray(0, 4)) === 'RIFF' &&
+                TD.decode(u.subarray(8, 12)) === 'WEBP'
+              ) {
+                webpBuffers.push(u);
+                return;
+              }
+            }
+            // Fallback to pure TypeScript Lossless VP8L encoder if browser canvas.toBlob('image/webp') fell back to PNG
+            const id = x.getImageData(0, 0, W, H);
+            webpBuffers.push(encodeLosslessWebPFrame(id.data, W, H));
+          });
+          const stEl = document.getElementById('exportStatus');
+          if (stEl) stEl.textContent = 'Muxing Animated WebP…';
+          await dl(webpMux(webpBuffers, W, H, fps), base + '.webp');
+        } else {
+          const fr = [];
+          await render(W, H, fps, async (c) => {
+            fr.push(await window.pngQ(c, window.__cmp));
+          });
+          if (F === 'svga') {
             const sv = await svgaEnc(fr, W, H, fps);
             await dl(await window.svgaAddAudio(sv, fps, fr.length), base + '.svga');
           } else if (F === 'lottie')
@@ -2582,9 +2746,11 @@ export function initMotionToolsFixed() {
         }
       } catch (e) {
         toast(e.message || 'Conversion failed');
+        throw e;
+      } finally {
+        btn.disabled = false;
+        if (!S.paused) S.go();
       }
-      btn.disabled = false;
-      if (!S.paused) S.go();
     };
   })();
 
@@ -2602,8 +2768,8 @@ export function initMotionToolsFixed() {
     const qv = () => (+$('#qual').value || 100) / 100;
     async function ready() {
       if (qv() >= 1) return false;
-      await getLib('pako');
-      await getLib('UPNG');
+      if (!window.pako) (window as any).pako = pako;
+      if (!window.UPNG) (window as any).UPNG = UPNG;
       if (!window.UPNG || !window.pako) {
         toast('Compression library could not load; saving uncompressed');
         return false;
@@ -2682,6 +2848,8 @@ export function initMotionToolsFixed() {
         const mp = {
           gif: 'gif',
           webp: 'webp',
+          apng: 'apng',
+          png: 'apng',
           mp4: 'mp4',
           mov: 'mov',
           webm: 'webm',

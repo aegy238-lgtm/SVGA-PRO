@@ -1623,6 +1623,7 @@ export default function App() {
               <span>Dual Channel</span>
               <span>GIF</span>
               <span>WebP</span>
+              <span>APNG</span>
               <span>MP4</span>
               <span>MOV</span>
               <span>PNG Sequence ZIP</span>
@@ -2178,6 +2179,7 @@ export default function App() {
                   <option value="lottie">Lottie{fmtTag('lottie')}</option>
                   <option value="dotlottie">DotLottie{fmtTag('dotlottie')}</option>
                   <option value="webp">WebP{fmtTag('webp')}</option>
+                  <option value="apng">APNG{fmtTag('apng')}</option>
                   <option value="gif">GIF{fmtTag('gif')}</option>
                   <option value="mov">MOV{fmtTag('mov')}</option>
                   <option value="webm">WebM{fmtTag('webm')}</option>
@@ -2192,6 +2194,88 @@ export default function App() {
               <div className="row">
                 <label>{t.compressionQuality}</label>
                 <input type="number" id="qual" defaultValue="100" min="1" max="100" />
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '6px',
+                  marginBottom: '8px',
+                }}
+              >
+                <button
+                  type="button"
+                  id="exportApngQuickBtn"
+                  className="pill"
+                  onClick={() => {
+                    const fmtEl = document.getElementById('fmt') as HTMLSelectElement | null;
+                    if (fmtEl) {
+                      fmtEl.value = 'apng';
+                      fmtEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    document.getElementById('start')?.click();
+                  }}
+                  title={
+                    isAr
+                      ? 'تصدير مباشر بصيغة APNG متحركة عالية الدقة مع شفافية كاملة'
+                      : 'Direct export as lossless Animated PNG (APNG) with full alpha'
+                  }
+                  style={{
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                    padding: '7px 8px',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    borderRadius: '9px',
+                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.14))',
+                    border: '1px solid rgba(16, 185, 129, 0.48)',
+                    color: '#a7f3d0',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span>🖼️</span>
+                  <span>{isAr ? 'تصدير APNG' : 'Export APNG'}</span>
+                  {fmtTag('apng')}
+                </button>
+                <button
+                  type="button"
+                  id="exportWebpQuickBtn"
+                  className="pill"
+                  onClick={() => {
+                    const fmtEl = document.getElementById('fmt') as HTMLSelectElement | null;
+                    if (fmtEl) {
+                      fmtEl.value = 'webp';
+                      fmtEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    document.getElementById('start')?.click();
+                  }}
+                  title={
+                    isAr
+                      ? 'تصدير مباشر بصيغة WebP متحركة شفافة'
+                      : 'Direct export as Animated WebP with alpha transparency'
+                  }
+                  style={{
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                    padding: '7px 8px',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    borderRadius: '9px',
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.22), rgba(124, 92, 255, 0.16))',
+                    border: '1px solid rgba(96, 165, 250, 0.48)',
+                    color: '#bfdbfe',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span>✨</span>
+                  <span>{isAr ? 'تصدير WebP' : 'Export WebP'}</span>
+                  {fmtTag('webp')}
+                </button>
               </div>
               <button
                 className="go"

@@ -857,7 +857,10 @@ function sniff(u){
  if(u[0]==0x89&&S(u,1,4)=='PNG')return pngInfo(u).ac?'apng':'png';
  if(u[0]==0xFF&&u[1]==0xD8)return'jpg';
  if(S(u,0,4)=='GIF8')return'gif';
- if(S(u,0,4)=='RIFF'&&S(u,8,12)=='WEBP')return L(u.subarray(12,Math.min(u.length,400))).includes('ANIM')?'webpa':'webp';
+ if(S(u,0,4)=='RIFF'&&S(u,8,12)=='WEBP'){
+  if(S(u,12,16)=='VP8X'&&u.length>20&&(u[20]&2))return'webpa';
+  return L(u.subarray(12,Math.min(u.length,4096))).includes('ANIM')?'webpa':'webp';
+ }
  if(S(u,4,8)=='ftyp')return'mp4';
  if(S(u,0,3)=='PAG')return'pag';
  if(u[0]==0x78||S(u,0,2)=='PK')return'svga';
