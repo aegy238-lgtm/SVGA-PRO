@@ -118,6 +118,7 @@ export default function App() {
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
   const lastLocalSettingsEditAtRef = useRef<number>(0);
+  const lastLocalUsersEditAtRef = useRef<number>(0);
 
   const updatePlatformState = (updater: (prev: PlatformState) => PlatformState) => {
     setPlatformState((prev) => {
@@ -166,18 +167,21 @@ export default function App() {
 
   // Full real-time synchronization with Firebase Firestore (Settings, Users, Notifications)
   useEffect(() => {
-    // 1. Settings Real-Time Listener (Logo, Site Name, Pro Pricing, Formats, WhatsApp)
+    // 1. Settings Real-Time Listener (Logo, Site Name, Pro Pricing, Formats, WhatsApp, Bans)
     const unsubSettings = subscribeToFirestoreSettings((liveSettings) => {
       if (!liveSettings || !liveSettings.siteName) return;
-      // Avoid overwriting active local branding edits with in-flight stale snapshots
+      // Avoid overwriting active local branding or ban/unban edits with in-flight stale snapshots
       const msSinceLocalEdit = Date.now() - lastLocalSettingsEditAtRef.current;
       updatePlatformState((prev) => {
         const merged = mergeBrandingSettingsSafely(prev.settings, liveSettings);
-        if (msSinceLocalEdit < 4000) {
+        if (msSinceLocalEdit < 5000) {
           merged.siteName = prev.settings.siteName;
           merged.siteLogoUrl = prev.settings.siteLogoUrl;
           merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
           merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+          merged.bannedNetworkIds = prev.settings.bannedNetworkIds;
+          merged.bannedUserIds = prev.settings.bannedUserIds;
+          merged.bannedEmails = prev.settings.bannedEmails;
         }
         return {
           ...prev,
@@ -192,11 +196,14 @@ export default function App() {
         const msSinceLocalEdit = Date.now() - lastLocalSettingsEditAtRef.current;
         updatePlatformState((prev) => {
           const merged = mergeBrandingSettingsSafely(prev.settings, remoteSettings);
-          if (msSinceLocalEdit < 4000) {
+          if (msSinceLocalEdit < 5000) {
             merged.siteName = prev.settings.siteName;
             merged.siteLogoUrl = prev.settings.siteLogoUrl;
             merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
             merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+            merged.bannedNetworkIds = prev.settings.bannedNetworkIds;
+            merged.bannedUserIds = prev.settings.bannedUserIds;
+            merged.bannedEmails = prev.settings.bannedEmails;
           }
           // If local had a saved logo that remote lacked, push it to Firestore so server is in sync
           if (merged.siteLogoUrl && !remoteSettings.siteLogoUrl && !merged.logoExplicitlyRemoved) {
@@ -213,13 +220,29 @@ export default function App() {
       }
     });
 
-    // 2. Users Real-Time Listener (with automatic legacy admin purging & Super Admin preservation)
+    // 2. Users Real-Time Listener (with automatic legacy admin purging, Super Admin & local ban edit preservation)
     const unsubUsers = subscribeToFirestoreUsers((liveUsers) => {
       if (!liveUsers) return;
       const deletedIds = getDeletedUserIds();
+      const msSinceLocalUsersEdit = Date.now() - lastLocalUsersEditAtRef.current;
       updatePlatformState((prev) => {
         const currentSuperAdmin = prev.users.find((u) => isSuperAdminUser(u));
-        const mergedInput = [...liveUsers];
+        let mergedInput = [...liveUsers];
+        if (msSinceLocalUsersEdit < 5000) {
+          const localMap = new Map(prev.users.map((u) => [u.id, u]));
+          mergedInput = mergedInput.map((remoteU) => {
+            const localU = localMap.get(remoteU.id);
+            if (!localU) return remoteU;
+            return {
+              ...remoteU,
+              isBanned: localU.isBanned,
+              networkBanned: localU.networkBanned,
+              banReason: localU.banReason,
+              bannedAt: localU.bannedAt,
+              networkId: localU.networkId || remoteU.networkId,
+            };
+          });
+        }
         if (currentSuperAdmin && !mergedInput.some((u) => u.id === currentSuperAdmin.id)) {
           mergedInput.unshift(currentSuperAdmin);
         }
@@ -240,9 +263,25 @@ export default function App() {
     fetchFirestoreUsers().then((fetched) => {
       if (fetched && fetched.length > 0) {
         const deletedIds = getDeletedUserIds();
+        const msSinceLocalUsersEdit = Date.now() - lastLocalUsersEditAtRef.current;
         updatePlatformState((prev) => {
           const currentSuperAdmin = prev.users.find((u) => isSuperAdminUser(u));
-          const mergedInput = [...fetched];
+          let mergedInput = [...fetched];
+          if (msSinceLocalUsersEdit < 5000) {
+            const localMap = new Map(prev.users.map((u) => [u.id, u]));
+            mergedInput = mergedInput.map((remoteU) => {
+              const localU = localMap.get(remoteU.id);
+              if (!localU) return remoteU;
+              return {
+                ...remoteU,
+                isBanned: localU.isBanned,
+                networkBanned: localU.networkBanned,
+                banReason: localU.banReason,
+                bannedAt: localU.bannedAt,
+                networkId: localU.networkId || remoteU.networkId,
+              };
+            });
+          }
           if (currentSuperAdmin && !mergedInput.some((u) => u.id === currentSuperAdmin.id)) {
             mergedInput.unshift(currentSuperAdmin);
           }
@@ -909,6 +948,29 @@ export default function App() {
     edgeFeatherRef.current = nextCfg;
     (window as any).__edgeFeather = nextCfg;
     applyEdgeFeatherToStageView(nextCfg);
+
+    if (typeof (window as any).__applyStageTrimBounds === 'function') {
+      (window as any).__applyStageTrimBounds(nextCfg);
+    } else {
+      // Fallback sync trim settings to #trim, #trimStart, #trimEnd in #convert panel
+      const trimCheck = document.getElementById('trim') as HTMLInputElement | null;
+      const trimStart = document.getElementById('trimStart') as HTMLInputElement | null;
+      const trimEnd = document.getElementById('trimEnd') as HTMLInputElement | null;
+      const trimRange = document.getElementById('trimRange') as HTMLElement | null;
+
+      if (nextCfg.trimEnabled) {
+        if (trimCheck) trimCheck.checked = true;
+        if (trimRange) trimRange.hidden = false;
+        if (trimStart && nextCfg.trimStartTime !== undefined) trimStart.value = String(nextCfg.trimStartTime);
+        if (trimEnd && nextCfg.trimEndTime !== undefined) trimEnd.value = String(nextCfg.trimEndTime);
+        if (typeof (window as any).__seekMotionFrameOrTime === 'function') {
+          (window as any).__seekMotionFrameOrTime(nextCfg.trimStartTime || 0);
+        }
+      } else if (nextCfg.trimEnabled === false && trimCheck) {
+        trimCheck.checked = false;
+        if (trimRange) trimRange.hidden = true;
+      }
+    }
   };
 
   useEffect(() => {
@@ -1000,6 +1062,7 @@ export default function App() {
     const activeUser =
       stateRef.current.users.find((u) => u.id === stateRef.current.currentUserId) || null;
     if (!canAccessAdminDashboard(activeUser)) return;
+    lastLocalUsersEditAtRef.current = Date.now();
     const clean = sanitizeUsersList(nextUsers, getDeletedUserIds());
     updatePlatformState((prev) => ({ ...prev, users: clean }));
     syncUsersToFirestore(clean);
@@ -2249,88 +2312,6 @@ export default function App() {
                 <label>{t.compressionQuality}</label>
                 <input type="number" id="qual" defaultValue="100" min="1" max="100" />
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '6px',
-                  marginBottom: '8px',
-                }}
-              >
-                <button
-                  type="button"
-                  id="exportApngQuickBtn"
-                  className="pill"
-                  onClick={() => {
-                    const fmtEl = document.getElementById('fmt') as HTMLSelectElement | null;
-                    if (fmtEl) {
-                      fmtEl.value = 'apng';
-                      fmtEl.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    document.getElementById('start')?.click();
-                  }}
-                  title={
-                    isAr
-                      ? 'تصدير مباشر بصيغة APNG متحركة عالية الدقة مع شفافية كاملة'
-                      : 'Direct export as lossless Animated PNG (APNG) with full alpha'
-                  }
-                  style={{
-                    flex: 1,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '5px',
-                    padding: '7px 8px',
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    borderRadius: '9px',
-                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.14))',
-                    border: '1px solid rgba(16, 185, 129, 0.48)',
-                    color: '#a7f3d0',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span>🖼️</span>
-                  <span>{isAr ? 'تصدير APNG' : 'Export APNG'}</span>
-                  {fmtTag('apng')}
-                </button>
-                <button
-                  type="button"
-                  id="exportWebpQuickBtn"
-                  className="pill"
-                  onClick={() => {
-                    const fmtEl = document.getElementById('fmt') as HTMLSelectElement | null;
-                    if (fmtEl) {
-                      fmtEl.value = 'webp';
-                      fmtEl.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    document.getElementById('start')?.click();
-                  }}
-                  title={
-                    isAr
-                      ? 'تصدير مباشر بصيغة WebP متحركة شفافة'
-                      : 'Direct export as Animated WebP with alpha transparency'
-                  }
-                  style={{
-                    flex: 1,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '5px',
-                    padding: '7px 8px',
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    borderRadius: '9px',
-                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.22), rgba(124, 92, 255, 0.16))',
-                    border: '1px solid rgba(96, 165, 250, 0.48)',
-                    color: '#bfdbfe',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span>✨</span>
-                  <span>{isAr ? 'تصدير WebP' : 'Export WebP'}</span>
-                  {fmtTag('webp')}
-                </button>
-              </div>
               <button
                 className="go"
                 id="start"
@@ -2735,9 +2716,10 @@ export default function App() {
                     </a>
                   )}
 
-                  {accessBlock.blockType === 'account' && currentUser && (
+                  {currentUser && (
                     <button
                       type="button"
+                      id="signOutFromBanScreenBtn"
                       onClick={() =>
                         updatePlatformState((prev) => ({
                           ...prev,
@@ -2759,6 +2741,44 @@ export default function App() {
                       🔄 {isAr ? 'تسجيل الخروج من الحساب المحظور' : 'Sign Out of Banned Account'}
                     </button>
                   )}
+
+                  <button
+                    type="button"
+                    id="recheckBanStatusBtn"
+                    onClick={async () => {
+                      const [remoteSettings, remoteUsers] = await Promise.all([
+                        fetchFirestoreSettings().catch(() => null),
+                        fetchFirestoreUsers().catch(() => []),
+                      ]);
+                      updatePlatformState((prev) => {
+                        const deletedIds = getDeletedUserIds();
+                        const nextSettings = remoteSettings
+                          ? mergeBrandingSettingsSafely(prev.settings, remoteSettings)
+                          : prev.settings;
+                        const nextUsers =
+                          remoteUsers && remoteUsers.length > 0
+                            ? sanitizeUsersList(remoteUsers, deletedIds)
+                            : prev.users;
+                        return {
+                          ...prev,
+                          settings: nextSettings,
+                          users: nextUsers,
+                        };
+                      });
+                    }}
+                    style={{
+                      padding: '11px 16px',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(16, 185, 129, 0.45)',
+                      background: 'rgba(16, 185, 129, 0.14)',
+                      color: '#6ee7b7',
+                      fontWeight: 700,
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔄 {isAr ? 'التحقق من فك الحظر والدخول' : 'Check Unban Status & Enter'}
+                  </button>
 
                   <button
                     type="button"

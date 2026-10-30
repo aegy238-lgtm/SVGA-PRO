@@ -148,4 +148,38 @@ test('evaluatePlatformAccessBlock blocks banned accounts and banned networks whi
   });
   assert.equal(superAdminPreview.blocked, true);
   assert.equal(superAdminPreview.isPreview, true);
+
+  // When Admin unbans the user's network, both the user and their network can enter the platform again immediately
+  const unbannedState = applyUserBanAction({
+    users: netBannedState.users,
+    settings: netBannedState.settings,
+    targetUserId: freeUser.id,
+    banAccount: false,
+    banNetwork: false,
+  });
+
+  // Verify no undefined fields exist on updatedUser (Firestore setDoc compatibility)
+  assert.equal(
+    Object.values(unbannedState.updatedUser || {}).some((val) => val === undefined),
+    false
+  );
+
+  const userAfterUnban = evaluatePlatformAccessBlock({
+    currentUser: unbannedState.updatedUser,
+    settings: unbannedState.settings,
+    users: unbannedState.users,
+    clientNetworkId: freeNetId,
+  });
+  assert.equal(userAfterUnban.blocked, false);
+  assert.equal(userAfterUnban.blockType, null);
+
+  const guestAfterUnban = evaluatePlatformAccessBlock({
+    currentUser: null,
+    settings: unbannedState.settings,
+    users: unbannedState.users,
+    clientNetworkId: freeNetId,
+  });
+  assert.equal(guestAfterUnban.blocked, false);
+  assert.equal(guestAfterUnban.blockType, null);
 });
+

@@ -5,6 +5,15 @@ export interface EdgeFeatherConfig {
   leftMargin: number;    // 0 - 50 (%)
   rightMargin: number;   // 0 - 50 (%)
   featherRadius: number; // 0 - 200 (px)
+  // Animation duration & time trimming
+  trimEnabled?: boolean;
+  trimStartTime?: number;  // Start time in seconds (e.g. 0.00)
+  trimEndTime?: number;    // End time in seconds (e.g. 4.00)
+  trimStartFrame?: number; // Start frame index
+  trimEndFrame?: number;   // End frame index
+  totalDuration?: number;  // Total file duration in seconds
+  totalFrames?: number;    // Total file frames
+  fps?: number;            // Frames per second
 }
 
 export const INITIAL_EDGE_FEATHER: EdgeFeatherConfig = {
@@ -14,6 +23,14 @@ export const INITIAL_EDGE_FEATHER: EdgeFeatherConfig = {
   leftMargin: 0,
   rightMargin: 0,
   featherRadius: 50,
+  trimEnabled: false,
+  trimStartTime: 0,
+  trimEndTime: 0,
+  trimStartFrame: 0,
+  trimEndFrame: 0,
+  totalDuration: 0,
+  totalFrames: 0,
+  fps: 15,
 };
 
 let cachedKey = '';
@@ -251,4 +268,62 @@ export function applyEdgeFeatherToStageView(cfg: EdgeFeatherConfig): void {
     el.style.webkitMaskRepeat = 'no-repeat';
   });
 }
+
+/**
+ * Formats duration in seconds to M:SS.ss or S.ss string format.
+ */
+export function formatDurationSec(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0.00s';
+  if (sec >= 60) {
+    const mins = Math.floor(sec / 60);
+    const remainder = sec % 60;
+    return `${mins}m ${remainder.toFixed(2)}s`;
+  }
+  return `${sec.toFixed(2)}s`;
+}
+
+/**
+ * Calculates sanitized frame and second ranges based on inputs.
+ */
+export function calculateTrimRange(params: {
+  totalDuration: number;
+  totalFrames: number;
+  fps: number;
+  startTime?: number;
+  endTime?: number;
+  startFrame?: number;
+  endFrame?: number;
+}): {
+  startTime: number;
+  endTime: number;
+  startFrame: number;
+  endFrame: number;
+  duration: number;
+  frameCount: number;
+} {
+  const safeFps = Math.max(1, Math.round(params.fps || 15));
+  const safeDuration = Math.max(0.01, params.totalDuration || (params.totalFrames ? params.totalFrames / safeFps : 4.0));
+  const safeFrames = Math.max(1, params.totalFrames || Math.round(safeDuration * safeFps));
+
+  let start = params.startTime !== undefined ? params.startTime : (params.startFrame !== undefined ? params.startFrame / safeFps : 0);
+  let end = params.endTime !== undefined ? params.endTime : (params.endFrame !== undefined ? params.endFrame / safeFps : safeDuration);
+
+  start = Math.max(0, Math.min(safeDuration - 0.01, start));
+  end = Math.max(start + 0.01, Math.min(safeDuration, end));
+
+  const startFrame = Math.max(0, Math.min(safeFrames - 1, Math.round(start * safeFps)));
+  const endFrame = Math.max(startFrame + 1, Math.min(safeFrames, Math.round(end * safeFps)));
+  const duration = Math.max(0.01, end - start);
+  const frameCount = Math.max(1, endFrame - startFrame);
+
+  return {
+    startTime: Number(start.toFixed(2)),
+    endTime: Number(end.toFixed(2)),
+    startFrame,
+    endFrame,
+    duration: Number(duration.toFixed(2)),
+    frameCount,
+  };
+}
+
 

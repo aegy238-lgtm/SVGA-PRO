@@ -260,20 +260,18 @@ test('custom video duration mode preserves original duration when OFF and overri
   assert.equal(resolveEffectiveGiftDuration(2.1, { enabled: true, seconds: 6 }, 3), 6);
   assert.equal(resolveEffectiveGiftDuration(11.1, { enabled: true, seconds: 4 }, 3), 4);
 
-  // 3. Live preview playback rate scales proportionally so the gift effect displays over the chosen duration
-  // 2.1s gift stretched over 4.2s plays at 0.5x speed
-  assert.equal(computeCustomPlaybackRate(2.1, { enabled: true, seconds: 4.2 }), 0.5);
-  // 10s gift compressed into 5s plays at 2.0x speed
-  assert.equal(computeCustomPlaybackRate(10, { enabled: true, seconds: 5 }), 2);
+  // 3. Live preview playback rate stays at 1.0x native fluid rate for smooth rendering
+  assert.equal(computeCustomPlaybackRate(2.1, { enabled: true, seconds: 4.2 }), 1);
+  assert.equal(computeCustomPlaybackRate(10, { enabled: true, seconds: 5 }), 1);
 
-  // 4. Export frame-to-native time mapping stretches/compresses the full gift effect across the custom duration
+  // 4. Export frame-to-native time mapping loops the gift animation fluidly at 30fps without slowdown or stuttering
   // Suppose a 2.1s SVGA gift is exported over 6.0s at 30fps (180 frames total)
   const tStart = mapExportFrameToNativeTime(0, 30, 6.0, 2.1, false, true);
-  const tMid = mapExportFrameToNativeTime(90, 30, 6.0, 2.1, false, true);
-  const tEnd = mapExportFrameToNativeTime(179, 30, 6.0, 2.1, false, true);
+  const tFrame30 = mapExportFrameToNativeTime(30, 30, 6.0, 2.1, false, true); // 1.0s into export
+  const tLoopStart = mapExportFrameToNativeTime(63, 30, 6.0, 2.1, false, true); // 2.1s -> 0.0s loop
   assert.equal(tStart, 0);
-  assert.ok(Math.abs(tMid - 1.05) < 0.02);
-  assert.ok(tEnd > 2.05 && tEnd < 2.1);
+  assert.ok(Math.abs(tFrame30 - 1.0) < 0.01);
+  assert.ok(Math.abs(tLoopStart - 0.0) < 0.01);
 
   // When custom duration is OFF, frame time maps 1:1 with native time
   const tNativeMid = mapExportFrameToNativeTime(30, 30, 2.1, 2.1, false, false);

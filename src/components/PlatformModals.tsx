@@ -809,7 +809,7 @@ export function UserAuthModal({
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 9998,
+        zIndex: 999995,
         background: 'rgba(6, 6, 12, 0.84)',
         backdropFilter: 'blur(12px)',
         display: 'flex',

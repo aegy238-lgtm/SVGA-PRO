@@ -218,6 +218,28 @@ export async function testFirebaseConnection(force = false): Promise<FirebaseCon
 }
 
 /**
+ * Recursively strips `undefined` values from objects before passing to Firestore `setDoc`,
+ * preventing `FirebaseError: Function setDoc() called with invalid data. Unsupported field value: undefined`.
+ */
+export function stripUndefinedForFirestore<T>(input: T): T {
+  if (input === null || input === undefined || typeof input !== 'object') {
+    return input;
+  }
+  if (Array.isArray(input)) {
+    return input
+      .filter((item) => item !== undefined)
+      .map((item) => stripUndefinedForFirestore(item)) as unknown as T;
+  }
+  const clean: Record<string, any> = {};
+  for (const [k, v] of Object.entries(input as Record<string, any>)) {
+    if (v !== undefined) {
+      clean[k] = stripUndefinedForFirestore(v);
+    }
+  }
+  return clean as T;
+}
+
+/**
  * Sync platform settings and permanent branding (Site Name + Site Logo) to Firestore server
  */
 export async function syncSettingsToFirestore(settings: PlatformSettings): Promise<boolean> {
@@ -238,13 +260,16 @@ export async function syncSettingsToFirestore(settings: PlatformSettings): Promi
     const brandingUpdatedAt = settings.brandingUpdatedAt || new Date().toISOString();
     const nowIso = new Date().toISOString();
 
-    const cleanSettings: PlatformSettings = {
+    const cleanSettings: PlatformSettings = stripUndefinedForFirestore({
       ...settings,
       siteName: safeSiteName,
       siteLogoUrl: finalLogoUrl,
       brandingUpdatedAt,
       logoExplicitlyRemoved: finalLogoUrl ? false : explicitlyRemoved,
-    };
+      bannedNetworkIds: Array.isArray(settings.bannedNetworkIds) ? settings.bannedNetworkIds : [],
+      bannedUserIds: Array.isArray(settings.bannedUserIds) ? settings.bannedUserIds : [],
+      bannedEmails: Array.isArray(settings.bannedEmails) ? settings.bannedEmails : [],
+    });
 
     // Pin in local permanent branding vault
     savePermanentBranding({
@@ -257,23 +282,23 @@ export async function syncSettingsToFirestore(settings: PlatformSettings): Promi
     // 1. Save full config to platform_settings/config
     await setDoc(
       doc(db, 'platform_settings', 'config'),
-      {
+      stripUndefinedForFirestore({
         ...cleanSettings,
         updatedAt: nowIso,
-      },
+      }),
       { merge: true }
     );
 
     // 2. Also pin branding in dedicated server document platform_settings/branding so logo is permanently stored
     await setDoc(
       doc(db, 'platform_settings', 'branding'),
-      {
+      stripUndefinedForFirestore({
         siteName: cleanSettings.siteName,
         siteLogoUrl: cleanSettings.siteLogoUrl,
         brandingUpdatedAt: cleanSettings.brandingUpdatedAt,
         logoExplicitlyRemoved: cleanSettings.logoExplicitlyRemoved,
         updatedAt: nowIso,
-      },
+      }),
       { merge: true }
     );
 
@@ -421,14 +446,15 @@ export async function saveUserToFirestore(user: UserAccount): Promise<boolean> {
   try {
     const db = getFirebaseDb();
     const uRef = doc(db, 'users', user.id);
-    await setDoc(
-      uRef,
-      {
-        ...user,
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
+    const payload = stripUndefinedForFirestore({
+      ...user,
+      isBanned: Boolean(user.isBanned),
+      networkBanned: Boolean(user.networkBanned),
+      banReason: user.banReason || '',
+      bannedAt: user.bannedAt || '',
+      updatedAt: new Date().toISOString(),
+    });
+    await setDoc(uRef, payload, { merge: true });
 
     // Also attempt registering the account in Firebase Auth Identity Toolkit in background
     if (user.email && user.password) {
@@ -527,16 +553,31 @@ export function subscribeToFirestoreUsers(callback: (users: UserAccount[]) => vo
 }
 
 /**
- * Sync accounts to Firestore
+ * Sync accounts to Firestore concurrently with undefined-field sanitization
  */
 export async function syncUsersToFirestore(users: UserAccount[]): Promise<boolean> {
   try {
     const db = getFirebaseDb();
-    for (const u of users) {
-      if (isPurgedLegacyAdmin(u)) continue;
-      const uRef = doc(db, 'users', u.id);
-      await setDoc(uRef, { ...u, updatedAt: new Date().toISOString() }, { merge: true });
-    }
+    const nowIso = new Date().toISOString();
+    const validUsers = (Array.isArray(users) ? users : []).filter(
+      (u) => u && u.id && !isPurgedLegacyAdmin(u)
+    );
+    await Promise.all(
+      validUsers.map((u) => {
+        const uRef = doc(db, 'users', u.id);
+        const payload = stripUndefinedForFirestore({
+          ...u,
+          isBanned: Boolean(u.isBanned),
+          networkBanned: Boolean(u.networkBanned),
+          banReason: u.banReason || '',
+          bannedAt: u.bannedAt || '',
+          updatedAt: nowIso,
+        });
+        return setDoc(uRef, payload, { merge: true }).catch((e) => {
+          console.warn('Firestore sync user item notice:', e);
+        });
+      })
+    );
     return true;
   } catch (err) {
     console.warn('Firestore syncUsers notice:', err);

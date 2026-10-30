@@ -377,6 +377,88 @@ export function initMotionToolsFixed() {
   (window as any).__applyGiftBg = applyGiftBg;
   (window as any).__getGiftBg = () => curGiftBg;
   (window as any).__syncPreviewSize = syncPreviewSize;
+  (window as any).__getMotionAnimationState = () => {
+    if (!S) {
+      const vid = document.querySelector('#view video') as HTMLVideoElement | null;
+      if (vid && vid.duration > 0) {
+        return {
+          w: vid.videoWidth || 360,
+          h: vid.videoHeight || 360,
+          fps: 30,
+          n: Math.round(vid.duration * 30),
+          vid,
+          duration: vid.duration,
+          player: null,
+        };
+      }
+      return null;
+    }
+    const dur = S.vid && S.vid.duration > 0 ? S.vid.duration : S.n / Math.max(1, S.fps || 15);
+    return {
+      w: S.w,
+      h: S.h,
+      fps: S.fps || 15,
+      n: S.n || 1,
+      vid: S.vid || null,
+      duration: dur,
+      set: S.set,
+      draw: S.draw,
+      player: player || (window as any).SVP || null,
+    };
+  };
+
+  (window as any).__seekMotionFrameOrTime = async (timeSec: number) => {
+    if (S && S.vid) {
+      try {
+        S.vid.currentTime = Math.min(S.vid.duration, Math.max(0, timeSec));
+      } catch (_) {}
+    } else if (S && typeof S.set === 'function') {
+      const frame = Math.round(timeSec * (S.fps || 15));
+      try {
+        await S.set(Math.min((S.n || 1) - 1, Math.max(0, frame)));
+      } catch (_) {}
+    }
+  };
+
+  // Active main-stage playback trim loop monitor for video and animation in #view
+  (function initMainStageTrimMonitor() {
+    setInterval(() => {
+      if (window.__busy) return;
+      const previewRange = (window as any).__previewTrimRange;
+      const cfg = (window as any).__edgeFeather;
+      const trimCheck = document.getElementById('trim') as HTMLInputElement | null;
+
+      let isTrimActive = false;
+      let startSec = 0;
+      let endSec = 0;
+
+      if (previewRange && previewRange.active && previewRange.end > previewRange.start) {
+        isTrimActive = true;
+        startSec = Number(previewRange.start || 0);
+        endSec = Number(previewRange.end || 0);
+      } else if (cfg && cfg.trimEnabled && cfg.trimEndTime > cfg.trimStartTime) {
+        isTrimActive = true;
+        startSec = Number(cfg.trimStartTime || 0);
+        endSec = Number(cfg.trimEndTime || 0);
+      } else if (trimCheck && trimCheck.checked) {
+        isTrimActive = true;
+        startSec = parseFloat((document.getElementById('trimStart') as HTMLInputElement | null)?.value || '0');
+        endSec = parseFloat((document.getElementById('trimEnd') as HTMLInputElement | null)?.value || '0');
+      }
+
+      if (!isTrimActive || endSec <= startSec) return;
+
+      // Monitor HTML5 Video in #view
+      const viewVid = document.querySelector('#view video') as HTMLVideoElement | null;
+      if (viewVid && viewVid.duration > 0 && !viewVid.paused) {
+        if (viewVid.currentTime >= endSec - 0.04 || viewVid.currentTime < startSec - 0.05) {
+          try {
+            viewVid.currentTime = startSec;
+          } catch (_) {}
+        }
+      }
+    }, 80);
+  })();
 
   // Initialize default background to gray/white checkerboard automatically
   applyGiftBg('chk');
@@ -4032,17 +4114,22 @@ export function initMotionToolsFixed() {
         throw Error('Quality must be between 1 and 100');
       let start = 0,
         end = S.vid ? S.vid.duration : S.n / S.fps;
-      if ($('#trim').checked) {
-        start = Number($('#trimStart').value);
-        end = Number($('#trimEnd').value);
-        if (
-          !Number.isFinite(start) ||
-          !Number.isFinite(end) ||
-          start < 0 ||
-          end <= start ||
-          end > (S.vid ? S.vid.duration : S.n / S.fps) + 0.001
-        )
-          throw Error('Choose a valid trim range within the animation');
+      const featherCfg = (window as any).__edgeFeather;
+      const trimCheckbox = $('#trim') as HTMLInputElement | null;
+      const isTrimChecked = Boolean(trimCheckbox && trimCheckbox.checked);
+      const isFeatherTrimActive = Boolean(featherCfg && featherCfg.trimEnabled);
+
+      if (isTrimChecked || isFeatherTrimActive) {
+        if (isFeatherTrimActive && !isTrimChecked) {
+          start = Number(featherCfg.trimStartTime || 0);
+          end = Number(featherCfg.trimEndTime || (S.vid ? S.vid.duration : S.n / S.fps));
+        } else {
+          start = Number(($('#trimStart') as HTMLInputElement)?.value || 0);
+          end = Number(($('#trimEnd') as HTMLInputElement)?.value || (S.vid ? S.vid.duration : S.n / S.fps));
+        }
+        const totalDur = S.vid ? S.vid.duration : S.n / S.fps;
+        start = Math.max(0, Math.min(totalDur - 0.001, start));
+        end = Math.max(start + 0.001, Math.min(totalDur, end));
       }
       geometry(W, H);
       return { W, H, fps, q: quality / 100, start, end, nk: Math.max(1, Math.round((end - start) * fps)) };
@@ -4497,6 +4584,7 @@ export function initMotionToolsFixed() {
               o.q === 1 &&
               !window.AU.dirty &&
               !$('#trim').checked &&
+              !(featherCfg && featherCfg.trimEnabled) &&
               $('#mirror').value === 'none' &&
               +$('#scale').value === 100 &&
               $('#fit').value === 'stretch' &&
@@ -4507,7 +4595,8 @@ export function initMotionToolsFixed() {
             const oldN = S.n,
               oldSet = S.set;
             try {
-              if ($('#trim').checked) {
+              const isTrimActive = Boolean($('#trim').checked || (featherCfg && featherCfg.trimEnabled));
+              if (isTrimActive) {
                 S.n = Math.max(1, Math.round((o.end - o.start) * S.fps));
                 S.set = (i) => oldSet(Math.min(oldN - 1, i + Math.floor(o.start * S.fps)));
               }

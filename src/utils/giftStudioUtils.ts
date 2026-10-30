@@ -398,20 +398,15 @@ export function resolveEffectiveGiftDuration(
  * is displayed across the chosen custom duration when enabled, or at 1.0x native speed when disabled.
  */
 export function computeCustomPlaybackRate(
-  nativeDurationSec: number | undefined,
-  customConfig: Partial<CustomDurationConfig> = {}
+  _nativeDurationSec: number | undefined,
+  _customConfig: Partial<CustomDurationConfig> = {}
 ): number {
-  if (!customConfig || !customConfig.enabled) return 1;
-  const nativeSec = Number(nativeDurationSec);
-  if (!Number.isFinite(nativeSec) || nativeSec <= 0.05) return 1;
-  const targetSec = resolveEffectiveGiftDuration(nativeSec, customConfig);
-  const ratio = nativeSec / Math.max(0.1, targetSec);
-  return Math.max(0.1, Math.min(8.0, Math.round(ratio * 1000) / 1000));
+  return 1;
 }
 
 /**
  * Maps an export frame index (`0 .. totalFrames - 1`) to the gift's native animation timestamp (`0 .. nativeDurationSec`)
- * so that when custom duration mode is enabled, the full gift effect stretches/compresses smoothly across the chosen duration.
+ * so that when custom duration mode is enabled, the gift animation loops smoothly at full fluid frame rate across the chosen duration.
  */
 export function mapExportFrameToNativeTime(
   frameIndex: number,
@@ -419,28 +414,20 @@ export function mapExportFrameToNativeTime(
   exportDurationSec: number,
   nativeDurationSec: number | undefined,
   isVideoSeek = false,
-  customDurationEnabled = false
+  _customDurationEnabled = false
 ): number {
   const safeFps = Math.max(1, fps || 30);
   const safeExportDur = Math.max(0.05, Number(exportDurationSec) || 3);
   const rawNative = Number(nativeDurationSec);
   const safeNativeDur = Number.isFinite(rawNative) && rawNative > 0.05 ? rawNative : safeExportDur;
 
-  if (!customDurationEnabled || Math.abs(safeExportDur - safeNativeDur) < 1e-4) {
-    if (isVideoSeek) {
-      return computeFrameSeekTime(frameIndex, safeFps, safeNativeDur);
-    }
-    const t = Math.max(0, frameIndex) / safeFps;
-    return Math.max(0, Math.min(safeNativeDur - 0.0005, t));
-  }
-
-  const totalFrames = Math.max(1, Math.round(safeExportDur * safeFps));
   const sampleOffset = isVideoSeek ? 0.35 : 0;
-  const progress = Math.max(0, Math.min(0.9995, (Math.max(0, frameIndex) + sampleOffset) / totalFrames));
-  const mappedSec = progress * safeNativeDur;
+  const globalSec = (Math.max(0, frameIndex) + sampleOffset) / safeFps;
+  const localRaw = globalSec % safeNativeDur;
+
   return isVideoSeek
-    ? Math.max(0, Math.min(safeNativeDur - 0.002, mappedSec))
-    : Math.max(0, Math.min(safeNativeDur - 0.0005, mappedSec));
+    ? Math.max(0, Math.min(safeNativeDur - 0.002, localRaw))
+    : Math.max(0, Math.min(safeNativeDur - 0.0005, localRaw));
 }
 
 export interface AudioEncoderCandidate {

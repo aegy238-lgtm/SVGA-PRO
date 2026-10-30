@@ -842,7 +842,7 @@ let _lastMasterNow=performance.now();
    if(pt.it&&(pt.it.userPaused||pt.it.vis===false))return;
    pt.elapsed=(pt.elapsed+dtSec)%targetDur;
    const nativeDur=Math.max(0.05,(pt.it&&pt.it.dur>0)?pt.it.dur:targetDur);
-   const nativeSec=(pt.elapsed/targetDur)*nativeDur;
+   const nativeSec=pt.elapsed%nativeDur;
    if(pt.stepTo)pt.stepTo(nativeSec);
   });
  }
@@ -2482,16 +2482,10 @@ function mapExportSeekSec(it,exportDur,fIdx,safeFps,isSideBySide){
  const safeExpDur=Math.max(0.05,Number(exportDur)||3);
  const nativeDur=Math.max(0.05,(it&&it.dur>0)?it.dur:safeExpDur);
  const isMp4=!!(it&&it.fmt==='mp4');
- if(customDur.enabled||Math.abs(safeExpDur-nativeDur)>0.005){
-  const totalFrames=Math.max(1,Math.round(safeExpDur*safeFps));
-  const sampleOff=isMp4?0.35:0;
-  const prog=Math.max(0,Math.min(0.9995,(Math.max(0,fIdx)+sampleOff)/totalFrames));
-  const mapped=prog*nativeDur;
-  return isMp4?Math.max(0,Math.min(nativeDur-0.002,mapped)):Math.max(0,Math.min(nativeDur-0.0005,mapped));
- }
- const globalSec=Math.max(0,fIdx)/safeFps;
- const localRaw=isSideBySide?(globalSec<nativeDur?globalSec:(globalSec%nativeDur)):globalSec;
- return isMp4?Math.min(nativeDur-0.002,localRaw+(0.35/safeFps)):localRaw;
+ const sampleOff=isMp4?0.35:0;
+ const globalSec=(Math.max(0,fIdx)+sampleOff)/safeFps;
+ const localRaw=globalSec%nativeDur;
+ return isMp4?Math.min(nativeDur-0.002,localRaw):localRaw;
 }
 
 function pickMime(a){

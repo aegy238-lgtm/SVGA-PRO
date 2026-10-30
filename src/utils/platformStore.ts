@@ -787,7 +787,11 @@ export function applyUserBanAction(params: {
   const effectiveBanAccount = Boolean(banAccount || banNetwork);
   const effectiveBanNetwork = Boolean(banNetwork);
   const netId = getEffectiveUserNetworkId(target);
+  const rawNetId = typeof target.networkId === 'string' ? target.networkId.trim().toUpperCase() : '';
+  const detIdNet = generateDeterministicNetworkId(target.id);
+  const detEmailNet = generateDeterministicNetworkId(target.email);
   const emailLower = target.email.trim().toLowerCase();
+
   const cleanReason =
     typeof params.reason === 'string' && params.reason.trim()
       ? params.reason.trim()
@@ -796,6 +800,10 @@ export function applyUserBanAction(params: {
         : effectiveBanAccount
           ? 'حظر حساب من الإدارة (Account Ban)'
           : '';
+
+  if (!effectiveBanAccount && emailLower) {
+    resetLoginAttempts(emailLower);
+  }
 
   const updatedUser: UserAccount = effectiveBanAccount
     ? {
@@ -817,12 +825,43 @@ export function applyUserBanAction(params: {
         ...target,
         isBanned: false,
         networkBanned: false,
-        banReason: undefined,
-        bannedAt: undefined,
+        banReason: '',
+        bannedAt: '',
         networkId: netId,
       };
 
-  const nextUsers = users.map((u) => (u.id === targetUserId ? updatedUser : u));
+  const targetCandidateNetIds = new Set(
+    [netId, rawNetId, detIdNet, detEmailNet].map((n) => n.trim().toUpperCase()).filter(Boolean)
+  );
+
+  const nextUsers = users.map((u) => {
+    if (u.id === targetUserId) {
+      return updatedUser;
+    }
+    if (isSuperAdminUser(u)) {
+      return u;
+    }
+    if (!effectiveBanNetwork) {
+      const uNet = getEffectiveUserNetworkId(u);
+      const uEmail = (u.email || '').trim().toLowerCase();
+      if (targetCandidateNetIds.has(uNet) || (emailLower && uEmail === emailLower)) {
+        if (!effectiveBanAccount) {
+          return {
+            ...u,
+            isBanned: false,
+            networkBanned: false,
+            banReason: '',
+            bannedAt: '',
+          };
+        }
+        return {
+          ...u,
+          networkBanned: false,
+        };
+      }
+    }
+    return u;
+  });
 
   const prevNetIds = new Set(
     (settings.bannedNetworkIds || []).map((n) => n.trim().toUpperCase()).filter(Boolean)
@@ -838,20 +877,41 @@ export function applyUserBanAction(params: {
   } else {
     prevUserIds.delete(target.id);
     if (emailLower) prevEmails.delete(emailLower);
+    nextUsers.forEach((u) => {
+      if (!u.isBanned && !u.networkBanned) {
+        prevUserIds.delete(u.id);
+        if (u.email) prevEmails.delete(u.email.trim().toLowerCase());
+      }
+    });
   }
 
   if (effectiveBanNetwork) {
     prevNetIds.add(netId);
   } else {
-    const otherStillNetBanned = nextUsers.some(
-      (u) =>
-        u.id !== target.id &&
-        !isSuperAdminUser(u) &&
-        u.networkBanned === true &&
-        getEffectiveUserNetworkId(u) === netId
-    );
-    if (!otherStillNetBanned) {
-      prevNetIds.delete(netId);
+    targetCandidateNetIds.forEach((candNet) => {
+      const otherStillNetBanned = nextUsers.some(
+        (u) =>
+          u.id !== target.id &&
+          !isSuperAdminUser(u) &&
+          u.networkBanned === true &&
+          getEffectiveUserNetworkId(u) === candNet
+      );
+      if (!otherStillNetBanned) {
+        prevNetIds.delete(candNet);
+      }
+    });
+
+    const clientNet = getClientNetworkId().trim().toUpperCase();
+    if (clientNet) {
+      const anyUserBannedOnClientNet = nextUsers.some(
+        (u) =>
+          !isSuperAdminUser(u) &&
+          u.networkBanned === true &&
+          getEffectiveUserNetworkId(u) === clientNet
+      );
+      if (!anyUserBannedOnClientNet) {
+        prevNetIds.delete(clientNet);
+      }
     }
   }
 
@@ -871,7 +931,7 @@ export function applyUserBanAction(params: {
 
 /**
  * Pure function: Evaluates whether the current visitor / user is blocked from accessing the entire platform.
- * Note: An authenticated Super Admin (`isSuperAdminUser(currentUser)`) is never locked out of their active session
+ * Note: An authenticated Super Admin or active unbanned Admin is never locked out of their active session
  * unless they explicitly activate `previewBlockMode` to test the lockdown screen.
  */
 export function evaluatePlatformAccessBlock(params: {
@@ -908,7 +968,11 @@ export function evaluatePlatformAccessBlock(params: {
     };
   }
 
-  if (currentUser && isSuperAdminUser(currentUser)) {
+  if (
+    currentUser &&
+    (isSuperAdminUser(currentUser) ||
+      (canAccessAdminDashboard(currentUser) && !isUserAccountBanned(currentUser, settings)))
+  ) {
     return {
       blocked: false,
       blockType: null,
@@ -927,7 +991,7 @@ export function evaluatePlatformAccessBlock(params: {
 
   if (isClientNetBanned || isUserNetBanned) {
     const matchedUser =
-      currentUser ||
+      (currentUser && (currentUser.networkBanned || currentUser.isBanned) ? currentUser : null) ||
       users.find(
         (u) =>
           !isSuperAdminUser(u) &&
@@ -1702,8 +1766,8 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         isPro: true,
         isBanned: false,
         networkBanned: false,
-        banReason: undefined,
-        bannedAt: undefined,
+        banReason: '',
+        bannedAt: '',
         networkId: getEffectiveUserNetworkId(u),
       };
     }
@@ -1745,6 +1809,8 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         allowScreenCapture: Boolean(u.allowScreenCapture),
         isBanned: false,
         networkBanned: false,
+        banReason: '',
+        bannedAt: '',
         networkId: resolvedNetId,
       };
     }
@@ -1758,6 +1824,8 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
       allowScreenCapture: Boolean(u.allowScreenCapture),
       isBanned: false,
       networkBanned: false,
+      banReason: '',
+      bannedAt: '',
       networkId: resolvedNetId,
     };
   });
