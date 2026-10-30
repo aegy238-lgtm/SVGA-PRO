@@ -38,6 +38,11 @@ import {
   ProFeatureScope,
   normalizeProFeatureRules,
   resetFeatureFreeAttempts,
+  applyUserBanAction,
+  canBanUserAccount,
+  getEffectiveUserNetworkId,
+  isNetworkIdBanned,
+  isUserAccountBanned,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import {
@@ -73,6 +78,7 @@ interface AdminDashboardModalProps {
   onUpdateNotifications: (next: BroadcastNotification[]) => void;
   onUpdateActivityLogs?: (next: ActivityLogEntry[]) => void;
   onChangePreviewRole: (role: 'actual' | 'free_user' | 'pro_user') => void;
+  onPreviewBanScreen?: (mode: 'account' | 'network') => void;
   initialTab?: AdminDashboardTabId;
 }
 
@@ -85,6 +91,7 @@ export default function AdminDashboardModal({
   onUpdateNotifications,
   onUpdateActivityLogs,
   onChangePreviewRole,
+  onPreviewBanScreen,
   initialTab = 'users',
 }: AdminDashboardModalProps) {
   const [activeTab, setActiveTab] = useState<AdminDashboardTabId>(initialTab);
@@ -98,8 +105,10 @@ export default function AdminDashboardModal({
   const [fbLog, setFbLog] = useState<string>('');
   const [userSearch, setUserSearch] = useState('');
   const [userFilterRole, setUserFilterRole] = useState<
-    'all' | 'admin' | 'pro' | 'free' | 'screen_capture'
+    'all' | 'admin' | 'pro' | 'free' | 'screen_capture' | 'banned'
   >('all');
+  const [customBanTargetInput, setCustomBanTargetInput] = useState('');
+  const [customBanReasonInput, setCustomBanReasonInput] = useState('');
   const [logSearch, setLogSearch] = useState('');
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [newUserName, setNewUserName] = useState('');
@@ -586,6 +595,203 @@ export default function AdminDashboardModal({
     );
   };
 
+  const handleToggleAccountBan = async (userId: string) => {
+    const target = users.find((u) => u.id === userId);
+    if (!target || !canBanUserAccount(currentUser, target)) return;
+
+    const currentlyBanned = isUserAccountBanned(target, settings);
+    const nextBanAccount = !currentlyBanned;
+    const nextBanNetwork = nextBanAccount ? Boolean(target.networkBanned) : false;
+
+    const res = applyUserBanAction({
+      users,
+      settings: latestSettingsRef.current,
+      targetUserId: userId,
+      banAccount: nextBanAccount,
+      banNetwork: nextBanNetwork,
+      reason: nextBanAccount
+        ? customBanReasonInput.trim() || 'حظر حساب نهائي من الإدارة (Account Ban)'
+        : '',
+    });
+
+    latestSettingsRef.current = res.settings;
+    onUpdateUsers(res.users);
+    onUpdateSettings(res.settings);
+    if (res.updatedUser) {
+      await saveUserToFirestore(res.updatedUser);
+    }
+    await syncSettingsToFirestore(res.settings);
+
+    showSavedFeedback(
+      nextBanAccount
+        ? `🚫 تم حظر حساب "${target.name}" (${target.email}) نهائياً ومنعه من دخول المنصة ✓`
+        : `✅ تم فك حظر حساب "${target.name}" واستعادة إمكانية دخوله للمنصة ✓`,
+      nextBanAccount
+        ? `Account "${target.name}" permanently banned from platform ✓`
+        : `Account "${target.name}" unbanned ✓`
+    );
+  };
+
+  const handleToggleNetworkBan = async (userId: string) => {
+    const target = users.find((u) => u.id === userId);
+    if (!target || !canBanUserAccount(currentUser, target)) return;
+
+    const targetNetId = getEffectiveUserNetworkId(target);
+    const currentlyNetBanned =
+      Boolean(target.networkBanned) || isNetworkIdBanned(targetNetId, settings, users);
+    const nextBanNetwork = !currentlyNetBanned;
+    const nextBanAccount = nextBanNetwork ? true : false;
+
+    const res = applyUserBanAction({
+      users,
+      settings: latestSettingsRef.current,
+      targetUserId: userId,
+      banAccount: nextBanAccount,
+      banNetwork: nextBanNetwork,
+      reason: nextBanNetwork
+        ? customBanReasonInput.trim() ||
+          `حظر شبكة وحساب نهائي (${targetNetId}) — ممنوع من دخول المنصة نهائياً`
+        : '',
+    });
+
+    latestSettingsRef.current = res.settings;
+    onUpdateUsers(res.users);
+    onUpdateSettings(res.settings);
+    if (res.updatedUser) {
+      await saveUserToFirestore(res.updatedUser);
+    }
+    await syncSettingsToFirestore(res.settings);
+
+    showSavedFeedback(
+      nextBanNetwork
+        ? `🌐🚫 تم حظر شبكة (${targetNetId}) وحساب "${target.name}" نهائياً من دخول المنصة ✓`
+        : `✅ تم فك حظر الشبكة (${targetNetId}) والحساب "${target.name}" بنجاح ✓`,
+      nextBanNetwork
+        ? `Network (${targetNetId}) & account "${target.name}" permanently banned ✓`
+        : `Network (${targetNetId}) & account unbanned ✓`
+    );
+  };
+
+  const handleManualFirewallBan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!hasAdminPermission(currentUser, 'manage_users') && !hasAdminPermission(currentUser, 'manage_admins')) {
+      return;
+    }
+    const rawTarget = customBanTargetInput.trim();
+    if (!rawTarget) return;
+
+    const upperTarget = rawTarget.toUpperCase();
+    const lowerTarget = rawTarget.toLowerCase();
+
+    // Check if it matches an existing user by email, name, or networkId
+    const matchedUser = users.find(
+      (u) =>
+        !isSuperAdminUser(u) &&
+        (u.email.toLowerCase() === lowerTarget ||
+          getEffectiveUserNetworkId(u) === upperTarget ||
+          u.id === rawTarget)
+    );
+
+    if (matchedUser) {
+      const netId = getEffectiveUserNetworkId(matchedUser);
+      const res = applyUserBanAction({
+        users,
+        settings: latestSettingsRef.current,
+        targetUserId: matchedUser.id,
+        banAccount: true,
+        banNetwork: true,
+        reason: customBanReasonInput.trim() || `حظر شبكة وحساب نهائي (${netId})`,
+      });
+      latestSettingsRef.current = res.settings;
+      onUpdateUsers(res.users);
+      onUpdateSettings(res.settings);
+      if (res.updatedUser) {
+        await saveUserToFirestore(res.updatedUser);
+      }
+      await syncSettingsToFirestore(res.settings);
+      setCustomBanTargetInput('');
+      setCustomBanReasonInput('');
+      showSavedFeedback(
+        `🌐🚫 تم حظر حساب "${matchedUser.name}" وشبكته (${netId}) نهائياً من المنصة ✓`,
+        `Banned user "${matchedUser.name}" and network (${netId}) ✓`
+      );
+      return;
+    }
+
+    // Otherwise, add directly to bannedNetworkIds or bannedEmails
+    const curSettings = latestSettingsRef.current;
+    const isEmail = lowerTarget.includes('@');
+    const nextBannedNets = new Set(
+      (curSettings.bannedNetworkIds || []).map((n) => n.trim().toUpperCase()).filter(Boolean)
+    );
+    const nextBannedEmails = new Set(
+      (curSettings.bannedEmails || []).map((em) => em.trim().toLowerCase()).filter(Boolean)
+    );
+
+    if (isEmail) {
+      nextBannedEmails.add(lowerTarget);
+    } else {
+      const formattedNet = upperTarget.startsWith('NET-') ? upperTarget : `NET-${upperTarget}`;
+      nextBannedNets.add(formattedNet);
+    }
+
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
+      bannedNetworkIds: Array.from(nextBannedNets),
+      bannedEmails: Array.from(nextBannedEmails),
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    await syncSettingsToFirestore(nextSettings);
+    setCustomBanTargetInput('');
+    setCustomBanReasonInput('');
+    showSavedFeedback(
+      isEmail
+        ? `🚫 تم إدراج البريد (${lowerTarget}) في قائمة الحظر النهائي ✓`
+        : `🌐🚫 تم إدراج معرف الشبكة (${upperTarget}) في جدار الحظر النهائي للمنصة ✓`,
+      'Added to permanent platform firewall blocklist ✓'
+    );
+  };
+
+  const handleUnbanNetworkIdFromFirewall = async (netId: string) => {
+    const cleanNet = netId.trim().toUpperCase();
+    let curUsers = [...users];
+    let curSettings: PlatformSettings = {
+      ...latestSettingsRef.current,
+      bannedNetworkIds: (latestSettingsRef.current.bannedNetworkIds || []).filter(
+        (n) => n.trim().toUpperCase() !== cleanNet
+      ),
+    };
+
+    const affectedUsers = curUsers.filter(
+      (u) => !isSuperAdminUser(u) && getEffectiveUserNetworkId(u) === cleanNet && (u.isBanned || u.networkBanned)
+    );
+
+    for (const u of affectedUsers) {
+      const res = applyUserBanAction({
+        users: curUsers,
+        settings: curSettings,
+        targetUserId: u.id,
+        banAccount: false,
+        banNetwork: false,
+      });
+      curUsers = res.users;
+      curSettings = res.settings;
+      if (res.updatedUser) {
+        await saveUserToFirestore(res.updatedUser);
+      }
+    }
+
+    latestSettingsRef.current = curSettings;
+    onUpdateUsers(curUsers);
+    onUpdateSettings(curSettings);
+    await syncSettingsToFirestore(curSettings);
+    showSavedFeedback(
+      `✅ تم رفع الحظر عن الشبكة (${cleanNet}) بنجاح ✓`,
+      `Unbanned network (${cleanNet}) ✓`
+    );
+  };
+
   const handleDeleteLogEntry = async (logId: string) => {
     if (!hasAdminPermission(currentUser, 'view_logs')) return;
     const nextLogs = (state.activityLogs || []).filter((l) => l.id !== logId);
@@ -1005,17 +1211,21 @@ export default function AdminDashboardModal({
 
   const filteredUsers = sortedUsers.filter((u) => {
     const isUserAdmin = canAccessAdminDashboard(u);
+    const isBanned = isUserAccountBanned(u, settings) || isNetworkIdBanned(getEffectiveUserNetworkId(u), settings, users);
     if (userFilterRole === 'admin' && !isUserAdmin) return false;
-    if (userFilterRole === 'pro' && (!u.isPro || isUserAdmin)) return false;
-    if (userFilterRole === 'free' && (u.isPro || isUserAdmin)) return false;
+    if (userFilterRole === 'pro' && (!u.isPro || isUserAdmin || isBanned)) return false;
+    if (userFilterRole === 'free' && (u.isPro || isUserAdmin || isBanned)) return false;
     if (userFilterRole === 'screen_capture' && !canUserCaptureScreen(u)) return false;
+    if (userFilterRole === 'banned' && !isBanned) return false;
 
     const q = userSearch.toLowerCase().trim();
     if (!q) return true;
+    const userNetId = getEffectiveUserNetworkId(u).toLowerCase();
     return (
       u.name.toLowerCase().includes(q) ||
       u.email.toLowerCase().includes(q) ||
-      (u.phone || '').toLowerCase().includes(q)
+      (u.phone || '').toLowerCase().includes(q) ||
+      userNetId.includes(q)
     );
   });
 
@@ -1034,9 +1244,21 @@ export default function AdminDashboardModal({
 
   const recentUsers = sortedUsers.filter((u) => !canAccessAdminDashboard(u) && isRecentUser(u));
 
-  const proUsersCount = sortedUsers.filter((u) => u.isPro).length;
-  const freeUsersCount = sortedUsers.filter((u) => !u.isPro).length;
+  const proUsersCount = sortedUsers.filter((u) => u.isPro && !isUserAccountBanned(u, settings)).length;
+  const freeUsersCount = sortedUsers.filter((u) => !u.isPro && !isUserAccountBanned(u, settings)).length;
   const screenCaptureAllowedCount = sortedUsers.filter((u) => canUserCaptureScreen(u)).length;
+  const bannedUsersList = sortedUsers.filter(
+    (u) => isUserAccountBanned(u, settings) || isNetworkIdBanned(getEffectiveUserNetworkId(u), settings, users)
+  );
+  const bannedUsersCount = bannedUsersList.length;
+  const allBannedNetworkIds = Array.from(
+    new Set([
+      ...(settings.bannedNetworkIds || []).map((n) => n.trim().toUpperCase()).filter(Boolean),
+      ...sortedUsers
+        .filter((u) => !isSuperAdminUser(u) && u.networkBanned)
+        .map((u) => getEffectiveUserNetworkId(u)),
+    ])
+  );
   const allDefinitionsTabs: { id: AdminDashboardTabId; label: string; perm: AdminPermissionKey }[] = [
     { id: 'users', label: t.dashTabUsers, perm: 'manage_users' },
     {
@@ -1085,61 +1307,65 @@ export default function AdminDashboardModal({
     >
       <div
         style={{
-          width: 'min(1080px, 98vw)',
-          height: 'min(780px, 92vh)',
-          background: '#0e0e16',
-          border: '1px solid #28283c',
-          borderRadius: '16px',
-          boxShadow: '0 24px 70px rgba(0,0,0,0.75)',
+          width: 'min(1260px, 98vw)',
+          height: 'min(860px, 94vh)',
+          background: 'linear-gradient(180deg, #0d0f1a 0%, #090a12 100%)',
+          border: '1px solid rgba(124, 92, 255, 0.32)',
+          borderRadius: '20px',
+          boxShadow: '0 28px 80px rgba(0,0,0,0.85), 0 0 40px rgba(124, 92, 255, 0.12)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           color: '#e8e8ee',
+          fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {/* Header */}
+        {/* Executive Header */}
         <div
           style={{
-            padding: '16px 22px',
-            borderBottom: '1px solid #222232',
-            background: 'linear-gradient(90deg, rgba(124,92,255,0.14), rgba(14,14,22,0.95))',
+            padding: '16px 24px',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            background:
+              'linear-gradient(90deg, rgba(124, 92, 255, 0.16) 0%, rgba(15, 23, 42, 0.92) 55%, rgba(14, 14, 22, 0.98) 100%)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '14px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div
               style={{
-                width: '40px',
-                height: '40px',
-                borderRadius: '10px',
-                background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
+                width: '44px',
+                height: '44px',
+                borderRadius: '12px',
+                background: 'linear-gradient(135deg, #7c5cff 0%, #4f46e5 100%)',
+                border: '1px solid rgba(196, 181, 253, 0.4)',
                 display: 'grid',
                 placeItems: 'center',
-                fontSize: '20px',
-                boxShadow: '0 4px 16px rgba(124,92,255,0.4)',
+                fontSize: '21px',
+                boxShadow: '0 6px 20px rgba(124,92,255,0.45)',
               }}
             >
               ⚙️
             </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+                <h2 style={{ margin: 0, fontSize: '19px', fontWeight: 800, color: '#fff', letterSpacing: '-0.01em' }}>
                   {t.dashTitle}
                 </h2>
                 <span
                   style={{
                     fontSize: '11px',
                     fontWeight: 800,
-                    padding: '2px 10px',
+                    padding: '3px 11px',
                     borderRadius: '99px',
                     background: isCurrentSuperAdmin
                       ? 'linear-gradient(135deg, #7c5cff, #4f46e5)'
                       : 'linear-gradient(135deg, #10b981, #059669)',
                     color: '#fff',
+                    boxShadow: '0 2px 10px rgba(124, 92, 255, 0.3)',
                   }}
                 >
                   {isCurrentSuperAdmin
@@ -1150,8 +1376,31 @@ export default function AdminDashboardModal({
                       ? `🛡️ ${currentUser?.adminBadgeTitle || 'مشرف معتمد'} (${visibleTabs.length} أقسام مصرح بها)`
                       : `🛡️ ${currentUser?.adminBadgeTitle || 'Moderator'} (${visibleTabs.length} permitted tabs)`}
                 </span>
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 700,
+                    padding: '2px 9px',
+                    borderRadius: '99px',
+                    background: fbStatus.isConnected
+                      ? 'rgba(16, 185, 129, 0.15)'
+                      : 'rgba(59, 130, 246, 0.15)',
+                    border: fbStatus.isConnected
+                      ? '1px solid rgba(16, 185, 129, 0.45)'
+                      : '1px solid rgba(59, 130, 246, 0.45)',
+                    color: fbStatus.isConnected ? '#6ee7b7' : '#93c5fd',
+                  }}
+                >
+                  {fbStatus.isConnected
+                    ? isAr
+                      ? '🟢 متصل بـ Firebase مباشر'
+                      : '🟢 Firebase Live'
+                    : isAr
+                      ? '⚡ مزامنة سحابية نشطة'
+                      : '⚡ Cloud Sync Active'}
+                </span>
               </div>
-              <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9898ad' }}>{t.dashSub}</p>
+              <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#94a3b8' }}>{t.dashSub}</p>
             </div>
           </div>
 
@@ -1162,26 +1411,26 @@ export default function AdminDashboardModal({
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                background: '#161622',
-                border: '1px solid #2c2c42',
-                padding: '5px 10px',
-                borderRadius: '8px',
+                background: 'rgba(22, 22, 36, 0.9)',
+                border: '1px solid rgba(124, 92, 255, 0.3)',
+                padding: '5px 11px',
+                borderRadius: '10px',
                 fontSize: '12px',
               }}
             >
-              <span style={{ color: '#a0a0b8', fontWeight: 600 }}>{t.dashPreviewModeLabel}</span>
+              <span style={{ color: '#cbd5e1', fontWeight: 700 }}>{t.dashPreviewModeLabel}</span>
               <select
                 aria-label={t.dashPreviewModeLabel}
                 value={state.adminPreviewRole}
                 onChange={(e) => onChangePreviewRole(e.target.value as any)}
                 style={{
                   width: 'auto',
-                  background: '#0d0d14',
+                  background: '#0b0c14',
                   border: '1px solid #7c5cff',
-                  borderRadius: '6px',
+                  borderRadius: '7px',
                   padding: '3px 8px',
                   color: '#fff',
-                  fontWeight: 600,
+                  fontWeight: 700,
                 }}
               >
                 <option value="actual">{t.dashPreviewActual}</option>
@@ -1195,11 +1444,11 @@ export default function AdminDashboardModal({
               onClick={onClose}
               aria-label="Close Dashboard"
               style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: '8px',
-                border: '1px solid #2c2c3e',
-                background: '#181824',
+                width: '36px',
+                height: '36px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(24, 24, 38, 0.9)',
                 color: '#fff',
                 cursor: 'pointer',
                 fontSize: '20px',
@@ -1219,14 +1468,23 @@ export default function AdminDashboardModal({
           style={{
             display: 'flex',
             gap: '8px',
-            padding: '10px 22px',
-            background: '#11111a',
-            borderBottom: '1px solid #222232',
+            padding: '10px 24px',
+            background: '#0b0d17',
+            borderBottom: '1px solid rgba(255,255,255,0.07)',
             overflowX: 'auto',
+            alignItems: 'center',
           }}
         >
           {visibleTabs.map((tab) => {
             const on = activeTab === tab.id;
+            const badgeCount =
+              tab.id === 'users'
+                ? sortedUsers.length
+                : tab.id === 'activity_logs'
+                  ? (state.activityLogs || []).length
+                  : tab.id === 'notifications'
+                    ? notifications.length
+                    : null;
             return (
               <button
                 key={tab.id}
@@ -1234,34 +1492,57 @@ export default function AdminDashboardModal({
                 id={`adminTab_${tab.id}`}
                 onClick={() => setActiveTab(tab.id)}
                 style={{
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  border: on ? '1px solid #7c5cff' : '1px solid #242436',
-                  background: on ? 'rgba(124,92,255,0.2)' : '#161622',
-                  color: on ? '#fff' : '#9c9cb2',
-                  fontWeight: on ? 700 : 500,
+                  padding: '8px 15px',
+                  borderRadius: '10px',
+                  border: on ? '1px solid #7c5cff' : '1px solid rgba(255,255,255,0.07)',
+                  background: on
+                    ? 'linear-gradient(135deg, rgba(124,92,255,0.28), rgba(79,70,229,0.2))'
+                    : '#131524',
+                  color: on ? '#fff' : '#94a3b8',
+                  fontWeight: on ? 800 : 600,
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
-                  fontSize: '13px',
+                  fontSize: '12.5px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '7px',
+                  boxShadow: on ? '0 4px 14px rgba(124,92,255,0.22)' : 'none',
+                  transition: 'all 0.15s ease',
                 }}
               >
-                {tab.label}
+                <span>{tab.label}</span>
+                {badgeCount !== null && (
+                  <span
+                    style={{
+                      fontSize: '10.5px',
+                      fontWeight: 800,
+                      padding: '1px 7px',
+                      borderRadius: '99px',
+                      background: on ? '#7c5cff' : 'rgba(255,255,255,0.08)',
+                      color: on ? '#fff' : '#cbd5e1',
+                    }}
+                  >
+                    {badgeCount}
+                  </span>
+                )}
               </button>
             );
           })}
 
           {saveFeedback && (
             <div
+              id="adminSaveFeedbackToast"
               style={{
                 marginInlineStart: 'auto',
                 alignSelf: 'center',
-                background: 'rgba(16, 185, 129, 0.16)',
+                background: 'rgba(16, 185, 129, 0.18)',
                 border: '1px solid #10b981',
-                color: '#34d399',
-                padding: '5px 12px',
-                borderRadius: '8px',
+                color: '#6ee7b7',
+                padding: '6px 14px',
+                borderRadius: '9px',
                 fontSize: '12px',
-                fontWeight: 600,
+                fontWeight: 700,
+                boxShadow: '0 4px 14px rgba(16, 185, 129, 0.2)',
               }}
             >
               {saveFeedback}
@@ -1270,7 +1551,7 @@ export default function AdminDashboardModal({
         </div>
 
         {/* Body Content */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
           {/* TAB 1: USERS & ACCOUNTS */}
           {activeTab === 'users' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
@@ -1278,25 +1559,25 @@ export default function AdminDashboardModal({
               {recentUsers.length > 0 && (
                 <div
                   style={{
-                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(59, 130, 246, 0.14) 100%)',
-                    border: '1px solid rgba(16, 185, 129, 0.5)',
-                    borderRadius: '12px',
+                    background:
+                      'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(59, 130, 246, 0.12) 100%)',
+                    border: '1px solid rgba(16, 185, 129, 0.45)',
+                    borderRadius: '14px',
                     padding: '14px 18px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     flexWrap: 'wrap',
                     gap: '12px',
-                    boxShadow: '0 8px 24px rgba(16, 185, 129, 0.12)',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <span style={{ fontSize: '26px' }}>🔔</span>
+                    <span style={{ fontSize: '24px' }}>🔔</span>
                     <div>
                       <div
                         style={{
                           fontWeight: 800,
-                          fontSize: '14px',
+                          fontSize: '13.5px',
                           color: '#6ee7b7',
                           display: 'flex',
                           alignItems: 'center',
@@ -1314,7 +1595,7 @@ export default function AdminDashboardModal({
                             color: '#022c22',
                             padding: '2px 8px',
                             borderRadius: '99px',
-                            fontSize: '11px',
+                            fontSize: '10.5px',
                             fontWeight: 800,
                           }}
                         >
@@ -1334,7 +1615,7 @@ export default function AdminDashboardModal({
                       onClick={() => handleToggleUserPro(recentUsers[0].id)}
                       style={{
                         padding: '7px 14px',
-                        borderRadius: '8px',
+                        borderRadius: '9px',
                         background: recentUsers[0].isPro
                           ? 'rgba(239, 68, 68, 0.2)'
                           : 'linear-gradient(135deg, #f59e0b, #d97706)',
@@ -1357,134 +1638,433 @@ export default function AdminDashboardModal({
                 </div>
               )}
 
-              {/* Summary Cards */}
+              {/* Executive KPI Summary Strip (Interactive Click-to-Filter) */}
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))',
+                  gap: '12px',
+                }}
+              >
+                <div
+                  onClick={() => setUserFilterRole('all')}
+                  style={{
+                    background:
+                      userFilterRole === 'all'
+                        ? 'linear-gradient(180deg, rgba(124, 92, 255, 0.18), #141625)'
+                        : '#121422',
+                    border:
+                      userFilterRole === 'all'
+                        ? '1px solid #7c5cff'
+                        : '1px solid rgba(255,255,255,0.08)',
+                    borderTop: '3px solid #7c5cff',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ fontSize: '11.5px', color: '#94a3b8', fontWeight: 700 }}>
+                    {isAr ? '👥 إجمالي الحسابات المسجلة' : '👥 Total Registered Accounts'}
+                  </div>
+                  <div style={{ fontSize: '26px', fontWeight: 900, marginTop: '6px', color: '#fff' }}>
+                    {sortedUsers.length}
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: '#a5b4fc', marginTop: '4px', fontWeight: 600 }}>
+                    {isAr ? 'اضغط لعرض جميع الحسابات' : 'Click to view all accounts'}
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => setUserFilterRole('pro')}
+                  style={{
+                    background:
+                      userFilterRole === 'pro'
+                        ? 'linear-gradient(180deg, rgba(245, 158, 11, 0.2), #141625)'
+                        : 'rgba(245, 158, 11, 0.07)',
+                    border:
+                      userFilterRole === 'pro'
+                        ? '1px solid #f59e0b'
+                        : '1px solid rgba(245, 158, 11, 0.3)',
+                    borderTop: '3px solid #f59e0b',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ fontSize: '11.5px', color: '#fcd34d', fontWeight: 700 }}>
+                    {isAr ? '👑 المشتركون في باقة برو' : '👑 Active Pro Subscribers'}
+                  </div>
+                  <div style={{ fontSize: '26px', fontWeight: 900, marginTop: '6px', color: '#fbbf24' }}>
+                    {proUsersCount}
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: '#fde68a', marginTop: '4px', fontWeight: 600 }}>
+                    {isAr ? 'حسابات برو النشطة حالياً' : 'Active paid subscriptions'}
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => setUserFilterRole('free')}
+                  style={{
+                    background:
+                      userFilterRole === 'free'
+                        ? 'linear-gradient(180deg, rgba(148, 163, 184, 0.2), #141625)'
+                        : '#121422',
+                    border:
+                      userFilterRole === 'free'
+                        ? '1px solid #94a3b8'
+                        : '1px solid rgba(255,255,255,0.08)',
+                    borderTop: '3px solid #64748b',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ fontSize: '11.5px', color: '#cbd5e1', fontWeight: 700 }}>
+                    {isAr ? '👤 الحسابات المجانية' : '👤 Free Accounts'}
+                  </div>
+                  <div style={{ fontSize: '26px', fontWeight: 900, marginTop: '6px', color: '#e2e8f0' }}>
+                    {freeUsersCount}
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '4px', fontWeight: 600 }}>
+                    {isAr ? 'حسابات بدون اشتراك برو' : 'Standard free accounts'}
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => setUserFilterRole('screen_capture')}
+                  style={{
+                    background:
+                      userFilterRole === 'screen_capture'
+                        ? 'linear-gradient(180deg, rgba(6, 182, 212, 0.22), #141625)'
+                        : 'rgba(6, 182, 212, 0.08)',
+                    border:
+                      userFilterRole === 'screen_capture'
+                        ? '1px solid #06b6d4'
+                        : '1px solid rgba(6, 182, 212, 0.32)',
+                    borderTop: '3px solid #06b6d4',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ fontSize: '11.5px', color: '#67e8f9', fontWeight: 700 }}>
+                    {isAr ? '📸 مصرح بتصوير الشاشة' : '📸 Screen Capture Allowed'}
+                  </div>
+                  <div style={{ fontSize: '26px', fontWeight: 900, marginTop: '6px', color: '#22d3ee' }}>
+                    {screenCaptureAllowedCount}
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: '#a5f3fc', marginTop: '4px', fontWeight: 600 }}>
+                    {isAr ? 'مسموح بالسيلفي والفيديو' : 'Authorized for recording'}
+                  </div>
+                </div>
+
+                <div
+                  id="kpiBannedAccountsCard"
+                  onClick={() => setUserFilterRole('banned')}
+                  style={{
+                    background:
+                      userFilterRole === 'banned'
+                        ? 'linear-gradient(180deg, rgba(239, 68, 68, 0.26), #1a1118)'
+                        : 'rgba(239, 68, 68, 0.09)',
+                    border:
+                      userFilterRole === 'banned'
+                        ? '1px solid #ef4444'
+                        : '1px solid rgba(239, 68, 68, 0.38)',
+                    borderTop: '3px solid #ef4444',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ fontSize: '11.5px', color: '#fca5a5', fontWeight: 800 }}>
+                    {isAr ? '🚫🌐 المحظورون (حساب / شبكة)' : '🚫🌐 Banned (Account / Network)'}
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: '8px',
+                      marginTop: '6px',
+                    }}
+                  >
+                    <span style={{ fontSize: '26px', fontWeight: 900, color: '#f87171' }}>
+                      {bannedUsersCount}
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#fecaca', fontWeight: 700 }}>
+                      {isAr
+                        ? `حساب • ${allBannedNetworkIds.length} شبكة`
+                        : `acc • ${allBannedNetworkIds.length} net`}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '10.5px', color: '#fca5a5', marginTop: '4px', fontWeight: 600 }}>
+                    {isAr ? 'ممنوعون من دخول المنصة نهائياً' : 'Permanently blocked from platform'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Network & Account Security Firewall Bar (حظر شبكة وحظر حساب نهائي) */}
+              <div
+                id="networkAndAccountBanFirewallPanel"
+                style={{
+                  background:
+                    'linear-gradient(135deg, rgba(220, 38, 38, 0.12) 0%, rgba(18, 20, 34, 0.96) 60%, rgba(124, 92, 255, 0.1) 100%)',
+                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                  borderRadius: '14px',
+                  padding: '16px 18px',
+                  display: 'flex',
+                  flexDirection: 'column',
                   gap: '12px',
                 }}
               >
                 <div
                   style={{
-                    background: '#151520',
-                    border: '1px solid #252538',
-                    borderRadius: '10px',
-                    padding: '14px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '10px',
                   }}
                 >
-                  <div style={{ fontSize: '12px', color: '#8e8ea6' }}>
-                    {isAr ? 'إجمالي الحسابات المسجلة' : 'Total Registered Accounts'}
+                  <div>
+                    <div
+                      style={{
+                        fontSize: '14px',
+                        fontWeight: 800,
+                        color: '#fca5a5',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span>🌐🚫</span>
+                      <span>
+                        {isAr
+                          ? 'جدار الحماية الفوري: حظر شبكة (IP / الجهاز) وحظر حساب نهائياً من دخول المنصة'
+                          : 'Platform Security Firewall: Permanent Network (IP/Device) & Account Ban'}
+                      </span>
+                    </div>
+                    <p style={{ margin: '3px 0 0', fontSize: '11.5px', color: '#cbd5e1' }}>
+                      {isAr
+                        ? 'عند تفعيل "حظر حساب" يتم طرد المستخدم ومنعه من تسجيل الدخول. وعند تفعيل "حظر شبكة" يُمنع المستخدم وجهازه وشبكته من فتح المنصة أو تصفحها نهائياً حتى كزائر.'
+                        : 'Account Ban revokes login & sessions immediately. Network Ban blocks the user device & network from opening the platform entirely.'}
+                    </p>
                   </div>
-                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#fff' }}>
-                    {users.length}
-                  </div>
+
+                  {onPreviewBanScreen && (
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        id="previewNetworkBanScreenBtn"
+                        onClick={() => onPreviewBanScreen('network')}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid rgba(239, 68, 68, 0.55)',
+                          background: 'rgba(239, 68, 68, 0.16)',
+                          color: '#fecaca',
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title={
+                          isAr
+                            ? 'معاينة شاشة الإغلاق الكامل التي تظهر للمستخدم عند حظر شبكته أو حسابه'
+                            : 'Preview the full-screen platform lockdown shown to banned users'
+                        }
+                      >
+                        👁️ {isAr ? 'معاينة شاشة الحظر النهائي' : 'Preview Lockdown Screen'}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div
+
+                {/* Manual Network ID / Email Quick Ban Form */}
+                <form
+                  onSubmit={handleManualFirewallBan}
                   style={{
-                    background: 'rgba(245, 158, 11, 0.08)',
-                    border: '1px solid rgba(245, 158, 11, 0.35)',
-                    borderRadius: '10px',
-                    padding: '14px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    alignItems: 'center',
                   }}
                 >
-                  <div style={{ fontSize: '12px', color: '#fcd34d' }}>
-                    {isAr ? 'المشتركون في باقة برو 👑' : 'Active Pro Subscribers 👑'}
-                  </div>
-                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#fbbf24' }}>
-                    {proUsersCount}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    background: '#151520',
-                    border: '1px solid #252538',
-                    borderRadius: '10px',
-                    padding: '14px',
-                  }}
-                >
-                  <div style={{ fontSize: '12px', color: '#8e8ea6' }}>
-                    {isAr ? 'الحسابات المجانية' : 'Free Accounts'}
-                  </div>
-                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#cbd5e1' }}>
-                    {freeUsersCount}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    background: 'rgba(6, 182, 212, 0.1)',
-                    border: '1px solid rgba(6, 182, 212, 0.4)',
-                    borderRadius: '10px',
-                    padding: '14px',
-                  }}
-                >
-                  <div style={{ fontSize: '12px', color: '#67e8f9' }}>
-                    {isAr
-                      ? 'مصرح بتصوير الشاشة والفيديو 📸'
-                      : 'Screen Capture & Video Allowed 📸'}
-                  </div>
-                  <div style={{ fontSize: '24px', fontWeight: 800, marginTop: '4px', color: '#22d3ee' }}>
-                    {screenCaptureAllowedCount}
-                  </div>
-                </div>
-                <div
-                  style={{
-                    background: 'rgba(124, 92, 255, 0.1)',
-                    border: '1px solid rgba(124, 92, 255, 0.4)',
-                    borderRadius: '10px',
-                    padding: '14px',
-                  }}
-                >
-                  <div style={{ fontSize: '12px', color: '#c4b5fd' }}>
-                    {isAr ? 'أسعار باقات أدوات برو الحالية' : 'Current Pro Plans Pricing'}
-                  </div>
+                  <input
+                    type="text"
+                    id="manualFirewallBanInput"
+                    placeholder={
+                      isAr
+                        ? 'أدخل معرف الشبكة (مثال: NET-4A8F-19C2) أو البريد الإلكتروني لحظره فوراً...'
+                        : 'Enter Network ID (e.g. NET-4A8F-19C2) or Email to ban immediately...'
+                    }
+                    value={customBanTargetInput}
+                    onChange={(e) => setCustomBanTargetInput(e.target.value)}
+                    style={{
+                      flex: '1 1 260px',
+                      background: '#0b0c14',
+                      border: '1px solid rgba(239, 68, 68, 0.4)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: '#fff',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <input
+                    type="text"
+                    id="manualFirewallBanReasonInput"
+                    placeholder={
+                      isAr
+                        ? 'سبب الحظر (اختياري — يظهر للمستخدم المحظور)...'
+                        : 'Ban reason (optional — shown on block screen)...'
+                    }
+                    value={customBanReasonInput}
+                    onChange={(e) => setCustomBanReasonInput(e.target.value)}
+                    style={{
+                      flex: '1 1 220px',
+                      background: '#0b0c14',
+                      border: '1px solid #28283e',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: '#fff',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    id="manualFirewallBanSubmitBtn"
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      border: '1px solid #ef4444',
+                      background: 'linear-gradient(135deg, #dc2626, #991b1b)',
+                      color: '#fff',
+                      fontWeight: 800,
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 4px 12px rgba(220, 38, 38, 0.35)',
+                    }}
+                  >
+                    🌐🚫 {isAr ? 'حظر الشبكة / الحساب فوراً' : 'Ban Network / Account Now'}
+                  </button>
+                </form>
+
+                {/* Active Banned Networks & Accounts Chips */}
+                {(allBannedNetworkIds.length > 0 || bannedUsersList.length > 0) && (
                   <div
                     style={{
                       display: 'flex',
                       flexWrap: 'wrap',
-                      gap: '6px',
-                      marginTop: '6px',
+                      gap: '8px',
+                      alignItems: 'center',
+                      paddingTop: '6px',
+                      borderTop: '1px solid rgba(239, 68, 68, 0.2)',
                     }}
                   >
-                    {normalizedPlans.map((p) => (
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#fca5a5' }}>
+                      {isAr ? '🔒 الشبكات والحسابات المحظورة حالياً:' : '🔒 Currently Banned Networks & Accounts:'}
+                    </span>
+                    {allBannedNetworkIds.map((netId) => (
                       <span
-                        key={p.id}
+                        key={netId}
                         style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: 'rgba(220, 38, 38, 0.22)',
+                          border: '1px solid #ef4444',
+                          color: '#fecaca',
+                          padding: '3px 10px',
+                          borderRadius: '99px',
                           fontSize: '11px',
                           fontWeight: 800,
-                          padding: '2px 7px',
-                          borderRadius: '6px',
-                          background: 'rgba(15, 23, 42, 0.7)',
-                          border: '1px solid rgba(167, 139, 250, 0.35)',
-                          color: '#fde047',
                         }}
                       >
-                        {isAr ? p.nameAr : p.nameEn}: {p.price} {settings.proCurrency}
+                        <span>🌐 {netId}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleUnbanNetworkIdFromFirewall(netId)}
+                          style={{
+                            border: 0,
+                            background: 'rgba(0,0,0,0.35)',
+                            color: '#6ee7b7',
+                            borderRadius: '99px',
+                            padding: '1px 6px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                          }}
+                          title={isAr ? 'فك حظر هذه الشبكة' : 'Unban this network'}
+                        >
+                          {isAr ? 'فك الحظر ✓' : 'Unban ✓'}
+                        </button>
+                      </span>
+                    ))}
+                    {bannedUsersList.map((bu) => (
+                      <span
+                        key={bu.id}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: 'rgba(249, 115, 22, 0.2)',
+                          border: '1px solid #f97316',
+                          color: '#fed7aa',
+                          padding: '3px 10px',
+                          borderRadius: '99px',
+                          fontSize: '11px',
+                          fontWeight: 800,
+                        }}
+                      >
+                        <span>
+                          {bu.networkBanned ? '🌐🚫' : '🚫'} {bu.name} ({bu.email})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAccountBan(bu.id)}
+                          style={{
+                            border: 0,
+                            background: 'rgba(0,0,0,0.35)',
+                            color: '#6ee7b7',
+                            borderRadius: '99px',
+                            padding: '1px 6px',
+                            fontSize: '10px',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {isAr ? 'فك الحظر ✓' : 'Unban ✓'}
+                        </button>
                       </span>
                     ))}
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Add New Account Form */}
               <form
                 onSubmit={handleAddUser}
                 style={{
-                  background: '#14141f',
-                  border: '1px solid #26263a',
-                  borderRadius: '12px',
-                  padding: '14px',
+                  background: '#121422',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '14px',
+                  padding: '16px',
                   display: 'flex',
                   flexWrap: 'wrap',
                   gap: '10px',
                   alignItems: 'flex-end',
                 }}
               >
-                <div style={{ width: '100%', fontWeight: 700, fontSize: '13px', color: '#c4b5fd' }}>
+                <div style={{ width: '100%', fontWeight: 800, fontSize: '13px', color: '#c4b5fd' }}>
                   {isAr ? '➕ إضافة أو تفعيل حساب مستخدم جديد يدوياً:' : '➕ Add & Activate User Account:'}
                 </div>
                 <div style={{ flex: '1 1 160px' }}>
-                  <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>
                     {isAr ? 'اسم المستخدم' : 'Full Name'}
                   </label>
                   <input
@@ -1496,7 +2076,7 @@ export default function AdminDashboardModal({
                   />
                 </div>
                 <div style={{ flex: '1 1 180px' }}>
-                  <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>
                     {isAr ? 'البريد الإلكتروني' : 'Email'}
                   </label>
                   <input
@@ -1508,7 +2088,7 @@ export default function AdminDashboardModal({
                   />
                 </div>
                 <div style={{ flex: '1 1 140px' }}>
-                  <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>
                     {isAr ? 'رقم الهاتف / واتساب' : 'Phone / WhatsApp'}
                   </label>
                   <input
@@ -1519,7 +2099,7 @@ export default function AdminDashboardModal({
                   />
                 </div>
                 <div style={{ flex: '0 0 175px' }}>
-                  <label style={{ display: 'block', fontSize: '11px', color: '#9494aa', marginBottom: '4px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>
                     {isAr ? 'الباقة والمدة' : 'Subscription Plan'}
                   </label>
                   <select
@@ -1546,7 +2126,7 @@ export default function AdminDashboardModal({
                       : '1px solid #2e2e46',
                     background: newUserAllowScreenCapture
                       ? 'rgba(6, 182, 212, 0.16)'
-                      : '#10101a',
+                      : '#0b0c14',
                     color: newUserAllowScreenCapture ? '#67e8f9' : '#cbd5e1',
                     fontSize: '11.5px',
                     fontWeight: 700,
@@ -1566,12 +2146,12 @@ export default function AdminDashboardModal({
                 <button
                   type="submit"
                   style={{
-                    padding: '7px 16px',
+                    padding: '8px 18px',
                     borderRadius: '8px',
-                    background: '#7c5cff',
+                    background: 'linear-gradient(135deg, #7c5cff, #5a2fd0)',
                     border: 0,
                     color: '#fff',
-                    fontWeight: 700,
+                    fontWeight: 800,
                     cursor: 'pointer',
                   }}
                 >
@@ -1582,9 +2162,9 @@ export default function AdminDashboardModal({
               {/* Search & Accounts Table */}
               <div
                 style={{
-                  background: '#14141f',
-                  border: '1px solid #26263a',
-                  borderRadius: '12px',
+                  background: '#121422',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '14px',
                   padding: '16px',
                 }}
               >
@@ -1601,16 +2181,16 @@ export default function AdminDashboardModal({
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <b style={{ fontSize: '15px', color: '#fff' }}>
                       {isAr
-                        ? `قائمة الحسابات المسجلة (${filteredUsers.length})`
-                        : `Registered User Accounts (${filteredUsers.length})`}
+                        ? `قائمة الحسابات المسجلة وإدارة الحظر (${filteredUsers.length})`
+                        : `Registered Accounts & Ban Management (${filteredUsers.length})`}
                     </b>
                     <button
                       type="button"
                       onClick={handleRefreshUsersFromFirebase}
                       disabled={isRefreshingUsers}
                       style={{
-                        padding: '4px 10px',
-                        borderRadius: '6px',
+                        padding: '5px 11px',
+                        borderRadius: '7px',
                         background: 'rgba(59, 130, 246, 0.15)',
                         border: '1px solid rgba(59, 130, 246, 0.4)',
                         color: '#93c5fd',
@@ -1626,8 +2206,12 @@ export default function AdminDashboardModal({
                       <span>🔄</span>
                       <span>
                         {isRefreshingUsers
-                          ? (isAr ? 'جاري التحديث...' : 'Refreshing...')
-                          : (isAr ? 'تحديث من Firebase' : 'Sync Firebase')}
+                          ? isAr
+                            ? 'جاري التحديث...'
+                            : 'Refreshing...'
+                          : isAr
+                            ? 'تحديث من Firebase'
+                            : 'Sync Firebase'}
                       </span>
                     </button>
                   </div>
@@ -1644,20 +2228,42 @@ export default function AdminDashboardModal({
                           id: 'screen_capture',
                           label: isAr ? '📸 مصرح بالتصوير' : '📸 Screen Capture',
                         },
+                        {
+                          id: 'banned',
+                          label: isAr
+                            ? `🚫 المحظورون (${bannedUsersCount})`
+                            : `🚫 Banned (${bannedUsersCount})`,
+                        },
                       ] as const
                     ).map((f) => (
                       <button
                         key={f.id}
                         type="button"
+                        id={`userFilterTab_${f.id}`}
                         onClick={() => setUserFilterRole(f.id)}
                         style={{
-                          padding: '4px 10px',
-                          borderRadius: '6px',
-                          border: userFilterRole === f.id ? '1px solid #7c5cff' : '1px solid #28283d',
-                          background: userFilterRole === f.id ? 'rgba(124, 92, 255, 0.25)' : '#10101a',
-                          color: userFilterRole === f.id ? '#fff' : '#a0a0b8',
+                          padding: '5px 11px',
+                          borderRadius: '8px',
+                          border:
+                            userFilterRole === f.id
+                              ? f.id === 'banned'
+                                ? '1px solid #ef4444'
+                                : '1px solid #7c5cff'
+                              : '1px solid #28283d',
+                          background:
+                            userFilterRole === f.id
+                              ? f.id === 'banned'
+                                ? 'rgba(239, 68, 68, 0.25)'
+                                : 'rgba(124, 92, 255, 0.25)'
+                              : '#0b0c14',
+                          color:
+                            userFilterRole === f.id
+                              ? '#fff'
+                              : f.id === 'banned'
+                                ? '#fca5a5'
+                                : '#a0a0b8',
                           fontSize: '11px',
-                          fontWeight: userFilterRole === f.id ? 700 : 500,
+                          fontWeight: userFilterRole === f.id ? 800 : 600,
                           cursor: 'pointer',
                         }}
                       >
@@ -1670,12 +2276,12 @@ export default function AdminDashboardModal({
                     type="text"
                     placeholder={
                       isAr
-                        ? '🔍 ابحث بالاسم أو البريد الإلكتروني أو الرقم...'
-                        : '🔍 Search by name, email, or phone...'
+                        ? '🔍 ابحث بالاسم، البريد، الرقم، أو معرف الشبكة...'
+                        : '🔍 Search by name, email, phone, or Network ID...'
                     }
                     value={userSearch}
                     onChange={(e) => setUserSearch(e.target.value)}
-                    style={{ maxWidth: '280px', fontSize: '12px', padding: '6px 10px' }}
+                    style={{ maxWidth: '280px', fontSize: '12px', padding: '7px 11px' }}
                   />
                 </div>
 
@@ -1689,19 +2295,35 @@ export default function AdminDashboardModal({
                     }}
                   >
                     <thead>
-                      <tr style={{ borderBottom: '1px solid #26263a', color: '#9494aa' }}>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'المستخدم' : 'User'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'نوع الحساب / الرتبة' : 'Account Type'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'البريد الإلكتروني' : 'Email'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'الهاتف / واتساب' : 'Phone'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'تاريخ التسجيل' : 'Created'}</th>
-                        <th style={{ padding: '10px 8px' }}>{isAr ? 'تفعيل برو / إجراءات' : 'Actions'}</th>
+                      <tr
+                        style={{
+                          borderBottom: '1px solid rgba(255,255,255,0.1)',
+                          color: '#94a3b8',
+                          background: 'rgba(11, 12, 20, 0.6)',
+                        }}
+                      >
+                        <th style={{ padding: '11px 10px' }}>{isAr ? 'المستخدم' : 'User'}</th>
+                        <th style={{ padding: '11px 10px' }}>
+                          {isAr ? 'نوع الحساب / الحالة' : 'Role & Status'}
+                        </th>
+                        <th style={{ padding: '11px 10px' }}>
+                          {isAr ? 'معرف الشبكة وحالة الحظر' : 'Network ID & Ban Status'}
+                        </th>
+                        <th style={{ padding: '11px 10px' }}>
+                          {isAr ? 'البريد والهاتف' : 'Email & Phone'}
+                        </th>
+                        <th style={{ padding: '11px 10px' }}>{isAr ? 'تاريخ التسجيل' : 'Created'}</th>
+                        <th style={{ padding: '11px 10px' }}>
+                          {isAr
+                            ? 'تفعيل برو / حظر حساب وشبكة / إجراءات'
+                            : 'Pro / Account & Network Ban / Actions'}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredUsers.length === 0 ? (
                         <tr>
-                          <td colSpan={6} style={{ padding: '24px', textAlign: 'center', color: '#8e8ea6' }}>
+                          <td colSpan={6} style={{ padding: '28px', textAlign: 'center', color: '#8e8ea6' }}>
                             {isAr ? 'لا يوجد حسابات مطابقة للبحث أو التصفية.' : 'No users match your criteria.'}
                           </td>
                         </tr>
@@ -1711,41 +2333,77 @@ export default function AdminDashboardModal({
                           const isAdminRole = canAccessAdminDashboard(u);
                           const isRecent = isRecentUser(u) && !isAdminRole;
                           const userPerms = getEffectiveAdminPermissions(u);
+                          const userNetId = getEffectiveUserNetworkId(u);
+                          const isAccBanned = isUserAccountBanned(u, settings);
+                          const isNetBanned =
+                            !isSuper &&
+                            (Boolean(u.networkBanned) ||
+                              isNetworkIdBanned(userNetId, settings, users));
+                          const canBanThisUser = canBanUserAccount(currentUser, u);
 
                           return (
                             <tr
                               key={u.id}
+                              id={`userRow_${u.id}`}
                               style={{
-                                borderBottom: '1px solid #1d1d2b',
-                                background: isRecent ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
+                                borderBottom: '1px solid rgba(255,255,255,0.06)',
+                                background: isNetBanned
+                                  ? 'rgba(220, 38, 38, 0.11)'
+                                  : isAccBanned
+                                    ? 'rgba(249, 115, 22, 0.09)'
+                                    : isRecent
+                                      ? 'rgba(16, 185, 129, 0.05)'
+                                      : 'transparent',
                               }}
                             >
-                              <td style={{ padding: '10px 8px', fontWeight: 600, color: '#fff' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <td style={{ padding: '11px 10px', fontWeight: 600, color: '#fff' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
                                   <div
                                     style={{
-                                      width: '28px',
-                                      height: '28px',
-                                      borderRadius: '50%',
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '10px',
                                       background: isSuper
                                         ? 'linear-gradient(135deg, #6366f1, #a855f7)'
-                                        : isAdminRole
-                                          ? 'linear-gradient(135deg, #10b981, #059669)'
-                                          : u.isPro
-                                            ? 'linear-gradient(135deg, #f59e0b, #d97706)'
-                                            : '#222234',
+                                        : isNetBanned || isAccBanned
+                                          ? 'linear-gradient(135deg, #dc2626, #991b1b)'
+                                          : isAdminRole
+                                            ? 'linear-gradient(135deg, #10b981, #059669)'
+                                            : u.isPro
+                                              ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                                              : '#222234',
                                       display: 'grid',
                                       placeItems: 'center',
-                                      fontSize: '13px',
+                                      fontSize: '14px',
                                       color: '#fff',
                                       fontWeight: 800,
+                                      flexShrink: 0,
                                     }}
                                   >
-                                    {isSuper ? '👑' : isAdminRole ? '🛡️' : u.isPro ? '⚡' : '👤'}
+                                    {isSuper
+                                      ? '👑'
+                                      : isNetBanned
+                                        ? '🌐'
+                                        : isAccBanned
+                                          ? '🚫'
+                                          : isAdminRole
+                                            ? '🛡️'
+                                            : u.isPro
+                                              ? '⚡'
+                                              : '👤'}
                                   </div>
                                   <div>
-                                    <div style={{ color: '#fff', fontWeight: 700 }}>{u.name}</div>
-                                    {isRecent && (
+                                    <div
+                                      style={{
+                                        color: isNetBanned || isAccBanned ? '#fca5a5' : '#fff',
+                                        fontWeight: 800,
+                                        textDecoration:
+                                          isNetBanned || isAccBanned ? 'line-through' : 'none',
+                                      }}
+                                    >
+                                      {u.name}
+                                    </div>
+                                    {isRecent && !isAccBanned && (
                                       <span
                                         style={{
                                           background: '#10b981',
@@ -1764,11 +2422,13 @@ export default function AdminDashboardModal({
                                   </div>
                                 </div>
                               </td>
-                              <td style={{ padding: '10px 8px' }}>
+
+                              <td style={{ padding: '11px 10px' }}>
                                 {isSuper ? (
                                   <span
                                     style={{
-                                      background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25))',
+                                      background:
+                                        'linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25))',
                                       border: '1px solid #818cf8',
                                       color: '#c7d2fe',
                                       padding: '3px 10px',
@@ -1781,11 +2441,44 @@ export default function AdminDashboardModal({
                                   >
                                     👑 {isAr ? 'المدير العام (Super Admin)' : 'Super Admin'}
                                   </span>
+                                ) : isNetBanned ? (
+                                  <span
+                                    style={{
+                                      background: 'rgba(220, 38, 38, 0.25)',
+                                      border: '1px solid #ef4444',
+                                      color: '#fecaca',
+                                      padding: '3px 10px',
+                                      borderRadius: '99px',
+                                      fontWeight: 800,
+                                      fontSize: '11px',
+                                      display: 'inline-block',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    🌐🚫 {isAr ? 'محظور شبكة وحساب نهائياً' : 'Network & Account Banned'}
+                                  </span>
+                                ) : isAccBanned ? (
+                                  <span
+                                    style={{
+                                      background: 'rgba(249, 115, 22, 0.22)',
+                                      border: '1px solid #f97316',
+                                      color: '#fed7aa',
+                                      padding: '3px 10px',
+                                      borderRadius: '99px',
+                                      fontWeight: 800,
+                                      fontSize: '11px',
+                                      display: 'inline-block',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    🚫 {isAr ? 'حساب محظور من الدخول' : 'Account Banned'}
+                                  </span>
                                 ) : isAdminRole ? (
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                     <span
                                       style={{
-                                        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.22), rgba(5, 150, 105, 0.22))',
+                                        background:
+                                          'linear-gradient(135deg, rgba(16, 185, 129, 0.22), rgba(5, 150, 105, 0.22))',
                                         border: '1px solid #10b981',
                                         color: '#a7f3d0',
                                         padding: '3px 10px',
@@ -1807,7 +2500,8 @@ export default function AdminDashboardModal({
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                         <span
                                           style={{
-                                            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.22))',
+                                            background:
+                                              'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.22))',
                                             border: '1px solid #f59e0b',
                                             color: '#fef08a',
                                             padding: '3px 10px',
@@ -1820,14 +2514,22 @@ export default function AdminDashboardModal({
                                           }}
                                         >
                                           ⚡ {isAr ? 'مشترك باقة برو' : 'Active PRO'}
-                                          {u.proPlanName ? ` (${u.proPlanName})` : ` (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`}
+                                          {u.proPlanName
+                                            ? ` (${u.proPlanName})`
+                                            : ` (${isAr ? subInfo.planNameAr : subInfo.planNameEn})`}
                                         </span>
                                         {subInfo.expiresAtIso && (
                                           <span style={{ fontSize: '10px', color: '#fde047', fontWeight: 700 }}>
-                                            ⏳ {isAr ? `متبقي ${subInfo.remainingDays} يوم و ${subInfo.remainingHours} س` : `${subInfo.remainingDays}d ${subInfo.remainingHours}h left`} •{' '}
+                                            ⏳{' '}
+                                            {isAr
+                                              ? `متبقي ${subInfo.remainingDays} يوم و ${subInfo.remainingHours} س`
+                                              : `${subInfo.remainingDays}d ${subInfo.remainingHours}h left`}{' '}
+                                            •{' '}
                                             <span style={{ color: '#94a3b8', fontWeight: 500 }}>
                                               {isAr ? 'ينتهي:' : 'Ends:'}{' '}
-                                              {new Date(subInfo.expiresAtIso).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}
+                                              {new Date(subInfo.expiresAtIso).toLocaleDateString(
+                                                isAr ? 'ar-EG' : 'en-US'
+                                              )}
                                             </span>
                                           </span>
                                         )}
@@ -1851,7 +2553,7 @@ export default function AdminDashboardModal({
                                     👤 {isAr ? 'مستخدم مجاني (Free)' : 'Free User'}
                                   </span>
                                 )}
-                                {canUserCaptureScreen(u) && (
+                                {canUserCaptureScreen(u) && !isAccBanned && (
                                   <div style={{ marginTop: '4px' }}>
                                     <span
                                       id={`screenCaptureBadge_${u.id}`}
@@ -1871,16 +2573,82 @@ export default function AdminDashboardModal({
                                     >
                                       📸{' '}
                                       {isAr
-                                        ? 'مصرح بتصوير الشاشة وتسجيل الفيديو'
-                                        : 'Screen Capture & Video Allowed'}
+                                        ? 'مصرح بتصوير الشاشة والفيديو'
+                                        : 'Screen Capture Allowed'}
                                     </span>
                                   </div>
                                 )}
                               </td>
-                              <td style={{ padding: '10px 8px', color: '#cbd5e1' }}>{u.email}</td>
-                              <td style={{ padding: '10px 8px', color: '#94a3b8' }}>{u.phone || '—'}</td>
-                              <td style={{ padding: '10px 8px', color: '#94a3b8' }}>
-                                <div>{new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}</div>
+
+                              {/* Network ID & Ban Status Column */}
+                              <td style={{ padding: '11px 10px' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <span
+                                    id={`userNetworkBadge_${u.id}`}
+                                    style={{
+                                      fontFamily: 'monospace',
+                                      fontSize: '11px',
+                                      fontWeight: 800,
+                                      padding: '2px 8px',
+                                      borderRadius: '6px',
+                                      background: isNetBanned
+                                        ? 'rgba(220, 38, 38, 0.25)'
+                                        : 'rgba(15, 23, 42, 0.85)',
+                                      border: isNetBanned
+                                        ? '1px solid #ef4444'
+                                        : '1px solid rgba(148, 163, 184, 0.25)',
+                                      color: isNetBanned ? '#fca5a5' : '#93c5fd',
+                                      width: 'fit-content',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                    title={
+                                      isAr
+                                        ? 'معرف الشبكة والبصمة الرقمية لجهاز المستخدم'
+                                        : 'User Network & Device Fingerprint ID'
+                                    }
+                                  >
+                                    🌐 {userNetId}
+                                  </span>
+
+                                  <span
+                                    id={`userBanStatusBadge_${u.id}`}
+                                    style={{
+                                      fontSize: '10.5px',
+                                      fontWeight: 800,
+                                      color: isNetBanned
+                                        ? '#f87171'
+                                        : isAccBanned
+                                          ? '#fb923c'
+                                          : '#34d399',
+                                    }}
+                                  >
+                                    {isNetBanned
+                                      ? isAr
+                                        ? '⛔ شبكة وحساب محظور نهائياً'
+                                        : '⛔ Network & Account Blocked'
+                                      : isAccBanned
+                                        ? isAr
+                                          ? '🚫 الحساب محظور من الدخول'
+                                          : '🚫 Account Login Blocked'
+                                        : isAr
+                                          ? '✅ مسموح بالدخول'
+                                          : '✅ Access Allowed'}
+                                  </span>
+                                </div>
+                              </td>
+
+                              {/* Email & Phone Column */}
+                              <td style={{ padding: '11px 10px', color: '#cbd5e1' }}>
+                                <div style={{ fontWeight: 600 }}>{u.email}</div>
+                                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                                  {u.phone || '—'}
+                                </div>
+                              </td>
+
+                              <td style={{ padding: '11px 10px', color: '#94a3b8' }}>
+                                <div>
+                                  {new Date(u.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US')}
+                                </div>
                                 <div style={{ fontSize: '10px', color: '#64748b' }}>
                                   {new Date(u.createdAt).toLocaleTimeString(isAr ? 'ar-EG' : 'en-US', {
                                     hour: '2-digit',
@@ -1888,9 +2656,93 @@ export default function AdminDashboardModal({
                                   })}
                                 </div>
                               </td>
-                              <td style={{ padding: '10px 8px' }}>
-                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                  {!isSuper && (
+
+                              <td style={{ padding: '11px 10px' }}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    gap: '6px',
+                                    alignItems: 'center',
+                                    flexWrap: 'wrap',
+                                  }}
+                                >
+                                  {/* Account Ban & Network Ban Controls (حظر حساب + حظر شبكة) */}
+                                  {canBanThisUser && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        id={`toggleAccountBanBtn_${u.id}`}
+                                        onClick={() => handleToggleAccountBan(u.id)}
+                                        style={{
+                                          padding: '6px 10px',
+                                          borderRadius: '8px',
+                                          border: isAccBanned
+                                            ? '1px solid #10b981'
+                                            : '1px solid #f97316',
+                                          background: isAccBanned
+                                            ? 'rgba(16, 185, 129, 0.18)'
+                                            : 'rgba(249, 115, 22, 0.18)',
+                                          color: isAccBanned ? '#6ee7b7' : '#fed7aa',
+                                          fontWeight: 800,
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                        title={
+                                          isAr
+                                            ? 'حظر الحساب نهائياً من تسجيل الدخول أو استخدام المنصة (أو فك الحظر)'
+                                            : 'Ban or unban this user account from logging into the platform'
+                                        }
+                                      >
+                                        {isAccBanned
+                                          ? isAr
+                                            ? '✅ فك حظر الحساب'
+                                            : '✅ Unban Account'
+                                          : isAr
+                                            ? '🚫 حظر حساب'
+                                            : '🚫 Ban Account'}
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        id={`toggleNetworkBanBtn_${u.id}`}
+                                        onClick={() => handleToggleNetworkBan(u.id)}
+                                        style={{
+                                          padding: '6px 10px',
+                                          borderRadius: '8px',
+                                          border: isNetBanned
+                                            ? '1px solid #10b981'
+                                            : '1px solid #ef4444',
+                                          background: isNetBanned
+                                            ? 'rgba(16, 185, 129, 0.2)'
+                                            : 'linear-gradient(135deg, rgba(220, 38, 38, 0.32), rgba(153, 27, 27, 0.35))',
+                                          color: isNetBanned ? '#6ee7b7' : '#fecaca',
+                                          fontWeight: 800,
+                                          cursor: 'pointer',
+                                          fontSize: '11px',
+                                          whiteSpace: 'nowrap',
+                                          boxShadow: isNetBanned
+                                            ? 'none'
+                                            : '0 2px 10px rgba(220, 38, 38, 0.28)',
+                                        }}
+                                        title={
+                                          isAr
+                                            ? 'حظر شبكة المستخدم وجهازه وحسابه نهائياً بحيث لا يستطيع فتح المنصة على الإطلاق'
+                                            : 'Permanently ban user network & device from accessing the platform at all'
+                                        }
+                                      >
+                                        {isNetBanned
+                                          ? isAr
+                                            ? '🌐✅ فك حظر الشبكة'
+                                            : '🌐✅ Unban Network'
+                                          : isAr
+                                            ? '🌐🚫 حظر شبكة'
+                                            : '🌐🚫 Ban Network'}
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {!isSuper && !isAccBanned && (
                                     <>
                                       <select
                                         aria-label={isAr ? 'اختر باقة المستخدم' : 'Select user plan'}
@@ -1905,7 +2757,7 @@ export default function AdminDashboardModal({
                                           width: 'auto',
                                           padding: '5px 8px',
                                           borderRadius: '8px',
-                                          background: '#10101a',
+                                          background: '#0b0c14',
                                           border: u.isPro ? '1px solid #f59e0b' : '1px solid #334155',
                                           color: u.isPro ? '#fde047' : '#cbd5e1',
                                           fontSize: '11px',
@@ -1935,7 +2787,6 @@ export default function AdminDashboardModal({
                                           cursor: 'pointer',
                                           fontSize: '11px',
                                           whiteSpace: 'nowrap',
-                                          boxShadow: u.isPro ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.3)',
                                         }}
                                       >
                                         {u.isPro
@@ -1965,28 +2816,20 @@ export default function AdminDashboardModal({
                                           cursor: 'pointer',
                                           fontSize: '11px',
                                           whiteSpace: 'nowrap',
-                                          boxShadow: u.allowScreenCapture
-                                            ? '0 2px 10px rgba(6, 182, 212, 0.28)'
-                                            : 'none',
                                         }}
-                                        title={
-                                          isAr
-                                            ? 'منح أو إلغاء صلاحية تصوير الشاشة وتسجيل سكرين فيديو لهذا الحساب من أي موقع أو أداة'
-                                            : 'Grant or revoke screenshot & screen video recording permission for this user account'
-                                        }
                                       >
                                         {u.allowScreenCapture
                                           ? isAr
-                                            ? '📸 التصوير مفعل (اضغط للإلغاء)'
-                                            : '📸 Capture Allowed (Revoke)'
+                                            ? '📸 التصوير مفعل'
+                                            : '📸 Capture On'
                                           : isAr
-                                            ? '📸 سماح بتصوير الشاشة والفيديو'
-                                            : '📸 Allow Screen Capture'}
+                                            ? '📸 سماح بالتصوير'
+                                            : '📸 Allow Capture'}
                                       </button>
                                     </>
                                   )}
 
-                                  {!isSuper && hasAdminPermission(currentUser, 'manage_admins') && (
+                                  {!isSuper && hasAdminPermission(currentUser, 'manage_admins') && !isAccBanned && (
                                     <>
                                       <button
                                         type="button"
@@ -2004,11 +2847,6 @@ export default function AdminDashboardModal({
                                           fontSize: '11px',
                                           whiteSpace: 'nowrap',
                                         }}
-                                        title={
-                                          isAr
-                                            ? 'منح أو تعديل صلاحيات المشرف في الداشبورد لهذا الحساب'
-                                            : 'Grant or edit dashboard moderator permissions for this user'
-                                        }
                                       >
                                         🛡️ {isAr ? 'صلاحيات المشرف' : 'Permissions'}
                                       </button>
@@ -2029,11 +2867,6 @@ export default function AdminDashboardModal({
                                             fontSize: '11px',
                                             whiteSpace: 'nowrap',
                                           }}
-                                          title={
-                                            isAr
-                                              ? 'حذف وسحب صلاحية الأدمن من هذا الحساب وإعادته مستخدم عادي'
-                                              : 'Remove Admin role from this user account'
-                                          }
                                         >
                                           🚫 {isAr ? 'حذف الأدمن' : 'Remove Admin'}
                                         </button>
@@ -2057,7 +2890,6 @@ export default function AdminDashboardModal({
                                         fontWeight: 700,
                                         whiteSpace: 'nowrap',
                                       }}
-                                      title={isAr ? 'حذف الحساب بشكل نهائي من قاعدة البيانات والموقع' : 'Delete user permanently from database & dashboard'}
                                     >
                                       🗑️ {isAr ? 'حذف' : 'Delete'}
                                     </button>

@@ -27,7 +27,7 @@ export interface GuideBookChapter {
   titleEn: string;
   summaryAr: string;
   summaryEn: string;
-  targetView: 'home' | 'editor' | 'gifts' | 'gift-image';
+  targetView: 'home' | 'editor' | 'gifts' | 'gift-image' | 'gold-designer';
   accentColor: string;
   screenshotImage?: string;
   callouts: GuideCalloutItem[];
@@ -522,6 +522,19 @@ export const GUIDE_BOOK_CHAPTERS: GuideBookChapter[] = [
         posTop: '74%',
         posLeft: '50%',
       },
+      {
+        num: 4,
+        titleAr: 'الداش بورد المطوّرة: حظر حساب (Account Ban) وحظر شبكة نهائي (Network Ban)',
+        titleEn: 'Upgraded Admin Dashboard: Account Ban & Permanent Network Ban Firewall',
+        descAr:
+          'من قسم الحسابات في لوحة التحكم، يمكنك الضغط على (🚫 حظر حساب) لطرد المستخدم ومنعه من تسجيل الدخول، أو (🌐🚫 حظر شبكة) لحظر معرف الشبكة والجهاز نهائياً بحيث يُغلق الموقع بالكامل أمامه ولا يستطيع دخول المنصة حتى كزائر، مع إمكانية فك الحظر بضغطة واحدة.',
+        descEn:
+          'From the Users tab in the Admin Dashboard, click Ban Account to block a user login, or Ban Network to permanently lock the user device and network ID out of the entire platform.',
+        badgeAr: 'حظر شبكة وحساب 🌐🚫',
+        badgeEn: 'Network & Account Ban 🌐🚫',
+        posTop: '52%',
+        posLeft: '50%',
+      },
     ],
     shortcuts: [
       {
@@ -533,4 +546,77 @@ export const GUIDE_BOOK_CHAPTERS: GuideBookChapter[] = [
       },
     ],
   },
+  {
+    id: 'gold_name_designer',
+    icon: '🪙',
+    badgeAr: 'مصمم الأسماء الذهبية 3D',
+    badgeEn: 'AI 3D Gold Name Designer',
+    titleAr: 'مصمم الأسماء والعبارات الذهبية ثلاثية الأبعاد (AI 3D Gold Arabic Name Designer)',
+    titleEn: 'AI 3D Gold Arabic Name Designer (Reference-Matched Luxury Typography)',
+    summaryAr:
+      'أداة احترافية لتحويل أي اسم أو عبارة (عربي، إنجليزي، أرقام) إلى مجسم ذهبي ثلاثي الأبعاد مطابق للهوية البصرية للصورة المرجعية مع تحكم كامل في العمق والحواف المشطوفة والظل وتصدير PNG شفاف أو أبيض أو JPEG.',
+    summaryEn:
+      'Convert any Arabic, English, or numeric name into luxurious 3D extruded metallic gold typography matching the reference image style, with full customization and PNG White/Transparent/JPEG exports.',
+    targetView: 'gold-designer',
+    accentColor: '#f59e0b',
+    screenshotImage: '/assets/aistudio/file_000000008e9c821093078beaef9fdc60_8afaca5c.png',
+    callouts: [
+      {
+        num: 1,
+        titleAr: 'دعم كامل للغة العربية المتصلة والنصوص المختلطة (RTL & LTR)',
+        titleEn: 'Full Connected Arabic RTL, English & Mixed Typography',
+        descAr:
+          'اكتب أي اسم أو لقب مثل (وكيل شحن) أو اسم مركب؛ يحافظ المحرك على اتصال الحروف العربية والنقاط الماسية والهمزات بدقة إملائية 100% مع ضبط الحجم التلقائي دون قص.',
+        descEn:
+          'Type any Arabic or English phrase; the engine preserves connected Arabic letterforms, dots, and diacritics with 100% spelling accuracy and automatic proportion fitting.',
+        badgeAr: 'خط عربي متصل ✍️',
+        badgeEn: 'Exact Arabic ✍️',
+        posTop: '24%',
+        posLeft: '50%',
+      },
+      {
+        num: 2,
+        titleAr: 'رفع صورة مرجعية واستخراج خامة الذهب والإضاءة + زر إعادة الضبط',
+        titleEn: 'Reference Style Upload & Reset to Reference Style',
+        descAr:
+          'يمكنك رفع أي صورة مرجعية لاستخراج درجات الذهب واللمعة والظل منها تلقائياً، أو الضغط على (إعادة للنمط المرجعي) للعودة الفورية لإعدادات تصميم (وكيل شحن) الأصلي.',
+        descEn:
+          'Upload your own reference image to extract its metallic gold palette or click Reset to Reference Style at any time.',
+        badgeAr: 'مطابقة المرجع 🖼️',
+        badgeEn: 'Reference Match 🖼️',
+        posTop: '50%',
+        posLeft: '25%',
+      },
+      {
+        num: 3,
+        titleAr: 'تخصيص العمق 3D والحواف المشطوفة (Bevel) والتصدير بخلفية شفافة أو بيضاء',
+        titleEn: '3D Depth, Bevel Sliders & Transparent/White PNG Export',
+        descAr:
+          'تحكم في كثافة الذهب والسطوع والعمق ثلاثي الأبعاد وسُمك الـ Bevel وقوة الظل، وصدّر التصميم بأبعاد (1920×1080، 1536×1024، 1024×1024، 1080×1920) بصيغة PNG خلفية بيضاء أو PNG شفافة مع الظل أو JPEG.',
+        descEn:
+          'Fine-tune Gold Intensity, 3D Depth, Bevel Thickness, and Shadow Strength, and export in preset or custom resolutions as PNG White, PNG Transparent, or JPEG.',
+        badgeAr: 'تصدير 4K شفاف 📥',
+        badgeEn: 'PNG Transparent 📥',
+        posTop: '72%',
+        posLeft: '75%',
+      },
+    ],
+    shortcuts: [
+      {
+        keysAr: '⌨️ زر Enter في حقل الاسم',
+        keysEn: '⌨️ Enter Key in Name Input',
+        actionAr: 'توليد التصميم الذهبي ثلاثي الأبعاد فوراً',
+        actionEn: 'Generate 3D Gold Design immediately',
+        highlight: true,
+      },
+      {
+        keysAr: '🖱️ كليك شمال / زر Tab',
+        keysEn: '🖱️ Left-Click / Tab Key',
+        actionAr: 'تحميل التصميم الذهبي فوراً بالصيغة والأبعاد المحددة',
+        actionEn: 'Instant download in selected format and resolution',
+        highlight: true,
+      },
+    ],
+  },
 ];
+

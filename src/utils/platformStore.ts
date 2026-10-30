@@ -203,6 +203,11 @@ export interface UserAccount {
   createdAt: string;
   proActivatedAt?: string;
   freeAttemptsUsed?: Record<string, number>;
+  isBanned?: boolean; // حظر الحساب (Account Ban)
+  networkBanned?: boolean; // حظر الشبكة والجهاز نهائياً (Network / Device Ban)
+  banReason?: string; // سبب الحظر
+  bannedAt?: string; // تاريخ ووقت الحظر
+  networkId?: string; // معرف الشبكة / البصمة الرقمية للمستخدم (Network / IP Fingerprint)
 }
 
 export interface BroadcastNotification {
@@ -282,6 +287,17 @@ export const PRO_TOOLS_DEFINITIONS: ProToolDefinition[] = [
     defaultIsPro: true,
     defaultFreeAttempts: 3,
   },
+  {
+    key: 'gold_designer',
+    labelAr: 'مصمم الأسماء ثلاثية الأبعاد 3D',
+    labelEn: '3D Gold Name Designer',
+    icon: '👑',
+    descAr: 'توليد وتصميم الأسماء ثلاثية الأبعاد ببروز معدني وانعكاسات احترافية واستخلاص الألوان والأنماط.',
+    descEn: 'Generate luxurious 3D metallic typography with custom colors and image style extraction.',
+    defaultScope: 'export',
+    defaultIsPro: true,
+    defaultFreeAttempts: 2,
+  },
 ];
 
 export const DEFAULT_PRO_FEATURE_RULES: Record<string, ProFeatureRule> = {
@@ -296,6 +312,12 @@ export const DEFAULT_PRO_FEATURE_RULES: Record<string, ProFeatureRule> = {
     scope: 'access',
     allowFreeAttempts: true,
     freeAttemptsCount: 3,
+  },
+  gold_designer: {
+    isPro: true,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 2,
   },
 };
 
@@ -352,6 +374,9 @@ export interface PlatformSettings {
   whatsappDefaultMsgAr: string;
   whatsappDefaultMsgEn: string;
   defaultLanguage: AppLanguage;
+  bannedNetworkIds?: string[]; // قائمة الشبكات المحظورة نهائياً من دخول المنصة
+  bannedUserIds?: string[]; // قائمة معرفات الحسابات المحظورة
+  bannedEmails?: string[]; // قائمة البريد الإلكتروني للحسابات المحظورة
 }
 
 export interface ActivityLogEntry {
@@ -397,6 +422,9 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   whatsappDefaultMsgAr: 'مرحباً، أريد الاشتراك في باقة أدوات برو (Pro Tools) وتفعيل حسابي.',
   whatsappDefaultMsgEn: 'Hello, I would like to subscribe to the Pro Tools package and activate my account.',
   defaultLanguage: 'ar',
+  bannedNetworkIds: [],
+  bannedUserIds: [],
+  bannedEmails: [],
 };
 
 export const INITIAL_SUPER_ADMIN_ACCOUNT: UserAccount = {
@@ -527,6 +555,7 @@ export function isSuperAdminUser(user: UserAccount | null | undefined): boolean 
 export function canAccessAdminDashboard(user: UserAccount | null | undefined): boolean {
   if (!user || isPurgedLegacyAdmin(user)) return false;
   if (isSuperAdminUser(user)) return true;
+  if (user.isBanned || user.networkBanned) return false;
   if (user.role !== 'admin') return false;
   if (!Array.isArray(user.adminPermissions)) return false;
   const validPerms = user.adminPermissions.filter((k): k is AdminPermissionKey =>
@@ -598,6 +627,346 @@ export function canDeleteUserAccount(
     if (isSuperAdminUser(target) || target.id === actor.id) return false;
   }
   return true;
+}
+
+export const CLIENT_NETWORK_ID_STORAGE_KEY = 'motiontools_client_network_id_v1';
+
+/**
+ * Pure function: Generates a clean, deterministic Network / Device Fingerprint ID (`NET-XXXX-XXXX`)
+ * from any seed string (user ID, email, or browser fingerprint).
+ */
+export function generateDeterministicNetworkId(seedStr: string): string {
+  const clean = (seedStr || 'guest_net').trim().toLowerCase();
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + i * 17;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const part1 = ((h1 >>> 0) & 0xffff).toString(16).toUpperCase().padStart(4, '0');
+  const part2 = ((h2 >>> 0) & 0xffff).toString(16).toUpperCase().padStart(4, '0');
+  return `NET-${part1}-${part2}`;
+}
+
+/**
+ * Returns the persistent Network / Device ID for the current client browser.
+ */
+export function getClientNetworkId(): string {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return 'NET-0000-LOCAL';
+  }
+  try {
+    const existing = window.localStorage.getItem(CLIENT_NETWORK_ID_STORAGE_KEY);
+    if (existing && /^NET-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(existing.trim())) {
+      return existing.trim().toUpperCase();
+    }
+    const navInfo =
+      typeof navigator !== 'undefined'
+        ? `${navigator.userAgent || ''}|${navigator.language || ''}|${screen?.width || 0}x${screen?.height || 0}`
+        : 'browser';
+    const randomSalt = Math.random().toString(36).substring(2, 10) + '_' + Date.now();
+    const generated = generateDeterministicNetworkId(`${navInfo}|${randomSalt}`);
+    window.localStorage.setItem(CLIENT_NETWORK_ID_STORAGE_KEY, generated);
+    return generated;
+  } catch {
+    return 'NET-0000-LOCAL';
+  }
+}
+
+/**
+ * Pure function: Resolves a guaranteed non-empty Network ID (`NET-XXXX-XXXX`) for any user record.
+ */
+export function getEffectiveUserNetworkId(user: Partial<UserAccount> | null | undefined): string {
+  if (!user) return 'NET-0000-GUEST';
+  const raw = typeof user.networkId === 'string' ? user.networkId.trim().toUpperCase() : '';
+  if (raw && raw.length >= 6) return raw;
+  return generateDeterministicNetworkId(user.id || user.email || 'user');
+}
+
+/**
+ * Pure function: Checks whether an admin actor is permitted to ban/unban a target user account or network.
+ * Super Admin can ban any non-Super-Admin account.
+ * Delegated Admins with `manage_users` or `manage_admins` can ban non-Super-Admin accounts (cannot ban other admins without `manage_admins`).
+ */
+export function canBanUserAccount(
+  actor: UserAccount | null | undefined,
+  target: Partial<UserAccount> | null | undefined
+): boolean {
+  if (!actor || !target) return false;
+  if (isSuperAdminUser(target as UserAccount)) return false;
+  if (actor.id && target.id && actor.id === target.id) return false;
+  if (isSuperAdminUser(actor)) return true;
+  if (!canAccessAdminDashboard(actor)) return false;
+  if (target.role === 'admin') {
+    return hasAdminPermission(actor, 'manage_admins');
+  }
+  return hasAdminPermission(actor, 'manage_users') || hasAdminPermission(actor, 'manage_admins');
+}
+
+/**
+ * Pure function: Checks if a user account is banned (either via account flag, network ban flag, or global settings lists).
+ * The primary Super Admin account can NEVER be banned.
+ */
+export function isUserAccountBanned(
+  user: Partial<UserAccount> | null | undefined,
+  settings?: Partial<PlatformSettings> | null
+): boolean {
+  if (!user) return false;
+  if (isSuperAdminUser(user as UserAccount)) return false;
+  if (user.isBanned === true || user.networkBanned === true) return true;
+  if (user.id && Array.isArray(settings?.bannedUserIds) && settings!.bannedUserIds!.includes(user.id)) {
+    return true;
+  }
+  const emailLower = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
+  if (
+    emailLower &&
+    Array.isArray(settings?.bannedEmails) &&
+    settings!.bannedEmails!.some((e) => e.trim().toLowerCase() === emailLower)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Pure function: Checks if a specific network ID (`NET-XXXX-XXXX`) is banned from accessing the platform.
+ */
+export function isNetworkIdBanned(
+  networkId: string | null | undefined,
+  settings?: Partial<PlatformSettings> | null,
+  users?: UserAccount[]
+): boolean {
+  const cleanNet = typeof networkId === 'string' ? networkId.trim().toUpperCase() : '';
+  if (!cleanNet) return false;
+  if (
+    Array.isArray(settings?.bannedNetworkIds) &&
+    settings!.bannedNetworkIds!.some((n) => n.trim().toUpperCase() === cleanNet)
+  ) {
+    return true;
+  }
+  if (Array.isArray(users)) {
+    const matchedBannedUser = users.some(
+      (u) =>
+        !isSuperAdminUser(u) &&
+        u.networkBanned === true &&
+        getEffectiveUserNetworkId(u) === cleanNet
+    );
+    if (matchedBannedUser) return true;
+  }
+  return false;
+}
+
+/**
+ * Pure function: Applies an Account Ban (`حظر حساب`), Network Ban (`حظر شبكة`), or Unban (`فك الحظر`)
+ * to a target user and synchronizes the global ban lists in `PlatformSettings`.
+ */
+export function applyUserBanAction(params: {
+  users: UserAccount[];
+  settings: PlatformSettings;
+  targetUserId: string;
+  banAccount: boolean;
+  banNetwork: boolean;
+  reason?: string;
+  nowIso?: string;
+}): {
+  users: UserAccount[];
+  settings: PlatformSettings;
+  updatedUser: UserAccount | null;
+} {
+  const { users, settings, targetUserId, banAccount, banNetwork } = params;
+  const nowIso = params.nowIso || new Date().toISOString();
+  const target = users.find((u) => u.id === targetUserId) || null;
+
+  if (!target || isSuperAdminUser(target)) {
+    return { users, settings, updatedUser: null };
+  }
+
+  const effectiveBanAccount = Boolean(banAccount || banNetwork);
+  const effectiveBanNetwork = Boolean(banNetwork);
+  const netId = getEffectiveUserNetworkId(target);
+  const emailLower = target.email.trim().toLowerCase();
+  const cleanReason =
+    typeof params.reason === 'string' && params.reason.trim()
+      ? params.reason.trim()
+      : effectiveBanNetwork
+        ? 'حظر شبكة وحساب نهائي من الإدارة (Network & Account Ban)'
+        : effectiveBanAccount
+          ? 'حظر حساب من الإدارة (Account Ban)'
+          : '';
+
+  const updatedUser: UserAccount = effectiveBanAccount
+    ? {
+        ...target,
+        role: 'user',
+        isSuperAdmin: false,
+        adminPermissions: [],
+        adminBadgeTitle: '',
+        adminGrantedAt: '',
+        isPro: false,
+        allowScreenCapture: false,
+        isBanned: true,
+        networkBanned: effectiveBanNetwork,
+        banReason: cleanReason,
+        bannedAt: target.bannedAt || nowIso,
+        networkId: netId,
+      }
+    : {
+        ...target,
+        isBanned: false,
+        networkBanned: false,
+        banReason: undefined,
+        bannedAt: undefined,
+        networkId: netId,
+      };
+
+  const nextUsers = users.map((u) => (u.id === targetUserId ? updatedUser : u));
+
+  const prevNetIds = new Set(
+    (settings.bannedNetworkIds || []).map((n) => n.trim().toUpperCase()).filter(Boolean)
+  );
+  const prevUserIds = new Set((settings.bannedUserIds || []).filter(Boolean));
+  const prevEmails = new Set(
+    (settings.bannedEmails || []).map((e) => e.trim().toLowerCase()).filter(Boolean)
+  );
+
+  if (effectiveBanAccount) {
+    prevUserIds.add(target.id);
+    if (emailLower) prevEmails.add(emailLower);
+  } else {
+    prevUserIds.delete(target.id);
+    if (emailLower) prevEmails.delete(emailLower);
+  }
+
+  if (effectiveBanNetwork) {
+    prevNetIds.add(netId);
+  } else {
+    const otherStillNetBanned = nextUsers.some(
+      (u) =>
+        u.id !== target.id &&
+        !isSuperAdminUser(u) &&
+        u.networkBanned === true &&
+        getEffectiveUserNetworkId(u) === netId
+    );
+    if (!otherStillNetBanned) {
+      prevNetIds.delete(netId);
+    }
+  }
+
+  const nextSettings: PlatformSettings = {
+    ...settings,
+    bannedNetworkIds: Array.from(prevNetIds),
+    bannedUserIds: Array.from(prevUserIds),
+    bannedEmails: Array.from(prevEmails),
+  };
+
+  return {
+    users: nextUsers,
+    settings: nextSettings,
+    updatedUser,
+  };
+}
+
+/**
+ * Pure function: Evaluates whether the current visitor / user is blocked from accessing the entire platform.
+ * Note: An authenticated Super Admin (`isSuperAdminUser(currentUser)`) is never locked out of their active session
+ * unless they explicitly activate `previewBlockMode` to test the lockdown screen.
+ */
+export function evaluatePlatformAccessBlock(params: {
+  currentUser: UserAccount | null | undefined;
+  settings: PlatformSettings;
+  users: UserAccount[];
+  clientNetworkId: string;
+  previewBlockMode?: 'account' | 'network' | null;
+}): {
+  blocked: boolean;
+  blockType: 'network' | 'account' | null;
+  reason: string;
+  networkId: string;
+  bannedEmail?: string;
+  isPreview: boolean;
+} {
+  const { currentUser, settings, users, clientNetworkId, previewBlockMode } = params;
+  const effectiveNetId =
+    (currentUser && getEffectiveUserNetworkId(currentUser)) ||
+    clientNetworkId ||
+    'NET-0000-GUEST';
+
+  if (previewBlockMode === 'network' || previewBlockMode === 'account') {
+    return {
+      blocked: true,
+      blockType: previewBlockMode,
+      reason:
+        previewBlockMode === 'network'
+          ? 'معاينة حظر الشبكة النهائي — يمنع دخول المنصة بالكامل من هذه الشبكة أو الجهاز'
+          : 'معاينة حظر الحساب النهائي — يمنع الحساب من الدخول أو استخدام أي أداة بالمنصة',
+      networkId: effectiveNetId,
+      bannedEmail: currentUser?.email || 'user@example.com',
+      isPreview: true,
+    };
+  }
+
+  if (currentUser && isSuperAdminUser(currentUser)) {
+    return {
+      blocked: false,
+      blockType: null,
+      reason: '',
+      networkId: effectiveNetId,
+      isPreview: false,
+    };
+  }
+
+  const isClientNetBanned = isNetworkIdBanned(clientNetworkId, settings, users);
+  const isUserNetBanned = Boolean(
+    currentUser &&
+      (currentUser.networkBanned === true ||
+        isNetworkIdBanned(getEffectiveUserNetworkId(currentUser), settings, users))
+  );
+
+  if (isClientNetBanned || isUserNetBanned) {
+    const matchedUser =
+      currentUser ||
+      users.find(
+        (u) =>
+          !isSuperAdminUser(u) &&
+          u.networkBanned &&
+          getEffectiveUserNetworkId(u) === clientNetworkId.trim().toUpperCase()
+      ) ||
+      null;
+    return {
+      blocked: true,
+      blockType: 'network',
+      reason:
+        matchedUser?.banReason ||
+        'تم حظر هذه الشبكة والجهاز نهائياً من دخول المنصة بقرار من الإدارة.',
+      networkId: matchedUser ? getEffectiveUserNetworkId(matchedUser) : effectiveNetId,
+      bannedEmail: matchedUser?.email,
+      isPreview: false,
+    };
+  }
+
+  if (currentUser && isUserAccountBanned(currentUser, settings)) {
+    return {
+      blocked: true,
+      blockType: 'account',
+      reason:
+        currentUser.banReason ||
+        'تم حظر هذا الحساب نهائياً من دخول المنصة واستخدام أدواتها بقرار من الإدارة.',
+      networkId: effectiveNetId,
+      bannedEmail: currentUser.email,
+      isPreview: false,
+    };
+  }
+
+  return {
+    blocked: false,
+    blockType: null,
+    reason: '',
+    networkId: effectiveNetId,
+    isPreview: false,
+  };
 }
 
 /**
@@ -1331,6 +1700,33 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         adminPermissions: [...ALL_ADMIN_PERMISSION_KEYS],
         allowScreenCapture: true,
         isPro: true,
+        isBanned: false,
+        networkBanned: false,
+        banReason: undefined,
+        bannedAt: undefined,
+        networkId: getEffectiveUserNetworkId(u),
+      };
+    }
+    const isBannedAcc = Boolean(u.isBanned || u.networkBanned);
+    const isNetBannedAcc = Boolean(u.networkBanned);
+    const resolvedNetId = getEffectiveUserNetworkId(u);
+    if (isBannedAcc) {
+      return {
+        ...u,
+        name: cleanName,
+        nameLocked: isNameLocked,
+        role: 'user',
+        isSuperAdmin: false,
+        adminPermissions: [],
+        adminBadgeTitle: '',
+        adminGrantedAt: '',
+        isPro: false,
+        allowScreenCapture: false,
+        isBanned: true,
+        networkBanned: isNetBannedAcc,
+        banReason: u.banReason || (isNetBannedAcc ? 'حظر شبكة وحساب نهائي' : 'حظر حساب'),
+        bannedAt: u.bannedAt || u.createdAt,
+        networkId: resolvedNetId,
       };
     }
     const validPerms = Array.isArray(u.adminPermissions)
@@ -1347,6 +1743,9 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
         adminBadgeTitle: '',
         adminGrantedAt: '',
         allowScreenCapture: Boolean(u.allowScreenCapture),
+        isBanned: false,
+        networkBanned: false,
+        networkId: resolvedNetId,
       };
     }
     return {
@@ -1357,6 +1756,9 @@ export function sanitizeUsersList(rawUsers: UserAccount[], deletedIds: string[] 
       isSuperAdmin: false,
       adminPermissions: validPerms,
       allowScreenCapture: Boolean(u.allowScreenCapture),
+      isBanned: false,
+      networkBanned: false,
+      networkId: resolvedNetId,
     };
   });
 }

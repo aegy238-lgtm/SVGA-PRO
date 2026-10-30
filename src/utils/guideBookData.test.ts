@@ -16,6 +16,7 @@ test('shouldShowGuideBookButton returns true only on home view and hides on all 
   assert.equal(shouldShowGuideBookButton('editor'), false);
   assert.equal(shouldShowGuideBookButton('gifts'), false);
   assert.equal(shouldShowGuideBookButton('gift-image'), false);
+  assert.equal(shouldShowGuideBookButton('gold-designer'), false);
 });
 
 test('isQuickExportKeyEvent detects Tab, ArrowLeft, and ControlLeft when not typing in text inputs or open modals', () => {
@@ -78,8 +79,8 @@ test('isQuickExportKeyEvent detects Tab, ArrowLeft, and ControlLeft when not typ
   }
 });
 
-test('GUIDE_BOOK_CHAPTERS documents all platform features including Smart Duplicate Detection, ZIP Extraction, and PRO Free Attempts', () => {
-  assert.equal(GUIDE_BOOK_CHAPTERS.length, 5);
+test('GUIDE_BOOK_CHAPTERS documents all platform features including Smart Duplicate Detection, ZIP Extraction, PRO Free Attempts, and 3D Gold Name Designer', () => {
+  assert.equal(GUIDE_BOOK_CHAPTERS.length, 6);
   const chapterIds = GUIDE_BOOK_CHAPTERS.map((c) => c.id);
   assert.deepEqual(chapterIds, [
     'motion_converter',
@@ -87,6 +88,7 @@ test('GUIDE_BOOK_CHAPTERS documents all platform features including Smart Duplic
     'gift_image_creator',
     'svga_ae_editor',
     'pro_and_system',
+    'gold_name_designer',
   ]);
 
   for (const ch of GUIDE_BOOK_CHAPTERS) {

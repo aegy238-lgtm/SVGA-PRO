@@ -6,6 +6,7 @@ import EdgeFeatherModal from './components/EdgeFeatherModal';
 import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
+import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
 import { BatchOperationsState } from './utils/batchImageOps';
 import { AppliedWatermarkLayer } from './utils/watermark';
 import {
@@ -50,6 +51,8 @@ import {
   consumeFeatureFreeAttempt,
   normalizeProFeatureRules,
   PRO_TOOLS_DEFINITIONS,
+  evaluatePlatformAccessBlock,
+  getClientNetworkId,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -102,6 +105,15 @@ export default function App() {
   const [activeView, setActiveView] = useState<string>('home');
   const [leftClickExportEnabled] = useState<boolean>(true);
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
+  const [previewBlockMode, setPreviewBlockMode] = useState<'account' | 'network' | null>(null);
+  const clientNetworkId = getClientNetworkId();
+  const accessBlock = evaluatePlatformAccessBlock({
+    currentUser,
+    settings,
+    users,
+    clientNetworkId,
+    previewBlockMode,
+  });
 
   const stateRef = useRef(platformState);
   stateRef.current = platformState;
@@ -857,6 +869,14 @@ export default function App() {
           e.preventDefault();
           svgaExportBtn.click();
         }
+      } else if (currentOnView === 'gold-designer') {
+        const goldExportBtn = document.getElementById(
+          'exportGoldPngWhiteBtn'
+        ) as HTMLButtonElement | null;
+        if (goldExportBtn && !goldExportBtn.disabled) {
+          e.preventDefault();
+          goldExportBtn.click();
+        }
       }
     };
 
@@ -1038,6 +1058,12 @@ export default function App() {
     settings,
     adminPreviewRole
   );
+  const goldDesignerAttemptStatus = getFeatureFreeAttemptsStatus(
+    'gold_designer',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
 
   // Sync Pro Feature Attempt status to Gift Studio iframe
   useEffect(() => {
@@ -1141,7 +1167,7 @@ export default function App() {
 
   return (
     <>
-      <nav>
+      <nav style={{ position: 'relative', zIndex: 200 }}>
         <div className="logo" style={{ cursor: 'pointer' }} data-v="home">
           {safeNavbarLogoUrl ? (
             <img
@@ -1210,6 +1236,32 @@ export default function App() {
           >
             <span>{t.navGiftImageCreator}</span>
             {renderNavProBadge(giftImageAttemptStatus)}
+          </a>
+          <a
+            data-v="gold-designer"
+            id="goldDesignerNavBtn"
+            style={{
+              padding: '3px 10px',
+              borderRadius: '7px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              background: '#14141c',
+              border: '1px solid #1e1e28',
+              fontWeight: 600,
+              transition: 'border-color 0.15s ease, color 0.15s ease',
+            }}
+          >
+            <span dir={isAr ? 'rtl' : 'ltr'}>
+              {isAr ? (
+                <>
+                  مصمم الأسماء <bdi>3D</bdi>
+                </>
+              ) : (
+                '3D Name Designer'
+              )}
+            </span>
+            {renderNavProBadge(goldDesignerAttemptStatus)}
           </a>
         </div>
 
@@ -1645,12 +1697,14 @@ export default function App() {
                 <path d="M12 21v-8M9 15l3-3 3 3" />
               </svg>
             </button>
-            <button
-              className="pill"
-              onClick={() => document.getElementById('file')?.click()}
-            >
-              {t.heroOpenBtn}
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                className="pill"
+                onClick={() => document.getElementById('file')?.click()}
+              >
+                {t.heroOpenBtn}
+              </button>
+            </div>
             <input
               type="file"
               id="file"
@@ -2363,6 +2417,21 @@ export default function App() {
             }}
           />
         </section>
+
+        <section className="view" id="gold-designer" style={{ height: '100%', overflow: 'hidden' }}>
+          <GoldNameDesignerStudio
+            isAr={isAr}
+            attemptStatus={goldDesignerAttemptStatus}
+            isPro={effectiveIsPro}
+            onRequirePro={(key) => {
+              setBlockedFormatKey(key || 'gold_designer');
+              setProModalOpen(true);
+            }}
+            onConsumeAttempt={() => {
+              return (window as any).__consumeFeatureAttempt?.('gold_designer');
+            }}
+          />
+        </section>
       </main>
 
       {/* Edge Feather Modal */}
@@ -2465,7 +2534,255 @@ export default function App() {
         onChangePreviewRole={(role) =>
           updatePlatformState((prev) => ({ ...prev, adminPreviewRole: role }))
         }
+        onPreviewBanScreen={(mode) => {
+          setAdminOpen(false);
+          setPreviewBlockMode(mode);
+        }}
       />
+
+      {/* Permanent Account Ban & Network Ban Full-Screen Platform Lockdown */}
+      {accessBlock.blocked && (
+        <div
+          id="platformBanLockdownScreen"
+          role="alertdialog"
+          aria-modal="true"
+          dir={isAr ? 'rtl' : 'ltr'}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 999990,
+            background:
+              'radial-gradient(circle at 50% 25%, rgba(153, 27, 27, 0.35) 0%, rgba(8, 8, 14, 0.98) 65%, #050508 100%)',
+            backdropFilter: 'blur(32px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            textAlign: 'center',
+            color: '#fff',
+          }}
+        >
+          <div
+            style={{
+              width: 'min(580px, 95vw)',
+              background: 'linear-gradient(180deg, rgba(24, 14, 22, 0.96) 0%, rgba(12, 12, 20, 0.98) 100%)',
+              border: '1px solid rgba(239, 68, 68, 0.55)',
+              borderRadius: '22px',
+              padding: '32px 26px',
+              boxShadow: '0 28px 90px rgba(0, 0, 0, 0.9), 0 0 60px rgba(239, 68, 68, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '14px',
+            }}
+          >
+            <div
+              style={{
+                width: '84px',
+                height: '84px',
+                borderRadius: '24px',
+                background: 'rgba(239, 68, 68, 0.18)',
+                border: '2px solid #ef4444',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '40px',
+                boxShadow: '0 0 40px rgba(239, 68, 68, 0.45)',
+              }}
+            >
+              {accessBlock.blockType === 'network' ? '🌐🚫' : '🚫'}
+            </div>
+
+            <span
+              style={{
+                background: 'rgba(239, 68, 68, 0.22)',
+                border: '1px solid #ef4444',
+                color: '#fecaca',
+                padding: '4px 14px',
+                borderRadius: '99px',
+                fontSize: '12px',
+                fontWeight: 900,
+              }}
+            >
+              {accessBlock.blockType === 'network'
+                ? isAr
+                  ? '⛔ حظر شبكة وجهاز نهائي — Network & IP Ban'
+                  : '⛔ Permanent Network & Device Ban'
+                : isAr
+                  ? '🚫 حظر حساب نهائي — Account Banned'
+                  : '🚫 Permanent Account Ban'}
+            </span>
+
+            <h2
+              style={{
+                margin: '4px 0 0',
+                fontSize: '23px',
+                fontWeight: 900,
+                color: '#fca5a5',
+                lineHeight: 1.35,
+              }}
+            >
+              {accessBlock.blockType === 'network'
+                ? isAr
+                  ? 'تم حظر شبكتك وحسابك نهائياً من دخول المنصة!'
+                  : 'Your Network & Account Are Permanently Banned From This Platform!'
+                : isAr
+                  ? 'تم حظر حسابك نهائياً من دخول المنصة!'
+                  : 'Your Account Has Been Permanently Banned From This Platform!'}
+            </h2>
+
+            <p
+              style={{
+                margin: 0,
+                fontSize: '14px',
+                color: '#cbd5e1',
+                lineHeight: 1.65,
+                maxWidth: '480px',
+                fontWeight: 600,
+              }}
+            >
+              {accessBlock.reason}
+            </p>
+
+            {/* Technical Security Details Box */}
+            <div
+              style={{
+                width: '100%',
+                background: 'rgba(10, 10, 18, 0.85)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'space-between',
+                gap: '10px',
+                fontSize: '12px',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              <div>
+                <span style={{ color: '#94a3b8' }}>
+                  {isAr ? 'معرف الشبكة المحظور:' : 'Blocked Network ID:'}{' '}
+                </span>
+                <b style={{ fontFamily: 'monospace', color: '#fca5a5' }}>{accessBlock.networkId}</b>
+              </div>
+              {accessBlock.bannedEmail && (
+                <div>
+                  <span style={{ color: '#94a3b8' }}>
+                    {isAr ? 'الحساب:' : 'Account:'}{' '}
+                  </span>
+                  <b style={{ color: '#fecaca' }}>{accessBlock.bannedEmail}</b>
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '10px',
+                justifyContent: 'center',
+                width: '100%',
+                marginTop: '6px',
+              }}
+            >
+              {accessBlock.isPreview ? (
+                <button
+                  type="button"
+                  id="exitBanPreviewBtn"
+                  onClick={() => {
+                    setPreviewBlockMode(null);
+                    setAdminOpen(true);
+                  }}
+                  style={{
+                    padding: '11px 22px',
+                    borderRadius: '10px',
+                    border: '1px solid #10b981',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: '#fff',
+                    fontWeight: 800,
+                    fontSize: '13.5px',
+                    cursor: 'pointer',
+                    boxShadow: '0 6px 20px rgba(16, 185, 129, 0.35)',
+                  }}
+                >
+                  🔙 {isAr ? 'إنهاء المعاينة والعودة للوحة التحكم' : 'Exit Preview & Return to Dashboard'}
+                </button>
+              ) : (
+                <>
+                  {whatsappUrl && (
+                    <a
+                      href={whatsappUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        padding: '11px 20px',
+                        borderRadius: '10px',
+                        background: 'linear-gradient(135deg, #25D366, #16a34a)',
+                        color: '#042f16',
+                        fontWeight: 800,
+                        fontSize: '13px',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span>💬</span>
+                      <span>
+                        {isAr ? 'التواصل مع الإدارة عبر واتساب' : 'Contact Support via WhatsApp'}
+                      </span>
+                    </a>
+                  )}
+
+                  {accessBlock.blockType === 'account' && currentUser && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updatePlatformState((prev) => ({
+                          ...prev,
+                          currentUserId: null,
+                          adminPreviewRole: 'free_user',
+                        }))
+                      }
+                      style={{
+                        padding: '11px 18px',
+                        borderRadius: '10px',
+                        border: '1px solid #475569',
+                        background: '#1e293b',
+                        color: '#e2e8f0',
+                        fontWeight: 700,
+                        fontSize: '12.5px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      🔄 {isAr ? 'تسجيل الخروج من الحساب المحظور' : 'Sign Out of Banned Account'}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    id="adminRecoveryFromBanScreenBtn"
+                    onClick={() => setAuthOpen(true)}
+                    style={{
+                      padding: '11px 16px',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(124, 92, 255, 0.4)',
+                      background: 'rgba(124, 92, 255, 0.14)',
+                      color: '#c4b5fd',
+                      fontWeight: 700,
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔑 {isAr ? 'دخول الإدارة (Admin Login)' : 'Admin Login'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Screen Security & Anti-Recording Shield Overlay */}
       {screenShieldActive && isSecurityEnforced && (

@@ -124,6 +124,18 @@ export function initMotionToolsFixed() {
     } catch (e) {}
   }
   (window as any).__showNavView = show;
+  const syncViewFromHash = () => {
+    const rawHash = (location.hash || '').replace(/^#/, '').trim();
+    if (
+      rawHash &&
+      ['home', 'convert', 'editor', 'gifts', 'gift-image', 'gold-designer'].includes(rawHash)
+    ) {
+      show(rawHash);
+    }
+  };
+  window.addEventListener('hashchange', syncViewFromHash);
+  setTimeout(syncViewFromHash, 0);
+
   document.addEventListener('click', (e) => {
     const a = (e.target as HTMLElement | null)?.closest?.('[data-v]') as HTMLElement | null;
     if (a) {
@@ -182,16 +194,19 @@ export function initMotionToolsFixed() {
   fi.onchange = () => fi.files[0] && load(fi.files[0]);
   ['dragover', 'dragenter'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, or Editor tab
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
+        document.getElementById('gold-designer')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
+        location.hash === '#gold-designer' ||
         location.hash === '#editor' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
+        e.target?.closest?.('#gold-designer') ||
         e.target?.closest?.('#editor') ||
         e.defaultPrevented
       ) {
@@ -203,16 +218,19 @@ export function initMotionToolsFixed() {
   );
   ['dragleave', 'drop'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, or Editor tab
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
+        document.getElementById('gold-designer')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
+        location.hash === '#gold-designer' ||
         location.hash === '#editor' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
+        e.target?.closest?.('#gold-designer') ||
         e.target?.closest?.('#editor') ||
         e.defaultPrevented
       ) {

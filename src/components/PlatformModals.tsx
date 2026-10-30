@@ -19,6 +19,10 @@ import {
   getUserProSubscriptionInfo,
   resolveAuthenticatedUserOnLogin,
   PRO_TOOLS_DEFINITIONS,
+  getClientNetworkId,
+  getEffectiveUserNetworkId,
+  isNetworkIdBanned,
+  isUserAccountBanned,
 } from '../utils/platformStore';
 import { getTranslation } from '../utils/i18n';
 import { fetchFirestoreUsers } from '../utils/firebase';
@@ -648,6 +652,33 @@ export function UserAuthModal({
         return;
       }
 
+      const clientNetId = getClientNetworkId();
+      const targetNetId = getEffectiveUserNetworkId(found);
+
+      // Block login if account or network is banned (Super Admin is always exempt so owner can manage platform)
+      if (!isSuperAdminUser(found)) {
+        if (
+          found.networkBanned === true ||
+          isNetworkIdBanned(targetNetId, state.settings, state.users) ||
+          isNetworkIdBanned(clientNetId, state.settings, state.users)
+        ) {
+          setErrorMsg(
+            isAr
+              ? `🌐🚫 تم حظر هذه الشبكة وهذا الحساب نهائياً من دخول المنصة بقرار من الإدارة (${targetNetId}). لا يمكنك تسجيل الدخول أو استخدام المنصة.`
+              : `🌐🚫 This network and account (${targetNetId}) have been permanently banned from accessing the platform.`
+          );
+          return;
+        }
+        if (isUserAccountBanned(found, state.settings)) {
+          setErrorMsg(
+            isAr
+              ? `🚫 تم حظر هذا الحساب نهائياً من دخول المنصة بقرار من الإدارة.${found.banReason ? ` السبب: ${found.banReason}` : ''}`
+              : `🚫 This account has been permanently banned from accessing the platform.${found.banReason ? ` Reason: ${found.banReason}` : ''}`
+          );
+          return;
+        }
+      }
+
       if (!verifyUserPassword(found, pwdClean)) {
         const failRes = recordFailedLoginAttempt(emailClean);
         setErrorMsg(
@@ -667,15 +698,18 @@ export function UserAuthModal({
       // Check if this account has never chosen a display name (e.g. blank name or explicitly unlocked)
       const existingCleanName = typeof found.name === 'string' ? found.name.replace(/[<>]/g, '').trim() : '';
       if (!existingCleanName || found.nameLocked === false) {
-        setPendingFirstTimeUser(found);
+        setPendingFirstTimeUser({ ...found, networkId: found.networkId || clientNetId });
         setFullName('');
         return;
       }
 
       // Account already has its locked name -> NEVER ask for or overwrite the name on login!
-      const finalAuthenticatedUser = resolveAuthenticatedUserOnLogin(found);
+      const finalAuthenticatedUser: UserAccount = {
+        ...resolveAuthenticatedUserOnLogin(found),
+        networkId: found.networkId || clientNetId,
+      };
 
-      if (isFromRemote || found.nameLocked !== true) {
+      if (isFromRemote || found.nameLocked !== true || !found.networkId) {
         onRegisterUser(finalAuthenticatedUser);
       }
 
@@ -687,6 +721,26 @@ export function UserAuthModal({
         onOpenAdminDashboard();
       }
     } else {
+      const clientNetId = getClientNetworkId();
+      if (isNetworkIdBanned(clientNetId, state.settings, state.users)) {
+        setErrorMsg(
+          isAr
+            ? `🌐🚫 لا يمكن إنشاء حساب جديد: تم حظر هذه الشبكة (${clientNetId}) نهائياً من دخول المنصة.`
+            : `🌐🚫 Cannot create a new account: This network (${clientNetId}) is permanently banned from the platform.`
+        );
+        return;
+      }
+      if (
+        Array.isArray(state.settings.bannedEmails) &&
+        state.settings.bannedEmails.some((e) => e.trim().toLowerCase() === emailClean)
+      ) {
+        setErrorMsg(
+          isAr
+            ? '🚫 هذا البريد الإلكتروني محظور نهائياً من التسجيل أو دخول المنصة.'
+            : '🚫 This email address is permanently banned from registering or accessing the platform.'
+        );
+        return;
+      }
       if (pwdClean.length < 6) {
         setErrorMsg(
           isAr
@@ -723,6 +777,7 @@ export function UserAuthModal({
         role: 'user',
         isPro: false,
         createdAt: new Date().toISOString(),
+        networkId: clientNetId,
       };
       onRegisterUser(newUser);
       onLoginSuccess(newUser.id);

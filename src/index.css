@@ -36,9 +36,9 @@ body.screen-shield-active img {
 }
 button,input,select,textarea{font:inherit;color:inherit}
 input,textarea{-webkit-user-select:text;user-select:text}
-nav{height:40px;flex-shrink:0;display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel);position:relative;z-index:5}
+nav{height:40px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel);position:relative;z-index:5}
 .logo{font-weight:700;display:flex;gap:8px;align-items:center}.logo i{width:18px;height:18px;border-radius:50%;background:var(--ac);display:block}
-nav .links{display:flex;gap:16px;margin:auto;overflow-x:auto;white-space:nowrap}
+nav .links{display:flex;gap:6px;margin:auto;overflow-x:auto;white-space:nowrap}
 nav a{color:var(--mu);text-decoration:none;cursor:pointer;font-size:12px}nav a.on,nav a:hover{color:var(--tx)}
 .plug{border:1px solid var(--ac);color:var(--ac2)!important;padding:3px 10px;border-radius:99px}
 .av{width:24px;height:24px;border-radius:50%;background:var(--line);display:grid;place-items:center;font-size:11px}
