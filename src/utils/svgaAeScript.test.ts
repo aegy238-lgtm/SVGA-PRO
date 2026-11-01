@@ -58,3 +58,64 @@ test('Matrix affine decomposition logic preserves shear & scale for After Effect
   assert.equal(Math.round(scaleResult[2]), 200);
   assert.equal(Math.round(scaleResult[3]), 200);
 });
+
+test('createAePackage generates valid JSX, assets folder, and metadata zip package', async () => {
+  const { createAePackage } = await import('../services/svgaAeExport');
+  const JSZip = (await import('jszip')).default;
+
+  // Minimal 1x1 PNG bytes for testing
+  const dummyPng = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+    0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+    137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+    31, 0, 5, 0, 1, 255, 89, 77, 24, 84, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130
+  ]);
+
+  const mockMovie = {
+    version: '2.0',
+    params: {
+      viewBoxWidth: 500,
+      viewBoxHeight: 500,
+      fps: 30,
+      frames: 10,
+    },
+    images: {
+      'icon_star': dummyPng,
+    },
+    sprites: [
+      {
+        imageKey: 'icon_star',
+        frames: [
+          { alpha: 1, transform: { a: 1, b: 0, c: 0, d: 1, tx: 10, ty: 20 } },
+          { alpha: 0.8, transform: { a: 1.1, b: 0, c: 0, d: 1.1, tx: 15, ty: 25 } },
+        ],
+      },
+    ],
+    audios: [],
+  };
+
+  const progressUpdates: number[] = [];
+  const pkg = await createAePackage(mockMovie, 'Test_Gift', (p) => progressUpdates.push(p), { bakeClips: false });
+
+  assert.ok(pkg.blob, 'Package must produce a blob');
+  assert.equal(pkg.name, 'Test_Gift');
+  assert.equal(pkg.zipFileName, 'Test_Gift-AfterEffects.zip');
+  assert.ok(pkg.jsx.includes('#target aftereffects'));
+  assert.ok(pkg.jsx.includes('aeImporter'));
+  assert.ok(progressUpdates.length > 0, 'Progress callback must have been called');
+
+  // Verify contents inside the generated zip
+  const zip = await JSZip.loadAsync(await pkg.blob.arrayBuffer());
+  const files = Object.keys(zip.files);
+
+  assert.ok(files.some(f => f.endsWith('Test_Gift.jsx')), 'ZIP must contain Test_Gift.jsx');
+  assert.ok(files.some(f => f.endsWith('assets_info.json')), 'ZIP must contain assets_info.json');
+  assert.ok(files.some(f => f.endsWith('README.txt')), 'ZIP must contain README.txt');
+  assert.ok(files.some(f => f.includes('assets/')), 'ZIP must contain assets/ folder');
+
+  const assetsInfoStr = await zip.file('Test_Gift-assets/assets_info.json')?.async('string');
+  assert.ok(assetsInfoStr, 'assets_info.json must be readable');
+  const info = JSON.parse(assetsInfoStr!);
+  assert.equal(info.baseFileName, 'Test_Gift');
+  assert.equal(info.totalImages, 1);
+});

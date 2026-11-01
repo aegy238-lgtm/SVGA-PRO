@@ -375,6 +375,9 @@ export interface PlatformSettings {
   siteLogoUrl: string; // empty string = default gradient dot logo, or DataURL / https URL
   brandingUpdatedAt?: string;
   logoExplicitlyRemoved?: boolean;
+  isSiteClosed?: boolean; // إغلاق الموقع عن جميع المستخدمين والزوار (Site Maintenance / Closed)
+  siteClosedMessageAr?: string;
+  siteClosedMessageEn?: string;
   proPackageNameAr: string;
   proPackageNameEn: string;
   proPrice: string;
@@ -421,6 +424,9 @@ export interface PlatformState {
 export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   siteName: 'MotionTools',
   siteLogoUrl: '',
+  isSiteClosed: false,
+  siteClosedMessageAr: 'الموقع مغلق الآن',
+  siteClosedMessageEn: 'The site is currently closed',
   proPackageNameAr: 'أدوات برو (Pro Tools)',
   proPackageNameEn: 'Pro Tools Package',
   proPrice: '15',

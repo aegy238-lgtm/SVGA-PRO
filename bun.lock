@@ -19,6 +19,7 @@
         "protobufjs": "^8.8.1",
         "react": "^19.0.1",
         "react-dom": "^19.0.1",
+        "svg-pathdata": "^9.0.0",
         "svga.lite": "^1.6.1",
         "upng-js": "^2.1.0",
         "vite": "^8.3.0",
@@ -659,6 +660,8 @@
     "string_decoder": ["string_decoder@1.1.1", "", { "dependencies": { "safe-buffer": "~5.1.0" } }, "sha512-n/ShnvDi6FHbbVfviro+WojiFzv+s8MPMHBczVePfUpDJLwoLT0ht1l4YwBCbi8pJAveEEdnkHyPyTP/mzRfwg=="],
 
     "strip-ansi": ["strip-ansi@6.0.1", "", { "dependencies": { "ansi-regex": "^5.0.1" } }, "sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A=="],
+
+    "svg-pathdata": ["svg-pathdata@9.0.0", "", {}, "sha512-h9FuqmNsgDKq2hQBqTMOWjZwqdZOnWijZmcg6FL4iSmH6VvRnobhHrBQSdOiP0W9nwgv0qiW5vQ3//Arrmp19g=="],
 
     "svga.lite": ["svga.lite@1.6.1", "", {}, "sha512-imw16yqYG13i6gTmSIvFeZWiJ8o/S+WkmmA/qtCjV8GZqfFdOIB7KG3GBG3NrcMylXTf25nvHO/5Fed4l4AITg=="],
 

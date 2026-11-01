@@ -276,6 +276,26 @@ export default function AdminDashboardModal({
     setTimeout(() => setSaveFeedback(''), 2800);
   };
 
+  const handleToggleSiteClosed = async () => {
+    const curSettings = latestSettingsRef.current;
+    const nextClosed = !curSettings.isSiteClosed;
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
+      isSiteClosed: nextClosed,
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    await syncSettingsToFirestore(nextSettings);
+    showSavedFeedback(
+      nextClosed
+        ? '🔒 تم إغلاق الموقع وإظهار صفحة (الموقع مغلق الآن) لجميع الزوار والمستخدمين ✓'
+        : '🟢 تم إعادة فتح الموقع لجميع الزوار والمستخدمين بنجاح ✓',
+      nextClosed
+        ? 'Site closed for all visitors (Maintenance screen active) ✓'
+        : 'Site re-opened for all users ✓'
+    );
+  };
+
   const handleSelectUserForPermissions = (userId: string) => {
     setSelectedModUserId(userId);
     setActiveTab('admins_security');
@@ -1405,6 +1425,49 @@ export default function AdminDashboardModal({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            {/* Toggle Site Closed / Open Button */}
+            <button
+              type="button"
+              id="toggleSiteClosedBtn"
+              onClick={handleToggleSiteClosed}
+              title={
+                settings.isSiteClosed
+                  ? isAr
+                    ? 'الموقع مغلق حالياً عن جميع الزوار والمستخدمين — انقر لإعادة الفتح'
+                    : 'Site is currently closed — click to re-open'
+                  : isAr
+                    ? 'إغلاق الموقع وتفعيل صفحة الصيانة لجميع الزوار والمستخدمين'
+                    : 'Close site and enable maintenance screen for all visitors'
+              }
+              style={{
+                padding: '6px 14px',
+                borderRadius: '10px',
+                border: settings.isSiteClosed
+                  ? '1px solid rgba(16, 185, 129, 0.6)'
+                  : '1px solid rgba(239, 68, 68, 0.6)',
+                background: settings.isSiteClosed
+                  ? 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
+                  : 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)',
+                color: '#fff',
+                fontWeight: 800,
+                fontSize: '12.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: settings.isSiteClosed
+                  ? '0 4px 14px rgba(16, 185, 129, 0.35)'
+                  : '0 4px 14px rgba(239, 68, 68, 0.35)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {settings.isSiteClosed ? (
+                <>🟢 {isAr ? 'فتح الموقع' : 'Open Site'}</>
+              ) : (
+                <>🔒 {isAr ? 'إغلاق الموقع' : 'Close Site'}</>
+              )}
+            </button>
+
             {/* Quick Preview Role Switcher for Admin */}
             <div
               style={{

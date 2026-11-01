@@ -60,6 +60,7 @@ import {
   applyChromaKeyToContext,
   applyChromaKeyToRgbaBuffer,
 } from '../utils/chromaKey';
+import { exportSvgaToAfterEffectsDirect } from '../services/svgaAeExport';
 
 let initialized = false;
 
@@ -5097,24 +5098,82 @@ export function initMotionToolsFixed() {
             $('#fmt').value = F;
           }
         }
-        const exportAeScriptPackage = async (file: any) => {
-          status('جاري قراءة ملف SVGA وتجهيز سكريبت After Effects...');
+        const exportAeScriptPackage = async (fileInput?: any) => {
+          const file = fileInput || cur || (window as any).__currentMotionFile;
+          if (!file) {
+            status('يرجى اختيار أو رفع ملف SVGA أولاً.');
+            toast('يرجى اختيار أو رفع ملف SVGA أولاً');
+            return;
+          }
+          const updateProgressUI = (percent: number, text: string) => {
+            const safePercent = Math.min(100, Math.max(0, Math.round(Number(percent) || 0)));
+            const msgText = text || 'جاري المعالجة...';
+            status(`[${safePercent}%] ${msgText}`);
+            if (btn) {
+              btn.textContent = `⏳ [${safePercent}%] ${msgText}`;
+            }
+            const stEl = document.getElementById('exportStatus');
+            if (stEl) {
+              stEl.textContent = `[${safePercent}%] ${msgText}`;
+            }
+          };
+
+          // 1. Try Direct Native Engine first (Fastest, zero postMessage overhead, instant download)
+          try {
+            status('جاري قراءة ملف SVGA وتجهيز سكريبت After Effects...');
+            updateProgressUI(5, 'جاري تفكيك وتجهيز ملف SVGA...');
+            const result = await exportSvgaToAfterEffectsDirect(
+              file,
+              file.name.replace(/\.[^.]+$/i, ''),
+              updateProgressUI
+            );
+            status(`تم تحميل سكريبت وحزمة After Effects بنجاح: ${result.zipFileName}`);
+            toast('تم تصدير وتحميل حزمة After Effects بنجاح! ⚡');
+            return;
+          } catch (directErr: any) {
+            console.warn('Native AE export encountered issue, falling back to bridge iframe:', directErr);
+          }
+
+          // 2. Fallback to Bridge Iframe if native run failed
           return new Promise<void>((resolve, reject) => {
             let bridge = document.getElementById('aeScriptHiddenBridge') as HTMLIFrameElement | null;
             if (!bridge) {
               bridge = document.createElement('iframe');
               bridge.id = 'aeScriptHiddenBridge';
               bridge.src = '/svga-to-after-effects.html';
-              bridge.style.display = 'none';
+              bridge.style.position = 'fixed';
+              bridge.style.left = '-9999px';
+              bridge.style.top = '-9999px';
+              bridge.style.width = '1px';
+              bridge.style.height = '1px';
+              bridge.style.opacity = '0';
+              bridge.style.pointerEvents = 'none';
+              bridge.style.border = '0';
               document.body.appendChild(bridge);
             }
+            let sent = false;
             const onMsg = (event: MessageEvent) => {
-              if (event.data?.type === 'svga-ae-progress') {
-                status(`[${event.data.percent}%] ${event.data.text}`);
+              if (event.data?.type === 'svga-ae-ready' && !sent) {
+                send();
+              } else if (event.data?.type === 'svga-ae-progress') {
+                updateProgressUI(event.data.percent, event.data.text);
               } else if (event.data?.type === 'svga-ae-done') {
                 window.removeEventListener('message', onMsg);
-                status(`تم تحميل سكريبت وحزمة After Effects بنجاح: ${event.data.fileName || 'ملف ZIP'}`);
-                toast('تم تصدير وتحميل حزمة After Effects بنجاح!');
+                updateProgressUI(100, 'تم التصدير بنجاح!');
+                const fileName = event.data.fileName || `${file.name.replace(/\.[^.]+$/i, '')}-AfterEffects.zip`;
+                const blob = event.data?.blob;
+                if (blob) {
+                  const zipUrl = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = zipUrl;
+                  a.download = fileName;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
+                }
+                status(`تم تحميل سكريبت وحزمة After Effects بنجاح: ${fileName}`);
+                toast('تم تصدير وتحميل حزمة After Effects بنجاح! ⚡');
                 resolve();
               } else if (event.data?.type === 'svga-ae-error') {
                 window.removeEventListener('message', onMsg);
@@ -5124,14 +5183,17 @@ export function initMotionToolsFixed() {
             };
             window.addEventListener('message', onMsg);
             const send = () => {
+              if (sent) return;
+              sent = true;
               try {
+                updateProgressUI(5, 'جاري تفكيك وتجهيز ملف SVGA...');
                 bridge!.contentWindow?.postMessage(
                   {
                     type: 'svga-ae-export',
                     file,
                     name: file.name.replace(/\.[^.]+$/i, ''),
                   },
-                  window.location.origin
+                  '*'
                 );
               } catch (e) {
                 window.removeEventListener('message', onMsg);
@@ -5139,16 +5201,22 @@ export function initMotionToolsFixed() {
               }
             };
             if ((bridge as any).__loaded) {
-              send();
+              setTimeout(send, 50);
             } else {
               bridge.onload = () => {
                 (bridge as any).__loaded = true;
-                setTimeout(send, 200);
+                setTimeout(send, 100);
               };
-              setTimeout(send, 600);
+              setTimeout(() => {
+                try {
+                  bridge!.contentWindow?.postMessage({ type: 'svga-ae-ping' }, '*');
+                } catch (_) {}
+                setTimeout(send, 200);
+              }, 300);
             }
           });
         };
+        (window as any).__exportAeScriptPackage = exportAeScriptPackage;
         try {
           if (F === 'ae_script') await exportAeScriptPackage(cur);
           else if (F === 'vap' || F === 'yyeva') await exportVY(F);

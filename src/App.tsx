@@ -8,6 +8,7 @@ import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
+import SiteClosedScreen from './components/SiteClosedScreen';
 import { BatchOperationsState } from './utils/batchImageOps';
 import { AppliedWatermarkLayer } from './utils/watermark';
 import {
@@ -157,7 +158,7 @@ export default function App() {
     // Automatic ping, live connection verification, and legacy admin purge on boot
     testFirebaseConnection();
     purgeLegacyAdminsFromFirestore();
-    (window as any).__openAeScriptModal = () => setAeScriptModalOpen(true);
+    (window as any).__openAeScriptModal = () => setAeModalOpen(true);
   }, []);
 
   // Sync active language to Gift Studio embedded iframe
@@ -2428,6 +2429,7 @@ export default function App() {
               >
                 {t.startConversion} ⚡ [{isAr ? 'Tab / كليك شمال' : 'Tab / Left-Click'}]
               </button>
+
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
                 <button className="pill" id="saveProject">
                   {t.saveProject}
@@ -2533,7 +2535,16 @@ export default function App() {
       <iframe
         id="aeScriptHiddenBridge"
         src="/svga-to-after-effects.html"
-        style={{ display: 'none' }}
+        style={{
+          position: 'fixed',
+          left: '-9999px',
+          top: '-9999px',
+          width: '1px',
+          height: '1px',
+          opacity: 0,
+          pointerEvents: 'none',
+          border: 0,
+        }}
         title="AE Script Bridge"
         onLoad={(e) => {
           (e.currentTarget as any).__loaded = true;
@@ -2645,6 +2656,24 @@ export default function App() {
           setPreviewBlockMode(mode);
         }}
       />
+
+      {/* Site Closed Full-Screen Overlay for Non-Admin Users & Visitors */}
+      {settings.isSiteClosed && !hasAdminAccess && !accessBlock.blocked && (
+        <SiteClosedScreen
+          settings={settings}
+          isAr={isAr}
+          onOpenAdminAuth={() => setAuthOpen(true)}
+          onRecheckStatus={async () => {
+            const remoteSettings = await fetchFirestoreSettings().catch(() => null);
+            if (remoteSettings) {
+              updatePlatformState((prev) => ({
+                ...prev,
+                settings: mergeBrandingSettingsSafely(prev.settings, remoteSettings),
+              }));
+            }
+          }}
+        />
+      )}
 
       {/* Permanent Account Ban & Network Ban Full-Screen Platform Lockdown */}
       {accessBlock.blocked && (
