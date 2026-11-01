@@ -360,14 +360,18 @@ export function computeFrameSeekTime(
   return Math.max(0, Math.min(safeDur - 0.002, raw));
 }
 
+export type CustomDurationMode = 'loop' | 'fit';
+
 export interface CustomDurationConfig {
   enabled: boolean;
   seconds: number;
+  mode?: CustomDurationMode;
 }
 
 export const DEFAULT_CUSTOM_DURATION_CONFIG: CustomDurationConfig = {
   enabled: false,
   seconds: 5,
+  mode: 'loop',
 };
 
 /**
@@ -394,19 +398,35 @@ export function resolveEffectiveGiftDuration(
 }
 
 /**
- * Computes the live preview playback speed multiplier (`playbackRate`) so the gift effect
- * is displayed across the chosen custom duration when enabled, or at 1.0x native speed when disabled.
+ * Computes the live preview playback speed multiplier (`playbackRate`).
+ * - When custom duration is disabled or in `'loop'` mode (when nativeDuration <= targetDuration): returns 1.0x natural fluid speed.
+ * - When nativeDuration > targetDuration (e.g. a 12s gift fit into 5s) or in `'fit'` mode: scales speed so an integer number of complete cycles finishes cleanly at targetDuration.
  */
 export function computeCustomPlaybackRate(
-  _nativeDurationSec: number | undefined,
-  _customConfig: Partial<CustomDurationConfig> = {}
+  nativeDurationSec: number | undefined,
+  customConfig: Partial<CustomDurationConfig> = {}
 ): number {
+  if (!customConfig || !customConfig.enabled) return 1;
+  const rawNative = Number(nativeDurationSec);
+  if (!Number.isFinite(rawNative) || rawNative <= 0.05) return 1;
+  const targetSec = Math.max(0.5, Math.min(120, Number(customConfig.seconds) || 5));
+  const mode: CustomDurationMode = customConfig.mode === 'fit' ? 'fit' : 'loop';
+
+  if (mode === 'fit') {
+    const cycles = Math.max(1, Math.round(targetSec / rawNative));
+    return Math.max(0.15, Math.min(8.0, (rawNative * cycles) / targetSec));
+  }
+  if (rawNative > targetSec * 1.02) {
+    return Math.max(0.15, Math.min(8.0, rawNative / targetSec));
+  }
   return 1;
 }
 
 /**
  * Maps an export frame index (`0 .. totalFrames - 1`) to the gift's native animation timestamp (`0 .. nativeDurationSec`)
- * so that when custom duration mode is enabled, the gift animation loops smoothly at full fluid frame rate across the chosen duration.
+ * so that when custom duration mode is enabled:
+ * - Short/equal gifts loop smoothly at natural frame rate across `exportDurationSec` (or complete exact cycles in `'fit'` mode).
+ * - Long gifts (`nativeDurationSec > exportDurationSec`) fit their full animation cleanly into `exportDurationSec` without being cut off mid-animation.
  */
 export function mapExportFrameToNativeTime(
   frameIndex: number,
@@ -414,7 +434,8 @@ export function mapExportFrameToNativeTime(
   exportDurationSec: number,
   nativeDurationSec: number | undefined,
   isVideoSeek = false,
-  _customDurationEnabled = false
+  customDurationEnabled = false,
+  mode: CustomDurationMode = 'loop'
 ): number {
   const safeFps = Math.max(1, fps || 30);
   const safeExportDur = Math.max(0.05, Number(exportDurationSec) || 3);
@@ -423,7 +444,22 @@ export function mapExportFrameToNativeTime(
 
   const sampleOffset = isVideoSeek ? 0.35 : 0;
   const globalSec = (Math.max(0, frameIndex) + sampleOffset) / safeFps;
-  const localRaw = globalSec % safeNativeDur;
+
+  let localRaw: number;
+  if (customDurationEnabled) {
+    if (mode === 'fit') {
+      const cycles = Math.max(1, Math.round(safeExportDur / safeNativeDur));
+      const cycleDur = safeExportDur / cycles;
+      localRaw = ((globalSec % cycleDur) / cycleDur) * safeNativeDur;
+    } else if (safeNativeDur > safeExportDur * 1.02) {
+      // Fit full long gift animation into shorter custom duration without mid-animation cutoff
+      localRaw = Math.min(1, globalSec / safeExportDur) * safeNativeDur;
+    } else {
+      localRaw = globalSec % safeNativeDur;
+    }
+  } else {
+    localRaw = globalSec % safeNativeDur;
+  }
 
   return isVideoSeek
     ? Math.max(0, Math.min(safeNativeDur - 0.002, localRaw))
@@ -439,9 +475,39 @@ export interface AudioEncoderCandidate {
 }
 
 /**
+ * Returns the native frame size (in samples per channel) for the target audio codec:
+ * - AAC-LC (`mp4a.40.2`): 1024 samples per frame
+ * - Opus (`opus`): 960 samples per frame (20ms @ 48kHz)
+ */
+export function getOptimalAudioFrameSize(muxCodec: 'aac' | 'opus' | string = 'aac'): number {
+  return muxCodec === 'opus' ? 960 : 1024;
+}
+
+/**
+ * Computes the exact source sample offset for a given destination sample offset without
+ * IEEE-754 `(off / sr) * srcSr` floating-point drift.
+ */
+export function computeAudioChunkSampleOffset(
+  startSec: number,
+  dstSampleOffset: number,
+  srcSampleRate: number,
+  dstSampleRate: number
+): number {
+  const safeSrcRate = Math.max(1, Math.round(srcSampleRate || 48000));
+  const safeDstRate = Math.max(1, Math.round(dstSampleRate || 48000));
+  const safeStartSec = Math.max(0, Number.isFinite(startSec) ? startSec : 0);
+  const safeDstOff = Math.max(0, Math.round(dstSampleOffset || 0));
+
+  if (safeSrcRate === safeDstRate) {
+    return Math.round(safeStartSec * safeSrcRate) + safeDstOff;
+  }
+  return safeStartSec * safeSrcRate + (safeDstOff * safeSrcRate) / safeDstRate;
+}
+
+/**
  * Builds ordered WebCodecs AudioEncoder + Mp4Muxer configurations.
- * Tries AAC (mp4a.40.2) first, then falls back to Opus @ 48kHz (which Mp4Muxer natively muxes via dOps box
- * and Chromium/Edge/Firefox support out-of-the-box even when proprietary AAC encoding is unavailable).
+ * Tries AAC (mp4a.40.2) at standard hardware-accelerated sample rates (48000 / 44100 Hz) first,
+ * then falls back to Opus @ 48kHz.
  */
 export function buildAudioEncoderCandidates(
   sourceSampleRate = 48000,
@@ -449,9 +515,17 @@ export function buildAudioEncoderCandidates(
 ): AudioEncoderCandidate[] {
   const ch = Math.min(2, Math.max(1, Math.round(sourceChannels || 2)));
   const sr = Math.round(sourceSampleRate || 48000);
-  const candidates: AudioEncoderCandidate[] = [
-    { codec: 'mp4a.40.2', muxCodec: 'aac', sampleRate: sr, numberOfChannels: ch, bitrate: 160_000 },
-  ];
+  const candidates: AudioEncoderCandidate[] = [];
+
+  if (sr === 48000 || sr === 44100) {
+    candidates.push({
+      codec: 'mp4a.40.2',
+      muxCodec: 'aac',
+      sampleRate: sr,
+      numberOfChannels: ch,
+      bitrate: 160_000,
+    });
+  }
   if (sr !== 48000) {
     candidates.push({
       codec: 'mp4a.40.2',
@@ -466,6 +540,15 @@ export function buildAudioEncoderCandidates(
       codec: 'mp4a.40.2',
       muxCodec: 'aac',
       sampleRate: 44100,
+      numberOfChannels: ch,
+      bitrate: 160_000,
+    });
+  }
+  if (sr !== 48000 && sr !== 44100) {
+    candidates.push({
+      codec: 'mp4a.40.2',
+      muxCodec: 'aac',
+      sampleRate: sr,
       numberOfChannels: ch,
       bitrate: 160_000,
     });
@@ -492,6 +575,8 @@ export function buildAudioEncoderCandidates(
 
 /**
  * Resamples a single audio channel Float32Array from srcRate to dstRate using linear interpolation.
+ * Guarantees integer TypedArray indexing (preventing float-index `undefined -> NaN` chunk dropouts),
+ * applies a smooth micro-fade at buffer tail to eliminate DC-step pops, and clamps output to [-1, 1].
  */
 export function resampleChannelFloat32(
   input: Float32Array,
@@ -499,35 +584,120 @@ export function resampleChannelFloat32(
   dstRate: number,
   dstLength: number,
   gain = 1,
-  srcOffsetSamples = 0
+  srcOffsetSamples = 0,
+  loop = false
 ): Float32Array {
-  const out = new Float32Array(Math.max(0, dstLength));
-  if (!input || input.length === 0 || dstLength <= 0) return out;
+  const len = Math.max(0, Math.floor(dstLength || 0));
+  const out = new Float32Array(len);
+  if (!input || input.length === 0 || len <= 0) return out;
   const safeSrcRate = Math.max(1, srcRate || 48000);
   const safeDstRate = Math.max(1, dstRate || 48000);
+  const safeGain = Number.isFinite(gain) ? gain : 1;
+  const safeOffset = Number.isFinite(srcOffsetSamples) ? srcOffsetSamples : 0;
   const ratio = safeSrcRate / safeDstRate;
-  const maxIdx = input.length - 1;
+  const inputLen = input.length;
+  const maxIdx = inputLen - 1;
+  const fadeTailSamples = Math.min(128, Math.floor(inputLen / 8));
 
-  if (Math.abs(ratio - 1) < 1e-6) {
-    for (let i = 0; i < dstLength; i++) {
-      const idx = srcOffsetSamples + i;
-      out[i] = idx >= 0 && idx <= maxIdx ? input[idx] * gain : 0;
+  const clampSample = (v: number): number => {
+    if (!Number.isFinite(v)) return 0;
+    return v > 1 ? 1 : v < -1 ? -1 : v;
+  };
+
+  // Fast integer-aligned path when sample rates match and offset is near an integer
+  const roundedOffset = Math.round(safeOffset);
+  if (Math.abs(ratio - 1) < 1e-6 && Math.abs(safeOffset - roundedOffset) < 1e-4) {
+    for (let i = 0; i < len; i++) {
+      let idx = roundedOffset + i;
+      if (loop && inputLen > 0) {
+        idx = ((idx % inputLen) + inputLen) % inputLen;
+      }
+      if (idx < 0 || idx > maxIdx) {
+        out[i] = 0;
+        continue;
+      }
+      let env = 1;
+      if (!loop && fadeTailSamples > 4 && idx > maxIdx - fadeTailSamples) {
+        env = Math.max(0, (maxIdx - idx) / fadeTailSamples);
+      }
+      out[i] = clampSample(input[idx] * safeGain * env);
     }
     return out;
   }
 
-  for (let i = 0; i < dstLength; i++) {
-    const srcPos = srcOffsetSamples + i * ratio;
+  for (let i = 0; i < len; i++) {
+    let srcPos = safeOffset + i * ratio;
+    if (loop && inputLen > 0) {
+      srcPos = ((srcPos % inputLen) + inputLen) % inputLen;
+    }
     if (srcPos < 0 || srcPos > maxIdx) {
       out[i] = 0;
       continue;
     }
     const i0 = Math.floor(srcPos);
-    const i1 = Math.min(maxIdx, i0 + 1);
+    const i1 = loop ? (i0 + 1) % inputLen : Math.min(maxIdx, i0 + 1);
     const frac = srcPos - i0;
-    out[i] = (input[i0] * (1 - frac) + input[i1] * frac) * gain;
+    let env = 1;
+    if (!loop && fadeTailSamples > 4 && srcPos > maxIdx - fadeTailSamples) {
+      env = Math.max(0, (maxIdx - srcPos) / fadeTailSamples);
+    }
+    const sample = (input[i0] * (1 - frac) + input[i1] * frac) * safeGain * env;
+    out[i] = clampSample(sample);
   }
   return out;
+}
+
+export interface TimestampedMediaChunk<V = unknown, A = unknown> {
+  kind: 'video' | 'audio';
+  timestamp: number;
+  video?: V;
+  audio?: A;
+}
+
+/**
+ * Interleaves encoded video and audio chunks in monotonically increasing timestamp order
+ * so Mp4Muxer writes interleaved 0.5s audio/video chunks in `mdat`, preventing VAP/YYEVA player buffer underruns.
+ */
+export function interleaveTimestampedMediaChunks<
+  V extends { timestamp: number },
+  A extends { timestamp: number }
+>(videoChunks: V[], audioChunks: A[]): TimestampedMediaChunk<V, A>[] {
+  const result: TimestampedMediaChunk<V, A>[] = [];
+  let vi = 0;
+  let ai = 0;
+  const vLen = videoChunks ? videoChunks.length : 0;
+  const aLen = audioChunks ? audioChunks.length : 0;
+
+  while (vi < vLen && ai < aLen) {
+    const v = videoChunks[vi];
+    const a = audioChunks[ai];
+    const vTs = Number.isFinite(v.timestamp) ? v.timestamp : 0;
+    const aTs = Number.isFinite(a.timestamp) ? a.timestamp : 0;
+    if (vTs <= aTs) {
+      result.push({ kind: 'video', timestamp: vTs, video: v });
+      vi++;
+    } else {
+      result.push({ kind: 'audio', timestamp: aTs, audio: a });
+      ai++;
+    }
+  }
+  while (vi < vLen) {
+    const v = videoChunks[vi++];
+    result.push({
+      kind: 'video',
+      timestamp: Number.isFinite(v.timestamp) ? v.timestamp : 0,
+      video: v,
+    });
+  }
+  while (ai < aLen) {
+    const a = audioChunks[ai++];
+    result.push({
+      kind: 'audio',
+      timestamp: Number.isFinite(a.timestamp) ? a.timestamp : 0,
+      audio: a,
+    });
+  }
+  return result;
 }
 
 export type GiftStudioExportMode = 'gi' | 'pack' | 'sep' | 'one' | 'extract';
@@ -749,15 +919,21 @@ export function computeSideBySideVideoLayout(
     };
   }
 
-  const cols = count <= 4 ? count : Math.min(5, Math.ceil(Math.sqrt(count * 1.6)));
+  const cols =
+    count <= 4
+      ? count
+      : count <= 20
+        ? Math.min(5, Math.ceil(Math.sqrt(count * 1.6)))
+        : Math.min(10, Math.ceil(Math.sqrt(count * 1.65)));
   const rows = Math.ceil(count / cols);
 
   // Give each side-by-side cell a generous square-ish / portrait-friendly slot while keeping total canvas within 1920x1080 (or 2560x1440 for high res)
   const maxCanvasW = safeBaseH > 1080 ? 2560 : 1920;
   const maxCanvasH = safeBaseH > 1080 ? 1440 : 1080;
 
-  const idealCellH = rows === 1 ? safeBaseH : Math.max(240, Math.floor(maxCanvasH / rows));
-  const idealCellW = Math.max(240, Math.min(idealCellH, Math.floor(maxCanvasW / cols)));
+  const minCellFloor = rows > 4 || cols > 5 ? 96 : 240;
+  const idealCellH = rows === 1 ? safeBaseH : Math.max(minCellFloor, Math.floor(maxCanvasH / rows));
+  const idealCellW = Math.max(minCellFloor, Math.min(idealCellH, Math.floor(maxCanvasW / cols)));
 
   const canvasWidth = Math.max(64, Math.min(maxCanvasW, Math.round((idealCellW * cols) / 2) * 2));
   const canvasHeight = Math.max(64, Math.min(maxCanvasH, Math.round((idealCellH * rows) / 2) * 2));
@@ -1349,3 +1525,297 @@ export const GIFT_STUDIO_I18N_EN: GiftStudioI18n = {
 export function getGiftStudioTranslations(lang: 'ar' | 'en' | string): GiftStudioI18n {
   return lang === 'en' ? GIFT_STUDIO_I18N_EN : GIFT_STUDIO_I18N_AR;
 }
+
+export interface GiftRenameConfig {
+  enabled: boolean;
+  customName: string;
+  order: 'ext_only' | 'fmt_first' | 'name_first';
+  separator: '.' | '_' | '-' | ' ';
+  alwaysNumber: boolean;
+}
+
+export const DEFAULT_GIFT_RENAME_CONFIG: GiftRenameConfig = {
+  enabled: false,
+  customName: '',
+  order: 'ext_only',
+  separator: '.',
+  alwaysNumber: false,
+};
+
+export interface GiftRenameItemLike {
+  id?: number;
+  name: string;
+  originalName?: string;
+  fmt?: string;
+  kind?: string;
+  isVap?: boolean;
+  yy?: boolean;
+  vapi?: unknown;
+  yyi?: unknown;
+}
+
+/**
+ * Resolves the canonical human-readable format name for any gift item
+ * (e.g. 'SVGA', 'VAP', 'YYEVA', 'MP4', 'PAG', 'Lottie', 'GIF', 'APNG', 'WebP', 'SVG').
+ */
+export function resolveGiftFormatLabel(item: GiftRenameItemLike): string {
+  if (!item) return 'GIFT';
+  const orig = String(item.originalName || item.name || '').trim();
+  const kind = String(item.kind || '').trim().toUpperCase();
+  const fmt = String(item.fmt || '').trim().toLowerCase();
+
+  if (kind === 'VAP' || item.isVap || item.vapi || /\.vap$/i.test(orig)) return 'VAP';
+  if (kind === 'YYEVA' || item.yy || item.yyi || /\.yyeva$/i.test(orig)) return 'YYEVA';
+  if (fmt === 'svga' || /\.svga$/i.test(orig)) return 'SVGA';
+  if (fmt === 'pag' || /\.pag$/i.test(orig)) return 'PAG';
+  if (fmt === 'lottie' || /\.json$/i.test(orig)) return 'Lottie';
+  if (fmt === 'gif' || /\.gif$/i.test(orig)) return 'GIF';
+  if (fmt === 'apng' || /\.apng$/i.test(orig)) return 'APNG';
+  if (fmt === 'webpa' || fmt === 'webp' || /\.webp$/i.test(orig)) return 'WebP';
+  if (fmt === 'svg' || /\.svg$/i.test(orig)) return 'SVG';
+  if (fmt === 'mp4' || /\.(mp4|webm|mov|m4v)$/i.test(orig)) return 'MP4';
+
+  const extMatch = orig.match(/\.([a-z0-9]{2,6})$/i);
+  if (extMatch && extMatch[1]) {
+    return extMatch[1].toUpperCase();
+  }
+  return fmt ? fmt.toUpperCase() : 'GIFT';
+}
+
+/**
+ * Resolves the playable file extension (with leading dot, e.g. '.svga', '.mp4', '.pag')
+ * for a gift item, prioritizing the binary-detected format so old messy filenames
+ * (e.g. URLs with '.com') are completely discarded and the renamed file always works properly.
+ */
+export function resolveGiftFileExtension(item: GiftRenameItemLike): string {
+  const fmt = String(item?.fmt || '').trim().toLowerCase();
+  const map: Record<string, string> = {
+    svga: '.svga',
+    mp4: '.mp4',
+    vap: '.mp4',
+    yyeva: '.mp4',
+    pag: '.pag',
+    lottie: '.json',
+    gif: '.gif',
+    apng: '.png',
+    webpa: '.webp',
+    webp: '.webp',
+    svg: '.svg',
+  };
+  if (fmt && map[fmt]) {
+    return map[fmt];
+  }
+  const orig = String(item?.originalName || item?.name || '').trim();
+  const validExtMatch = orig.match(/\.(svga|mp4|vap|yyeva|pag|json|gif|apng|png|webp|svg|webm|mov|m4v)$/i);
+  if (validExtMatch && validExtMatch[1]) {
+    const rawExt = validExtMatch[1].toLowerCase();
+    if (rawExt === 'vap' || rawExt === 'yyeva') return '.mp4';
+    if (rawExt === 'apng') return '.png';
+    return `.${rawExt}`;
+  }
+  return '.svga';
+}
+
+/**
+ * Sanitizes a user-entered custom name so it is safe for file and ZIP entry names across OSes,
+ * stripping leading/trailing dots so joining with '.' never produces '..'.
+ */
+export function sanitizeCustomGiftName(raw: string): string {
+  return String(raw || '')
+    .replace(/[\\/:*?"<>|\u0000-\u001F]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+}
+
+/**
+ * Completely deletes the old filename and builds a new valid filename from the user's custom name
+ * and the detected format, joined by '.' (dot) so the file works properly in all players.
+ *
+ * Modes:
+ * - 'ext_only' (default): `<CustomName>.<ext>` (e.g. `Ahmed.svga`, `Ahmed.mp4`, `Ahmed.pag`, or `Ahmed.1.svga`)
+ * - 'fmt_first': `<FORMAT>.<CustomName>.<ext>` (e.g. `SVGA.Ahmed.svga`, `VAP.Ahmed.mp4`)
+ * - 'name_first': `<CustomName>.<FORMAT>.<ext>` (e.g. `Ahmed.SVGA.svga`, `Ahmed.VAP.mp4`)
+ */
+export function buildFormatRenamedFileName(
+  item: GiftRenameItemLike,
+  rawCustomName: string,
+  options: {
+    order?: 'ext_only' | 'fmt_first' | 'name_first';
+    separator?: string;
+    seqNum?: number | null;
+  } = {}
+): string {
+  const fmtLabel = resolveGiftFormatLabel(item);
+  const ext = resolveGiftFileExtension(item); // e.g. '.svga'
+  let cleanCustom = sanitizeCustomGiftName(rawCustomName);
+
+  // If the user typed the extension inside the custom name (e.g. "Ahmed.svga"), strip it to avoid "Ahmed.svga.svga"
+  if (cleanCustom.toLowerCase().endsWith(ext.toLowerCase())) {
+    cleanCustom = sanitizeCustomGiftName(cleanCustom.slice(0, -ext.length));
+  }
+  const fmtDotSuffix = `.${fmtLabel.toLowerCase()}`;
+  if (cleanCustom.toLowerCase().endsWith(fmtDotSuffix)) {
+    cleanCustom = sanitizeCustomGiftName(cleanCustom.slice(0, -fmtDotSuffix.length));
+  }
+
+  const sep = options.separator !== undefined && options.separator !== '' ? options.separator : '.';
+  const order = options.order || 'ext_only';
+
+  let base: string;
+  if (!cleanCustom) {
+    base = fmtLabel;
+  } else if (order === 'ext_only') {
+    base = cleanCustom;
+  } else if (order === 'name_first') {
+    base = `${cleanCustom}${sep}${fmtLabel}`;
+  } else {
+    base = `${fmtLabel}${sep}${cleanCustom}`;
+  }
+
+  if (typeof options.seqNum === 'number' && options.seqNum >= 1) {
+    base = `${base}${sep}${options.seqNum}`;
+  }
+
+  return `${base}${ext}`.replace(/\.{2,}/g, '.');
+}
+
+/**
+ * Renames a batch of gift items by completely deleting each file's old name and building
+ * the new name next to the format with a dot '.', automatically numbering items when multiple
+ * files share the same extension/format (or when alwaysNumber is enabled).
+ */
+export function buildFormatRenamedBatch(
+  items: GiftRenameItemLike[],
+  config: Partial<GiftRenameConfig> = {}
+): string[] {
+  const list = items || [];
+  if (list.length === 0) return [];
+
+  const order = config.order || 'ext_only';
+  const sep = config.separator || '.';
+  const cleanCustom = sanitizeCustomGiftName(config.customName || '');
+  const alwaysNumber = !!config.alwaysNumber;
+
+  // Group by the conflict key: for 'ext_only' items with the same playable extension (e.g. .svga or .mp4)
+  // share a bucket; for 'fmt_first'/'name_first' items with the same format label + extension share a bucket.
+  const bucketKeyFor = (it: GiftRenameItemLike): string => {
+    const ext = resolveGiftFileExtension(it).toLowerCase();
+    if (order === 'ext_only') return ext;
+    return `${resolveGiftFormatLabel(it).toUpperCase()}|${ext}`;
+  };
+
+  const bucketTotals = new Map<string, number>();
+  for (const it of list) {
+    const key = bucketKeyFor(it);
+    bucketTotals.set(key, (bucketTotals.get(key) || 0) + 1);
+  }
+
+  const bucketCounters = new Map<string, number>();
+  const usedFullNames = new Set<string>();
+
+  return list.map((it) => {
+    const key = bucketKeyFor(it);
+    const totalInBucket = bucketTotals.get(key) || 1;
+    const nextIdx = (bucketCounters.get(key) || 0) + 1;
+    bucketCounters.set(key, nextIdx);
+
+    const shouldNumber = alwaysNumber || totalInBucket > 1 || !cleanCustom;
+    let candidate = buildFormatRenamedFileName(it, cleanCustom, {
+      order,
+      separator: sep,
+      seqNum: shouldNumber ? nextIdx : null,
+    });
+
+    let extra = nextIdx;
+    while (usedFullNames.has(candidate.toLowerCase())) {
+      extra++;
+      candidate = buildFormatRenamedFileName(it, cleanCustom, {
+        order,
+        separator: sep,
+        seqNum: extra,
+      });
+    }
+    usedFullNames.add(candidate.toLowerCase());
+    return candidate;
+  });
+}
+
+export type MobilePreviewFrameMode = 'phone' | 'tablet' | 'full';
+
+export interface MobilePreviewDimensions {
+  frameWidth: number;
+  frameHeight: number;
+  giftScale: number;
+  aspectLabel: string;
+}
+
+/**
+ * Computes responsive mobile preview frame dimensions (width, height) and inner gift zoom scale
+ * so any gift can be inspected inside a realistic mobile phone screen (9:16), tablet (3:4), or full stage.
+ */
+export function computeMobilePreviewDimensions(
+  viewportW: number,
+  viewportH: number,
+  mode: MobilePreviewFrameMode = 'phone',
+  zoomPercent: number = 100
+): MobilePreviewDimensions {
+  const safeVw = Math.max(360, Number(viewportW) || 1280);
+  const safeVh = Math.max(480, Number(viewportH) || 800);
+  const clampedZoom = Math.max(60, Math.min(200, Number(zoomPercent) || 100));
+  const giftScale = Number((clampedZoom / 100).toFixed(2));
+
+  const maxAvailH = Math.max(380, safeVh - 170);
+  const maxAvailW = Math.max(300, safeVw - 140);
+
+  if (mode === 'full') {
+    const w = Math.min(maxAvailW, Math.round(maxAvailH * 1.35));
+    const h = maxAvailH;
+    return {
+      frameWidth: Math.max(320, w),
+      frameHeight: Math.max(360, h),
+      giftScale,
+      aspectLabel: '16:10',
+    };
+  }
+
+  if (mode === 'tablet') {
+    const h = Math.min(maxAvailH, 760);
+    const w = Math.min(maxAvailW, Math.round(h * 0.76));
+    return {
+      frameWidth: Math.max(300, w),
+      frameHeight: Math.max(380, h),
+      giftScale,
+      aspectLabel: '3:4',
+    };
+  }
+
+  // Default 'phone' mode: authentic 9:16 mobile screen proportions, large enough to see fine details clearly
+  const h = Math.min(maxAvailH, 740);
+  const idealW = Math.round(h * (9 / 16));
+  const w = Math.min(maxAvailW, Math.max(320, idealW));
+  return {
+    frameWidth: w,
+    frameHeight: h,
+    giftScale,
+    aspectLabel: '9:16',
+  };
+}
+
+/**
+ * Steps to the next or previous gift ID in the mobile preview modal, wrapping around cleanly.
+ */
+export function stepMobilePreviewItemIndex(
+  currentId: number,
+  validIds: number[],
+  delta: -1 | 1
+): number | null {
+  if (!Array.isArray(validIds) || validIds.length === 0) return null;
+  const curIdx = validIds.indexOf(currentId);
+  if (curIdx === -1) return validIds[0];
+  const nextIdx = (curIdx + delta + validIds.length) % validIds.length;
+  return validIds[nextIdx];
+}
+
+
+

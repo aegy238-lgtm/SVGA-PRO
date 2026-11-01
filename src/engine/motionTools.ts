@@ -39,7 +39,27 @@ import {
   selectOptimalH264CodecCandidates,
   buildAudioEncoderCandidates,
   resampleChannelFloat32,
+  getOptimalAudioFrameSize,
+  computeAudioChunkSampleOffset,
+  interleaveTimestampedMediaChunks,
 } from '../utils/giftStudioUtils';
+import {
+  analyzePngBinary,
+  computeSvgaSpriteCompressionTarget,
+  resampleRgbaPremultiplied,
+  quantizeAndEncodePng8Dithered,
+  compressPngBufferLikeReference,
+  rescaleSvgaSpriteEntityProtobuf,
+  compressSvga2Binary,
+  SvgaCompressionMode,
+  SpriteScaleEntry,
+} from '../utils/svgaImageCompressor';
+import {
+  ChromaKeyConfig,
+  INITIAL_CHROMA_KEY,
+  applyChromaKeyToContext,
+  applyChromaKeyToRgbaBuffer,
+} from '../utils/chromaKey';
 
 let initialized = false;
 
@@ -51,7 +71,19 @@ export function initMotionToolsFixed() {
   if (typeof window !== 'undefined') {
     (window as any).pako = pako;
     (window as any).UPNG = UPNG;
+    (window as any).__analyzePngBinary = analyzePngBinary;
+    (window as any).__compressPngBufferLikeReference = compressPngBufferLikeReference;
+    (window as any).__compressSvga2Binary = compressSvga2Binary;
   }
+
+  const getSvgaCompressionConfig = (): { qualityPercent: number; mode: SvgaCompressionMode } => {
+    const qInputEl = document.getElementById('qual') as HTMLInputElement | null;
+    const rawQ = Number(qInputEl?.value ?? 100);
+    const qualityPercent = Number.isFinite(rawQ) ? Math.max(1, Math.min(100, rawQ)) : 100;
+    const mode: SvgaCompressionMode = (window as any).__svgaCmpMode || 'auto_quality';
+    return { qualityPercent, mode };
+  };
+  (window as any).__getSvgaCompressionConfig = getSvgaCompressionConfig;
 
   const LIBS = {
     st: {},
@@ -128,9 +160,11 @@ export function initMotionToolsFixed() {
     const rawHash = (location.hash || '').replace(/^#/, '').trim();
     if (
       rawHash &&
-      ['home', 'convert', 'editor', 'gifts', 'gift-image', 'gold-designer'].includes(rawHash)
+      ['home', 'convert', 'editor', 'editor-ae2', 'gifts', 'gift-image', 'gold-designer'].includes(rawHash)
     ) {
       show(rawHash);
+    } else {
+      show('convert');
     }
   };
   window.addEventListener('hashchange', syncViewFromHash);
@@ -200,14 +234,17 @@ export function initMotionToolsFixed() {
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
+        document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
         location.hash === '#editor' ||
+        location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
         e.target?.closest?.('#editor') ||
+        e.target?.closest?.('#editor-ae2') ||
         e.defaultPrevented
       ) {
         return;
@@ -224,14 +261,17 @@ export function initMotionToolsFixed() {
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
+        document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
         location.hash === '#editor' ||
+        location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
         e.target?.closest?.('#editor') ||
+        e.target?.closest?.('#editor-ae2') ||
         e.defaultPrevented
       ) {
         return;
@@ -248,6 +288,7 @@ export function initMotionToolsFixed() {
   }
   let load = function (f) {
     cur = f;
+    (window as any).__currentMotionFile = f;
     show('convert');
     const ext = f.name.split('.').pop().toLowerCase(),
       u = URL.createObjectURL(f),
@@ -611,9 +652,22 @@ export function initMotionToolsFixed() {
   };
   load = async function (f) {
     cur = f;
+    if (window.SVP) {
+      try {
+        window.SVP.pauseAnimation?.();
+        window.SVP.clear?.();
+      } catch (_) {}
+      window.SVP = null;
+    }
+    if (player) {
+      try {
+        player.pauseAnimation?.();
+        player.clear?.();
+      } catch (_) {}
+      player = null;
+    }
     S = null;
     anim = null;
-    player = null;
     show('convert');
     $('#view').textContent = 'Loading…';
     const ext = f.name.split('.').pop().toLowerCase(),
@@ -911,6 +965,9 @@ export function initMotionToolsFixed() {
           if (!bm) return;
           cx.clearRect(0, 0, cv.width, cv.height);
           cx.drawImage(bm, 0, 0, cv.width, cv.height);
+          if ((window as any).__chromaKey?.enabled) {
+            applyChromaKeyToContext(cx, cv.width, cv.height, (window as any).__chromaKey);
+          }
         };
         paintFrame(0);
 
@@ -943,6 +1000,7 @@ export function initMotionToolsFixed() {
           h,
           fps,
           n,
+          _repaintCurrent: () => paintFrame(curIdx),
           set: async (i) => {
             curIdx = Math.max(0, Math.min(n - 1, i));
             paintFrame(curIdx);
@@ -1512,6 +1570,14 @@ export function initMotionToolsFixed() {
     img.src = url;
     img.onload = () => {
       const dimStr = `${img.naturalWidth} × ${img.naturalHeight} px`;
+      let cmpBadgeHtml = '';
+      try {
+        const rawBytes = (window as any).__svgaRawImages?.[k];
+        if (rawBytes && rawBytes instanceof Uint8Array) {
+          const analysis = analyzePngBinary(rawBytes);
+          cmpBadgeHtml = `<div style="font-size: 11px; color: #34d399; margin-top: 3px; font-weight: 600;">⚡ ${analysis.summaryAr}</div>`;
+        }
+      } catch (_) {}
       modal.innerHTML = `
         <div style="
           background: #12121a;
@@ -1536,6 +1602,7 @@ export function initMotionToolsFixed() {
             <div>
               <div style="font-weight: 700; font-size: 14px; color: #f0f0f8;">🖼️ ${k}</div>
               <div style="font-size: 11px; color: #a0a0b5; margin-top: 2px;">الأبعاد الحقيقية: ${dimStr}</div>
+              ${cmpBadgeHtml}
             </div>
             <button id="closePvModalBtn" style="
               background: #242436;
@@ -1675,10 +1742,17 @@ export function initMotionToolsFixed() {
 
   function buildAssets() {
     for (const k in A) delete A[k];
+    const rawMap = (window as any).__svgaRawImages || {};
     const im = (window.VI && player && window.VI.images) || {};
     for (const k in im) {
-      const s = im[k];
-      A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
+      if (window.EDIT && window.EDIT[k]) {
+        A[k] = window.EDIT[k];
+      } else if (rawMap[k] && rawMap[k][0] === 0x89) {
+        A[k] = 'data:image/png;base64,' + base64(rawMap[k]);
+      } else {
+        const s = im[k];
+        A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
+      }
     }
     if (!Object.keys(A).length && (window as any).__lottieData?.assets) {
       ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
@@ -1990,11 +2064,168 @@ export function initMotionToolsFixed() {
       renderAssetCards(e.target.value);
     };
   }
+  let origPreChromaAssets: Record<string, string> = {};
+
+  function syncVideoChromaPreview() {
+    const v = document.getElementById('view');
+    if (!v) return;
+    const cfg: ChromaKeyConfig = (window as any).__chromaKey;
+    const existingCv = document.getElementById('chromaLiveCanvas') as HTMLCanvasElement | null;
+
+    if (!S || !S.vid || S.meta || !cfg || !cfg.enabled) {
+      if (existingCv) existingCv.remove();
+      if (S && S.vid && !S.meta) {
+        S.vid.style.cssText = '';
+        syncPreviewSize(S.w, S.h);
+      }
+      return;
+    }
+
+    const m = S.vid as HTMLVideoElement;
+    const sc = Math.min(2, 400 / Math.max(S.w || 360, S.h || 360)) * previewZoom;
+    const cw = Math.max(1, Math.round((S.w || 360) * sc));
+    const ch = Math.max(1, Math.round((S.h || 360) * sc));
+
+    let cv = existingCv;
+    if (!cv || !cv.isConnected) {
+      cv = mk(cw, ch);
+      cv.id = 'chromaLiveCanvas';
+      cv.style.background = 'transparent';
+      v.appendChild(cv);
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      const activeSource = S;
+      (function loopVideoChroma() {
+        if (activeSource !== S || !cv || !cv.isConnected || !(window as any).__chromaKey?.enabled) return;
+        if (!window.__busy && m.readyState >= 2 && ctx) {
+          ctx.clearRect(0, 0, cv.width, cv.height);
+          ctx.drawImage(m, 0, 0, cv.width, cv.height);
+          applyChromaKeyToContext(ctx, cv.width, cv.height, (window as any).__chromaKey);
+        }
+        requestAnimationFrame(loopVideoChroma);
+      })();
+    } else {
+      cv.width = cw;
+      cv.height = ch;
+    }
+
+    m.style.cssText =
+      'position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
+    syncPreviewSize(S.w, S.h);
+  }
+
+  (window as any).__applyChromaKeyToStageAndAssets = async (cfg: ChromaKeyConfig) => {
+    (window as any).__chromaKey = cfg || INITIAL_CHROMA_KEY;
+
+    // 1. Handle SVGA / Lottie Image Assets (A[k])
+    const assetKeys = Object.keys(A);
+    if (assetKeys.length > 0) {
+      if (cfg && cfg.enabled && cfg.applyToLayers !== false) {
+        // Backup pristine assets first
+        for (const k of assetKeys) {
+          if (!origPreChromaAssets[k] && A[k]) {
+            origPreChromaAssets[k] = A[k];
+          }
+        }
+        let processed = 0;
+        for (const k of assetKeys) {
+          const baseSrc = origPreChromaAssets[k] || A[k];
+          if (!baseSrc) continue;
+          const im = await imgOf(baseSrc);
+          if (!im) continue;
+          const W = Math.max(1, im.naturalWidth || 1);
+          const H = Math.max(1, im.naturalHeight || 1);
+          const c = mk(W, H);
+          const ctx = c.getContext('2d', { willReadFrequently: true });
+          ctx.clearRect(0, 0, W, H);
+          ctx.drawImage(im, 0, 0, W, H);
+          applyChromaKeyToContext(ctx, W, H, cfg);
+          const keyedUrl = c.toDataURL('image/png');
+          A[k] = keyedUrl;
+          await applyEdit(keyedUrl, k);
+          if ((window as any).__lottieData?.assets) {
+            ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
+              const ak = String(asset?.id || `img_${idx}`);
+              if (ak === k) asset.p = keyedUrl;
+            });
+          }
+          processed++;
+        }
+        const qVal = ($('#q') as HTMLInputElement)?.value || '';
+        renderAssetCards(qVal);
+        if (processed > 0) {
+          toast(`✨ تمت إزالة الكروما الخضراء من ${processed} طبقة بنجاح`);
+        }
+      } else if (Object.keys(origPreChromaAssets).length > 0) {
+        // Restore original assets when Chroma Key is turned off
+        for (const [k, origUrl] of Object.entries(origPreChromaAssets)) {
+          if (!A[k]) continue;
+          A[k] = origUrl;
+          if (window.EDIT) delete window.EDIT[k];
+          await applyEdit(origUrl, k);
+          if ((window as any).__lottieData?.assets) {
+            ((window as any).__lottieData.assets as any[]).forEach((asset, idx) => {
+              const ak = String(asset?.id || `img_${idx}`);
+              if (ak === k) asset.p = origUrl;
+            });
+          }
+        }
+        origPreChromaAssets = {};
+        const qVal = ($('#q') as HTMLInputElement)?.value || '';
+        renderAssetCards(qVal);
+        toast('↺ تمت استعادة ألوان الطبقات الأصلية');
+      }
+
+      // Reload Lottie player if active
+      if (anim && (window as any).__lottieData && typeof lottie !== 'undefined') {
+        try {
+          const v = $('#view');
+          const container = v?.querySelector('div');
+          if (container) {
+            anim.destroy();
+            container.innerHTML = '';
+            anim = lottie.loadAnimation({
+              container,
+              renderer: 'canvas',
+              loop: true,
+              autoplay: !(S && S.paused),
+              animationData: (window as any).__lottieData,
+            });
+            syncPreviewSize(S?.w, S?.h);
+          }
+        } catch (_) {}
+      }
+    } else if (cfg && cfg.enabled) {
+      toast('✨ تم تفعيل إزالة الكروما الخضراء على العرض والتصدير');
+    } else {
+      toast('↺ تم إيقاف إزالة الكروما الخضراء');
+    }
+
+    // 2. Sync live video / animated image stage preview
+    syncVideoChromaPreview();
+    if (S && typeof S._repaintCurrent === 'function') {
+      S._repaintCurrent();
+    }
+  };
+
   function prep(f) {
     cur = f;
+    origPreChromaAssets = {};
+    if (window.SVP) {
+      try {
+        window.SVP.pauseAnimation?.();
+        window.SVP.clear?.();
+      } catch (_) {}
+      window.SVP = null;
+    }
+    if (player) {
+      try {
+        player.pauseAnimation?.();
+        player.clear?.();
+      } catch (_) {}
+      player = null;
+    }
     S = null;
     anim = null;
-    player = null;
     window.VI = null;
     (window as any).__lottieData = null;
     (window as any).__WATERMARK_LAYERS = [];
@@ -2422,6 +2653,7 @@ export function initMotionToolsFixed() {
       const m = parseMovie(await inf(raw, 'deflate'));
       if (!m.w || !m.h) throw Error('Invalid SVGA file');
       const bm = {};
+      (window as any).__svgaRawImages = m.im;
       for (const k in m.im) {
         const d = m.im[k],
           mt =
@@ -2438,9 +2670,13 @@ export function initMotionToolsFixed() {
         try {
           const b = await createImageBitmap(new Blob([d], { type: mt }));
           bm[k] = b;
-          const t = mk(b.width, b.height);
-          t.getContext('2d').drawImage(b, 0, 0);
-          A[k] = t.toDataURL('image/png');
+          if (mt === 'image/png') {
+            A[k] = 'data:image/png;base64,' + base64(d);
+          } else {
+            const t = mk(b.width, b.height);
+            t.getContext('2d').drawImage(b, 0, 0);
+            A[k] = t.toDataURL('image/png');
+          }
         } catch (e) {}
       }
       window.SV = { m, bm };
@@ -2530,6 +2766,9 @@ export function initMotionToolsFixed() {
         d[i + 1] = Math.min(255, d[i + 1] * k);
         d[i + 2] = Math.min(255, d[i + 2] * k);
       }
+    }
+    if ((window as any).__chromaKey?.enabled) {
+      applyChromaKeyToRgbaBuffer(d, cw, ch, (window as any).__chromaKey);
     }
     x.putImageData(C, 0, 0);
     c.drawImage(t, 0, 0, W, H);
@@ -2735,16 +2974,26 @@ export function initMotionToolsFixed() {
     async function svgaEnc(pngs, W, H, fps) {
       const n = pngs.length,
         parts = [ps2(1, '2.0.0'), pb(2, cat([pf(1, W), pf(2, H), pi(3, fps), pi(4, n)]))];
-      for (let i = 0; i < n; i++)
-        parts.push(pb(3, cat([ps2(1, 'f' + i), pb(2, new Uint8Array(await pngs[i].arrayBuffer()))])));
-      const lay = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, W), pf(4, H)])),
-        tr = pb(3, cat([pf(1, 1), pf(2, 0), pf(3, 0), pf(4, 1), pf(5, 0), pf(6, 0)]));
       for (let i = 0; i < n; i++) {
+        const keyName = 'img_' + (1640 + i);
+        parts.push(pb(3, cat([ps2(1, keyName), pb(2, new Uint8Array(await pngs[i].arrayBuffer()))])));
+      }
+      for (let i = 0; i < n; i++) {
+        const keyName = 'img_' + (1640 + i);
+        const sc = pngs[i] && pngs[i].__spriteScale;
+        const layW = sc ? sc.targetW : W;
+        const layH = sc ? sc.targetH : H;
+        const sx = sc ? W / Math.max(1, sc.targetW) : 1;
+        const sy = sc ? H / Math.max(1, sc.targetH) : 1;
+        const lay = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, layW), pf(4, layH)]));
+        const tr = pb(3, cat([pf(1, sx), pf(2, 0), pf(3, 0), pf(4, sy), pf(5, 0), pf(6, 0)]));
         const fs = [];
         for (let k = 0; k < n; k++) fs.push(pb(2, cat([pf(1, k === i ? 1 : 0), lay, tr])));
-        parts.push(pb(4, cat([ps2(1, 'f' + i), ...fs])));
+        parts.push(pb(4, cat([ps2(1, keyName), ...fs])));
       }
-      return new Blob([await inf2(cat(parts))], { type: 'application/octet-stream' });
+      const rawMovie = cat(parts);
+      const deflated = pako?.deflate ? pako.deflate(rawMovie, { level: 9 }) : await inf2(rawMovie);
+      return new Blob([deflated], { type: 'application/octet-stream' });
     }
     window.__svgaEnc = svgaEnc;
     const prev = $('#start').onclick;
@@ -2812,8 +3061,9 @@ export function initMotionToolsFixed() {
           await dl(webpMux(webpBuffers, W, H, fps), base + '.webp');
         } else {
           const fr = [];
+          const isSvgaOut = F === 'svga';
           await render(W, H, fps, async (c) => {
-            fr.push(await window.pngQ(c, window.__cmp));
+            fr.push(await window.pngQ(c, isSvgaOut ? true : window.__cmp, isSvgaOut));
           });
           if (F === 'svga') {
             const sv = await svgaEnc(fr, W, H, fps);
@@ -2867,7 +3117,6 @@ export function initMotionToolsFixed() {
     };
     const qv = () => (+$('#qual').value || 100) / 100;
     async function ready() {
-      if (qv() >= 1) return false;
       if (!window.pako) (window as any).pako = pako;
       if (!window.UPNG) (window as any).UPNG = UPNG;
       if (!window.UPNG || !window.pako) {
@@ -2877,11 +3126,35 @@ export function initMotionToolsFixed() {
       return true;
     }
     window.cmpReady = ready;
-    window.pngQ = async function (c, use) {
-      if (!use) return bl(c, 'image/png');
+    window.pngQ = async function (c, use, forSvga = false) {
+      if (!use && !forSvga) return bl(c, 'image/png');
+      const { qualityPercent, mode } = getSvgaCompressionConfig();
+      const effectiveMode: SvgaCompressionMode = forSvga ? mode : 'png8_only';
+      const target = computeSvgaSpriteCompressionTarget(
+        c.width,
+        c.height,
+        qualityPercent,
+        effectiveMode
+      );
       const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height);
-      const colors = Math.max(16, Math.round(256 * qv()));
-      return new Blob([UPNG.encode([d.data.buffer], c.width, c.height, colors)], { type: 'image/png' });
+      const resampled =
+        target.targetW !== c.width || target.targetH !== c.height
+          ? resampleRgbaPremultiplied(d.data, c.width, c.height, target.targetW, target.targetH)
+          : new Uint8Array(d.data.buffer, d.data.byteOffset, d.data.byteLength);
+      const png8Bytes = quantizeAndEncodePng8Dithered(resampled, target.targetW, target.targetH, {
+        maxColors: target.maxColors,
+        ditherStrength: target.ditherStrength,
+      });
+      const blob: any = new Blob([png8Bytes], { type: 'image/png' });
+      blob.__spriteScale = {
+        origW: c.width,
+        origH: c.height,
+        targetW: target.targetW,
+        targetH: target.targetH,
+        sx: target.sx,
+        sy: target.sy,
+      };
+      return blob;
     };
     const pv = (n) => {
       const o = [];
@@ -2895,47 +3168,9 @@ export function initMotionToolsFixed() {
     async function svgaRecomp(f) {
       const raw = new Uint8Array(await f.arrayBuffer());
       if (raw[0] === 0x50) throw Error('SVGA 1.x cannot be recompressed');
-      const u = await inf(raw, 'deflate'),
-        r = new PB(u),
-        out = [];
-      while (!r.end) {
-        const st = r.p,
-          t = r.vi(),
-          fl = t >>> 3,
-          w = t & 7;
-        if (fl === 3 && w === 2) {
-          const ent = r.by();
-          let key = null,
-            val = null;
-          pm(ent, (g, q) => {
-            if (g === 1) {
-              key = q.by();
-              return 1;
-            }
-            if (g === 2) {
-              val = q.by();
-              return 1;
-            }
-            return 0;
-          });
-          let nv = val;
-          if (val && val[0] === 0x89) {
-            const bm = await createImageBitmap(new Blob([val])),
-              c = mk(bm.width, bm.height);
-            c.getContext('2d').drawImage(bm, 0, 0);
-            const nb = new Uint8Array(await (await window.pngQ(c, true)).arrayBuffer());
-            if (nb.length < val.length) nv = nb;
-          }
-          const kb2 = cat([pv((1 << 3) | 2), pv(key.length), key]),
-            vb = cat([pv((2 << 3) | 2), pv(nv.length), nv]),
-            e = cat([kb2, vb]);
-          out.push(cat([pv((3 << 3) | 2), pv(e.length), e]));
-        } else {
-          r.skip(w);
-          out.push(u.subarray(st, r.p));
-        }
-      }
-      return new Blob([await inf2(cat(out))], { type: 'application/octet-stream' });
+      const { qualityPercent, mode } = getSvgaCompressionConfig();
+      const res = compressSvga2Binary(raw, qualityPercent, mode);
+      return new Blob([res.bytes], { type: 'application/octet-stream' });
     }
     const prev = $('#start').onclick;
     $('#start').onclick = async () => {
@@ -2976,7 +3211,7 @@ export function initMotionToolsFixed() {
         $('#fmt').value = mp[ext];
         F = mp[ext];
       }
-      const ok = L && (await ready());
+      const ok = (L || F === 'svga') && (await ready());
       window.__cmp = ok;
       return prev();
     };
@@ -2997,17 +3232,36 @@ export function initMotionToolsFixed() {
         vi = await new Promise((ok, no) => new SVGA.Parser().load(f, ok, no)).catch(
           () => new Promise((ok, no) => new SVGA.Parser().load(u, ok, no))
         );
-      const sc = Math.min(2, 400 / Math.max(S.w, S.h)) * previewZoom,
+      if (!S || cur !== f) return;
+      const baseW = S.w || (vi && vi.videoSize && vi.videoSize.width) || 360;
+      const baseH = S.h || (vi && vi.videoSize && vi.videoSize.height) || 360;
+      const baseFps = S.fps || (vi && vi.FPS) || 20;
+      const sc = Math.min(2, 400 / Math.max(baseW, baseH)) * previewZoom,
         d = document.createElement('div');
-      d.style.cssText = 'width:' + Math.round(S.w * sc) + 'px;height:' + Math.round(S.h * sc) + 'px';
+      d.style.cssText = 'width:' + Math.round(baseW * sc) + 'px;height:' + Math.round(baseH * sc) + 'px';
       v.appendChild(d);
       const pl = new SVGA.Player(d);
+      if (vi && Array.isArray(vi.audios)) {
+        vi.audios = [];
+      }
       pl.setVideoItem(vi);
+      // Apply any existing edited/chroma-keyed images to the upgraded player
+      if (window.EDIT) {
+        for (const [ek, eu] of Object.entries(window.EDIT)) {
+          try {
+            pl.setImage(eu, ek);
+          } catch (_) {}
+        }
+      }
       pl.startAnimation();
       cv.remove();
       window.SVP = pl;
-      syncPreviewSize(S.w, S.h);
-      pl.onFrame((fr) => window.PA && window.PA.sync(fr / (S.fps || 20)));
+      syncPreviewSize(baseW, baseH);
+      pl.onFrame((fr) => {
+        if (!S || window.SVP !== pl) return;
+        const activeFps = (S && S.fps) || baseFps || 20;
+        if (window.PA) window.PA.sync(fr / activeFps);
+      });
       Object.assign(S, {
         set: async (i) => {
           pl.stepToFrame(i, false);
@@ -3020,6 +3274,9 @@ export function initMotionToolsFixed() {
         stop: () => pl.pauseAnimation(),
         go: () => pl.startAnimation(),
       });
+      if ((window as any).__chromaKey?.enabled && (window as any).__chromaKey?.applyToLayers !== false) {
+        (window as any).__applyChromaKeyToStageAndAssets?.((window as any).__chromaKey);
+      }
     } catch (e) {}
   }
   const _ae = applyEdit;
@@ -3112,7 +3369,59 @@ export function initMotionToolsFixed() {
         ak = new Set(P.ents.map((e) => e.key)),
         au = o.audio,
         drop = au && (au.del || au.set),
-        r = new PB(u),
+        { qualityPercent, mode } = getSvgaCompressionConfig(),
+        scaleMap: Record<string, SpriteScaleEntry> = {},
+        compressedImages: Record<string, Uint8Array> = {};
+
+      // Pass 1: Compress and/or apply edits to all image entries in P.imgs so scaleMap is ready for SpriteEntity (field 4)
+      for (const [ks, val] of Object.entries(P.imgs)) {
+        if (ak.has(ks)) continue;
+        const ed = o.edits && o.edits[ks];
+        if (ed) {
+          const cv = await toCv(ed);
+          const pngBlob: any = await window.pngQ(cv, true, !!o.comp);
+          compressedImages[ks] = new Uint8Array(await pngBlob.arrayBuffer());
+          if (pngBlob.__spriteScale) {
+            scaleMap[ks] = pngBlob.__spriteScale;
+          }
+        } else if (o.comp && val && val.length > 8) {
+          if (val[0] === 0x89 && val[1] === 0x50) {
+            try {
+              const res = compressPngBufferLikeReference(val, qualityPercent, mode);
+              compressedImages[ks] = res.bytes;
+              scaleMap[ks] = {
+                origW: res.origW,
+                origH: res.origH,
+                targetW: res.targetW,
+                targetH: res.targetH,
+                sx: res.sx,
+                sy: res.sy,
+              };
+            } catch (_) {
+              const cv = await toCv(new Blob([val]));
+              const pngBlob: any = await window.pngQ(cv, true, true);
+              const nb = new Uint8Array(await pngBlob.arrayBuffer());
+              if (nb.length < val.length || (pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
+                compressedImages[ks] = nb;
+                if (pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
+              }
+            }
+          } else if (val[0] === 0xff || val[0] === 0x52) {
+            try {
+              const cv = await toCv(new Blob([val]));
+              const pngBlob: any = await window.pngQ(cv, true, true);
+              const nb = new Uint8Array(await pngBlob.arrayBuffer());
+              if (nb.length < val.length || (pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
+                compressedImages[ks] = nb;
+                if (pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
+      // Pass 2: Rebuild MovieEntity with compressed images (field 3) and matrix-compensated sprites (field 4)
+      const r = new PB(u),
         out = [];
       while (!r.end) {
         const st = r.p,
@@ -3136,16 +3445,13 @@ export function initMotionToolsFixed() {
           });
           const ks = TD.decode(key);
           if (drop && ak.has(ks)) continue;
-          let nv = val;
-          const ed = o.edits && o.edits[ks];
-          if (ed || (o.comp && val && val[0] === 0x89)) {
-            const nb = new Uint8Array(
-              await (await window.pngQ(await toCv(ed || new Blob([val])), !!o.comp)).arrayBuffer()
-            );
-            nv = ed || nb.length < val.length ? nb : val;
-          }
+          const nv = compressedImages[ks] || val;
           const e = cat([pv((1 << 3) | 2), pv(key.length), key, pv((2 << 3) | 2), pv(nv.length), nv]);
           out.push(cat([pv((3 << 3) | 2), pv(e.length), e]));
+        } else if (fl === 4 && w === 2) {
+          const spriteRaw = r.by();
+          const updatedSprite = rescaleSvgaSpriteEntityProtobuf(spriteRaw, scaleMap);
+          out.push(pb(4, updatedSprite));
         } else if (fl === 5 && w === 2) {
           r.by();
           if (!drop) out.push(u.subarray(st, r.p));
@@ -3165,7 +3471,13 @@ export function initMotionToolsFixed() {
         for (const wm of wmLayers) {
           const url = A[wm.imageKey] || wm.dataUrl;
           if (!url) continue;
-          const pngBytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          const rawWmBytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          let pngBytes = rawWmBytes;
+          try {
+            if (rawWmBytes[0] === 0x89 && rawWmBytes[1] === 0x50) {
+              pngBytes = compressPngBufferLikeReference(rawWmBytes, qualityPercent, 'png8_only').bytes;
+            }
+          } catch (_) {}
           out.push(pb(3, cat([ps2(1, wm.imageKey), pb(2, pngBytes)])));
           const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
             wm.x,
@@ -3183,20 +3495,34 @@ export function initMotionToolsFixed() {
           out.push(pb(4, cat([ps2(1, wm.imageKey), ...allFrames])));
         }
       }
-      return new Blob([await inf2(cat(out))], { type: 'application/octet-stream' });
+      const rawMovieOut = cat(out);
+      const deflated = pako?.deflate ? pako.deflate(rawMovieOut, { level: 9 }) : await inf2(rawMovieOut);
+      return new Blob([deflated], { type: 'application/octet-stream' });
     }
     window.svgaPatch = svgaPatch;
     LIBS.defs.Howl = ['https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.core.min.js'];
     LIBS.defs.lamejs = ['https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js'];
-    async function encodeMp3(buf, vol) {
+    async function encodeMp3(buf, vol, startSec = 0, endSec = 0) {
       await getLib('lamejs');
       if (!window.lamejs) throw Error('MP3 encoder (lamejs) could not load');
-      const ch = Math.min(2, buf.numberOfChannels),
-        enc = new lamejs.Mp3Encoder(ch, buf.sampleRate, 128),
+      const sr = buf.sampleRate || 48000,
+        ch = Math.min(2, buf.numberOfChannels),
+        enc = new lamejs.Mp3Encoder(ch, sr, 128),
+        sIdx = Math.max(0, Math.min(buf.length, Math.round((startSec || 0) * sr))),
+        eIdx =
+          endSec && endSec > startSec
+            ? Math.max(sIdx, Math.min(buf.length, Math.round(endSec * sr)))
+            : buf.length,
+        sliceLen = Math.max(0, eIdx - sIdx),
+        fadeLen = Math.min(128, Math.floor(sliceLen / 8)),
         cv = (x) => {
-          const o = new Int16Array(x.length);
-          for (let i = 0; i < x.length; i++) {
-            const v = Math.max(-1, Math.min(1, x[i] * vol));
+          const sub = x.subarray(sIdx, eIdx);
+          const o = new Int16Array(sub.length);
+          for (let i = 0; i < sub.length; i++) {
+            let env = 1;
+            if (sIdx > 0 && fadeLen > 4 && i < fadeLen) env = i / fadeLen;
+            else if (fadeLen > 4 && i > sub.length - 1 - fadeLen) env = (sub.length - 1 - i) / fadeLen;
+            const v = Math.max(-1, Math.min(1, sub[i] * vol * env));
             o[i] = v < 0 ? v * 32768 : v * 32767;
           }
           return o;
@@ -3209,10 +3535,10 @@ export function initMotionToolsFixed() {
           ch > 1
             ? enc.encodeBuffer(L.subarray(i, i + 1152), R.subarray(i, i + 1152))
             : enc.encodeBuffer(L.subarray(i, i + 1152));
-        if (a.length) parts.push(Uint8Array.from(a));
+        if (a.length) parts.push(new Uint8Array(a.buffer, a.byteOffset, a.byteLength).slice());
       }
       const e = enc.flush();
-      if (e.length) parts.push(Uint8Array.from(e));
+      if (e.length) parts.push(new Uint8Array(e.buffer, e.byteOffset, e.byteLength).slice());
       return cat(parts);
     }
     const finalAudio = (window.finalAudio = () => {
@@ -3220,12 +3546,41 @@ export function initMotionToolsFixed() {
       const s = AU.add || AU.cur;
       return s ? { buf: s.buf, vol: AU.vol, bytes: s.bytes, isMp3: s.mp3 } : null;
     });
-    const mp3For = async (a) => (a.isMp3 && a.vol === 1 && a.bytes ? a.bytes : encodeMp3(a.buf, a.vol));
+    const mp3For = async (a, startSec = 0, endSec = 0) => {
+      const isTrimmed = startSec > 0.005 || (endSec > 0 && endSec < a.buf.duration - 0.01);
+      return a.isMp3 && a.vol === 1 && a.bytes && !isTrimmed
+        ? a.bytes
+        : encodeMp3(a.buf, a.vol, startSec, endSec);
+    };
     window.svgaAddAudio = async (b, fps, n) => {
+      if (AU.detectPromise) {
+        try {
+          await AU.detectPromise;
+        } catch (_) {}
+      }
       const a = finalAudio();
       if (!a) return b;
       try {
-        return await svgaPatch(b, { audio: { set: await mp3For(a), dur: a.buf.duration }, fps, n });
+        const featherCfg = (window as any).__edgeFeather;
+        const trimCheck = $('#trim') as HTMLInputElement | null;
+        const isTrimOn = Boolean((trimCheck && trimCheck.checked) || (featherCfg && featherCfg.trimEnabled));
+        let sSec = 0,
+          eSec = 0;
+        if (isTrimOn) {
+          sSec = Number(
+            trimCheck && trimCheck.checked
+              ? ($('#trimStart') as HTMLInputElement)?.value || 0
+              : featherCfg?.trimStartTime || 0
+          );
+          eSec = Number(
+            trimCheck && trimCheck.checked
+              ? ($('#trimEnd') as HTMLInputElement)?.value || 0
+              : featherCfg?.trimEndTime || 0
+          );
+        }
+        const mp3Bytes = await mp3For(a, sSec, eSec);
+        const effDur = eSec > sSec ? eSec - sSec : a.buf.duration;
+        return await svgaPatch(b, { audio: { set: mp3Bytes, dur: effDur }, fps, n });
       } catch (e) {
         toast(e.message + ' - saved without audio');
         return b;
@@ -3263,20 +3618,41 @@ export function initMotionToolsFixed() {
     const prevS = $('#start').onclick;
     $('#start').onclick = async () => {
       const F = $('#fmt').value,
-        ext = cur ? cur.name.split('.').pop().toLowerCase() : '',
-        L = (+$('#qual').value || 100) < 100;
+        ext = cur ? cur.name.split('.').pop().toLowerCase() : '';
+      const geomChanged =
+        Boolean(S) &&
+        ((+$('#w').value && +$('#w').value !== S.w) ||
+          (+$('#h').value && +$('#h').value !== S.h) ||
+          (+$('#fps').value && Math.abs(+$('#fps').value - Math.round(S.fps)) > 0.5) ||
+          (+$('#scale').value && +$('#scale').value !== 100) ||
+          ($('#mirror').value && $('#mirror').value !== 'none') ||
+          ($('#fit').value && $('#fit').value !== 'stretch') ||
+          Boolean($('#trim')?.checked) ||
+          Boolean((window as any).__edgeFeather?.trimEnabled));
+
       if (
         cur &&
         ext === 'svga' &&
         (F === 'orig' || F === 'svga') &&
+        !geomChanged &&
         !(window as any).__edgeFeather?.enabled
       ) {
-        const ed = Object.keys(window.EDIT).length;
-        if (!ed && !AU.dirty && !L) return dl(cur, cur.name);
         const b = $('#start');
         b.disabled = true;
         try {
-          const comp = L && (await window.cmpReady());
+          const cfg = getSvgaCompressionConfig();
+          const wantCompress = cfg.qualityPercent < 100;
+          const hasEdits =
+            AU.dirty ||
+            Object.keys(window.EDIT || {}).length > 0 ||
+            Boolean((window as any).__WATERMARK_LAYERS?.length);
+
+          if (!wantCompress && !hasEdits) {
+            await dl(cur, cur.name);
+            return;
+          }
+
+          const compReady = wantCompress ? await window.cmpReady() : false;
           let audio = null;
           if (AU.dirty) {
             if (AU.del) audio = { del: 1 };
@@ -3287,9 +3663,18 @@ export function initMotionToolsFixed() {
           }
           const eb = {};
           for (const k in window.EDIT) eb[k] = await (await fetch(window.EDIT[k])).blob();
+          const stEl = document.getElementById('exportStatus');
+          if (stEl) {
+            stEl.textContent = wantCompress
+              ? `جاري ضغط ملف SVGA (${cfg.qualityPercent}%)…`
+              : 'جاري تصدير ملف SVGA بالجودة الأصلية (100%)…';
+          }
+          const outName = wantCompress
+            ? cur.name.replace(/\.svga$/i, '') + '_compressed.svga'
+            : cur.name.replace(/\.svga$/i, '') + '.svga';
           await dl(
-            await svgaPatch(cur, { edits: eb, comp, audio, fps: S.fps, n: S.n }),
-            cur.name.replace(/\.svga$/i, '') + '_edit.svga'
+            await svgaPatch(cur, { edits: eb, comp: wantCompress && compReady, audio, fps: S.fps, n: S.n }),
+            outName
           );
         } catch (e) {
           toast(e.message || 'Export failed');
@@ -3297,6 +3682,9 @@ export function initMotionToolsFixed() {
           b.disabled = false;
         }
         return;
+      }
+      if (cur && ext === 'svga' && F === 'orig' && geomChanged) {
+        $('#fmt').value = 'svga';
       }
       return prevS();
     };
@@ -3476,21 +3864,105 @@ export function initMotionToolsFixed() {
       g('ao').hidden = false;
       ui();
     };
+    const isAudioBin = (b) =>
+      isMp3(b) ||
+      (!!b &&
+        b.length > 4 &&
+        ((b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) ||
+          (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53)));
     async function detect(f) {
       const ext = f.name.split('.').pop().toLowerCase();
       let by = null,
         nm = 'Embedded audio',
         keep = null;
       try {
+        const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        const decodeBytes = async (u8) => {
+          if (!u8 || u8.byteLength < 16) return null;
+          const ctx = OAC ? new OAC(2, 48000, 48000) : actx();
+          const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+          return await ctx.decodeAudioData(ab).catch(() => null);
+        };
         if (ext === 'svga') {
           const P = await svgaParts(f);
           if (!P) return;
+          const validEnts = (P.ents || []).filter((e) => e && e.key && P.imgs && P.imgs[e.key]);
+          if (validEnts.length > 1 || (validEnts.length === 1 && ((validEnts[0].n2 || 0) > 0 || (validEnts[0].n4 || 0) > 0))) {
+            const svgaFps = Math.max(1, (S && S.fps) || 20);
+            const animDur = S && S.n ? S.n / svgaFps : 3;
+            const decodedClips = [];
+            let maxEndSec = animDur;
+            for (const ent of validEnts) {
+              const rawClip = P.imgs[ent.key];
+              const clipBuf = await decodeBytes(rawClip);
+              if (!clipBuf || !clipBuf.length) continue;
+              const startSec = Math.max(0, (ent.n2 || 0) / svgaFps);
+              const offsetSec = Math.max(0, (ent.n4 || 0) / 1000);
+              const endSec =
+                ent.n3 && ent.n3 > (ent.n2 || 0)
+                  ? ent.n3 / svgaFps
+                  : startSec + Math.max(0, clipBuf.duration - offsetSec);
+              if (endSec > maxEndSec) maxEndSec = endSec;
+              decodedClips.push({ clipBuf, startSec, offsetSec, endSec, key: ent.key, rawClip });
+            }
+            if (decodedClips.length > 0) {
+              if (decodedClips.length === 1 && decodedClips[0].startSec === 0 && decodedClips[0].offsetSec === 0) {
+                const only = decodedClips[0];
+                if (cur !== f) return;
+                keep = only.rawClip.slice();
+                AU.cur = { name: only.key, buf: only.clipBuf, bytes: keep, mp3: isMp3(keep) };
+                setBox();
+                window.PA && window.PA.restart();
+                return;
+              }
+              const masterSr = 48000;
+              const totalFrames = Math.max(1, Math.ceil(maxEndSec * masterSr));
+              const mixCtx = OAC ? new OAC(2, totalFrames, masterSr) : actx();
+              const mixedBuf = mixCtx.createBuffer(2, totalFrames, masterSr);
+              for (const c of decodedClips) {
+                const dstStart = Math.round(c.startSec * masterSr);
+                const srcStart = Math.round(c.offsetSec * (c.clipBuf.sampleRate || masterSr));
+                const maxDurSec = Math.max(0, c.endSec - c.startSec);
+                const dstCount = Math.min(
+                  totalFrames - dstStart,
+                  Math.round(maxDurSec * masterSr)
+                );
+                if (dstCount <= 0) continue;
+                for (let ch = 0; ch < 2; ch++) {
+                  const srcCh = c.clipBuf.getChannelData(Math.min(ch, c.clipBuf.numberOfChannels - 1));
+                  const resampled = resampleChannelFloat32(
+                    srcCh,
+                    c.clipBuf.sampleRate || masterSr,
+                    masterSr,
+                    dstCount,
+                    1,
+                    srcStart
+                  );
+                  const dstCh = mixedBuf.getChannelData(ch);
+                  for (let i = 0; i < dstCount; i++) {
+                    const v = dstCh[dstStart + i] + resampled[i];
+                    dstCh[dstStart + i] = v > 1 ? 1 : v < -1 ? -1 : v;
+                  }
+                }
+              }
+              if (cur !== f) return;
+              AU.cur = {
+                name: decodedClips.map((c) => c.key).join(' + '),
+                buf: mixedBuf,
+                bytes: null,
+                mp3: false,
+              };
+              setBox();
+              window.PA && window.PA.restart();
+              return;
+            }
+          }
           if (P.ents && P.ents.length && P.imgs[P.ents[0].key]) {
             by = P.imgs[P.ents[0].key];
             nm = P.ents[0].key;
           } else if (P.imgs) {
             for (const [k, v] of Object.entries(P.imgs)) {
-              if (isMp3(v)) {
+              if (isAudioBin(v)) {
                 by = v;
                 nm = k;
                 break;
@@ -3502,12 +3974,16 @@ export function initMotionToolsFixed() {
           by = f.__rawBytes ? f.__rawBytes.slice() : new Uint8Array(await f.arrayBuffer());
           const fp = bidx(by, 'ftyp');
           if (fp > 4 && fp < 65536) by = by.subarray(fp - 4);
+          const yyTrail = bidx(by, 'yyeffectmp4json[[');
+          if (yyTrail > 8) {
+            const prevTag = TD.decode(by.subarray(yyTrail - 4, yyTrail));
+            if (prevTag !== 'free' && prevTag !== 'skip' && prevTag !== 'yyev') {
+              by = by.subarray(0, yyTrail);
+            }
+          }
         }
         if (!by || by.byteLength < 16) return;
-        const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-        const decoderCtx = OAC ? new OAC(2, 48000, 48000) : actx();
-        const ab = by.buffer.slice(by.byteOffset, by.byteOffset + by.byteLength);
-        const buf = await decoderCtx.decodeAudioData(ab);
+        const buf = await decodeBytes(by);
         if (cur !== f || !buf || !buf.length) return;
         AU.cur = { name: nm, buf, bytes: keep, mp3: isMp3(keep) };
         setBox();
@@ -3517,11 +3993,13 @@ export function initMotionToolsFixed() {
     const _lz = load;
     load = async function (f) {
       stopP();
-      Object.assign(AU, { cur: null, add: null, vol: 1, del: false, dirty: false });
+      Object.assign(AU, { cur: null, add: null, vol: 1, del: false, dirty: false, detectPromise: null });
       window.EDIT = {};
       setBox();
       await _lz(f);
-      detect(f);
+      const p = detect(f);
+      AU.detectPromise = p;
+      await p;
     };
   })();
 
@@ -3535,6 +4013,7 @@ export function initMotionToolsFixed() {
     const PA = (window.PA = {
       on: false,
       t: 0,
+      _lastT: 0,
       dur: 0,
       muted: true,
       src: null,
@@ -3555,20 +4034,28 @@ export function initMotionToolsFixed() {
       start(off) {
         this.stop();
         const a = window.finalAudio && window.finalAudio();
-        if (!a) return;
+        if (!a || !a.buf || !a.buf.duration) return;
         const c = C(),
           s = c.createBufferSource(),
           g = c.createGain();
         this.dur = a.buf.duration;
+        const safeOff = Math.max(0, (off || 0) % a.buf.duration);
         s.buffer = a.buf;
-        s.loop = true;
+        s.loop = false;
         g.gain.value = this.muted ? 0 : a.vol;
         s.connect(g);
         g.connect(c.destination);
-        s.start(0, off % a.buf.duration);
+        s.onended = () => {
+          if (this.src === s) {
+            this.src = null;
+            this.on = false;
+          }
+        };
+        s.start(0, safeOff);
         this.src = s;
         this.g = g;
-        this.t0 = c.currentTime - off;
+        this.t0 = c.currentTime - safeOff;
+        this._lastT = safeOff;
         this.on = true;
         if (c.state !== 'running') c.resume().catch(() => {});
       },
@@ -3577,10 +4064,24 @@ export function initMotionToolsFixed() {
         this.start(this.t || 0);
       },
       sync(t) {
+        const prevT = this._lastT || 0;
         this.t = t;
-        if (!this.on || !this.dur || C().state !== 'running') return;
-        const d = Math.abs((this.pos() % this.dur) - (t % this.dur));
-        if (d > 0.35 && d < this.dur - 0.35) this.start(t);
+        this._lastT = t;
+        if (!this.dur || C().state !== 'running') return;
+        // When visual animation loops back to 0, restart audio cleanly from 0
+        if (t < prevT - 0.35) {
+          this.start(t);
+          return;
+        }
+        if (!this.on) {
+          if (t < this.dur - 0.05) this.start(t);
+          return;
+        }
+        // Only resync mid-loop on large manual user scrub (> 0.9s drift), never on minor frame render jitter
+        const d = Math.abs(this.pos() - t);
+        if (d > 0.9 && t < this.dur - 0.05) {
+          this.start(t);
+        }
       },
     });
     ['pointerdown', 'keydown', 'touchstart'].forEach((e) =>
@@ -3595,8 +4096,8 @@ export function initMotionToolsFixed() {
     );
     (function pump() {
       if (S && S.vid) {
-        PA.t = S.vid.currentTime;
-        if (!S.vid.paused) PA.sync(PA.t);
+        if (!S.vid.paused) PA.sync(S.vid.currentTime);
+        else PA.t = S.vid.currentTime;
       }
       requestAnimationFrame(pump);
     })();
@@ -4095,6 +4596,9 @@ export function initMotionToolsFixed() {
           x.restore();
         }
       }
+      if ((window as any).__chromaKey?.enabled) {
+        applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
+      }
       if (
         (window as any).__edgeFeather?.enabled &&
         typeof (window as any).__applyEdgeFeatherToContext === 'function'
@@ -4135,6 +4639,11 @@ export function initMotionToolsFixed() {
       return { W, H, fps, q: quality / 100, start, end, nk: Math.max(1, Math.round((end - start) * fps)) };
     }
     async function encodeMP4(o) {
+      if (window.AU?.detectPromise) {
+        try {
+          await window.AU.detectPromise;
+        } catch (_) {}
+      }
       if (!window.VideoEncoder || !window.VideoFrame || !window.Mp4Muxer) return recordMP4(o);
       let config;
       const codecCandidates = selectOptimalH264CodecCandidates(o.VW, o.VH);
@@ -4181,6 +4690,7 @@ export function initMotionToolsFixed() {
         mux = new Mp4Muxer.Muxer({
           target,
           fastStart: 'in-memory',
+          firstTimestampBehavior: 'offset',
           video: { codec: 'avc', width: o.VW, height: o.VH, frameRate: o.fps },
           ...(audioConfig
             ? {
@@ -4195,6 +4705,8 @@ export function initMotionToolsFixed() {
       let failure = null,
         ve = null,
         ae = null;
+      const vChunks: Array<{ chunk: any; meta: any; timestamp: number }> = [];
+      const aChunks: Array<{ chunk: any; meta: any; timestamp: number }> = [];
       const fail = (e) => {
           failure = e;
         },
@@ -4204,11 +4716,11 @@ export function initMotionToolsFixed() {
       try {
         ve = new VideoEncoder({
           output: (chunk, meta) => {
-            try {
-              mux.addVideoChunk(chunk, meta);
-            } catch (e) {
-              fail(e);
-            }
+            vChunks.push({
+              chunk,
+              meta,
+              timestamp: Number.isFinite(chunk.timestamp) ? chunk.timestamp : 0,
+            });
           },
           error: fail,
         });
@@ -4247,11 +4759,11 @@ export function initMotionToolsFixed() {
         if (audioConfig && audio && audio.buf) {
           ae = new AudioEncoder({
             output: (chunk, meta) => {
-              try {
-                mux.addAudioChunk(chunk, meta);
-              } catch (e) {
-                fail(e);
-              }
+              aChunks.push({
+                chunk,
+                meta,
+                timestamp: Number.isFinite(chunk.timestamp) ? chunk.timestamp : 0,
+              });
             },
             error: fail,
           });
@@ -4264,16 +4776,17 @@ export function initMotionToolsFixed() {
           const sr = audioConfig.sampleRate,
             ch = audioConfig.numberOfChannels,
             srcSr = audio.buf.sampleRate || sr,
-            total = Math.round((o.nk / o.fps) * sr),
-            chunkLen = 960;
+            chunkLen = getOptimalAudioFrameSize(audioConfig.muxCodec),
+            rawTotal = Math.max(1, Math.round((o.nk / o.fps) * sr)),
+            total = Math.ceil(rawTotal / chunkLen) * chunkLen;
           for (let off = 0; off < total; off += chunkLen) {
             guard();
             const n = Math.min(chunkLen, total - off),
               data = new Float32Array(n * ch),
-              srcOff = (o.start + off / sr) * srcSr;
+              srcOff = computeAudioChunkSampleOffset(o.start, off, srcSr, sr);
             for (let c = 0; c < ch; c++) {
               const src = audio.buf.getChannelData(Math.min(c, audio.buf.numberOfChannels - 1));
-              const resampled = resampleChannelFloat32(src, srcSr, sr, n, audio.vol, srcOff);
+              const resampled = resampleChannelFloat32(src, srcSr, sr, n, audio.vol, srcOff, false);
               data.set(resampled, c * n);
             }
             const f = new AudioData({
@@ -4300,6 +4813,14 @@ export function initMotionToolsFixed() {
           guard();
         }
         status('Packaging MP4…');
+        const interleaved = interleaveTimestampedMediaChunks(vChunks, aChunks);
+        for (const item of interleaved) {
+          if (item.kind === 'video' && item.video) {
+            mux.addVideoChunk(item.video.chunk, item.video.meta);
+          } else if (item.kind === 'audio' && item.audio) {
+            mux.addAudioChunk(item.audio.chunk, item.audio.meta);
+          }
+        }
         mux.finalize();
         if (!target.buffer || !target.buffer.byteLength) throw Error('MP4 muxer returned no data');
         return new Blob([target.buffer], { type: 'video/mp4' });
@@ -4402,7 +4923,8 @@ export function initMotionToolsFixed() {
           $('#fit').value === 'stretch' &&
           +$('#scale').value === 100 &&
           $('#mirror').value === 'none' &&
-          !(window as any).__edgeFeather?.enabled
+          !(window as any).__edgeFeather?.enabled &&
+          !(window as any).__chromaKey?.enabled
         );
       const out = await encodeMP4({
         ...o,
@@ -4549,11 +5071,13 @@ export function initMotionToolsFixed() {
         disabled = controls.map((e) => e.disabled);
       controls.forEach((e) => (e.disabled = true));
       try {
+        const o = exportOptions();
         const origF = $('#fmt').value;
         let F = origF;
-        const o = exportOptions();
-        const featherOn = !!(window as any).__edgeFeather?.enabled;
-        if (F === 'orig' && featherOn && !source.meta && cur) {
+        const featherCfg = (window as any).__edgeFeather;
+        const featherOn = !!featherCfg?.enabled;
+        const chromaOn = !!(window as any).__chromaKey?.enabled;
+        if (F === 'orig' && (featherOn || chromaOn) && !source.meta && cur) {
           const ext = cur.name.split('.').pop()?.toLowerCase() || 'svga';
           const extMap: Record<string, string> = {
             svga: 'svga',
@@ -4573,8 +5097,61 @@ export function initMotionToolsFixed() {
             $('#fmt').value = F;
           }
         }
+        const exportAeScriptPackage = async (file: any) => {
+          status('جاري قراءة ملف SVGA وتجهيز سكريبت After Effects...');
+          return new Promise<void>((resolve, reject) => {
+            let bridge = document.getElementById('aeScriptHiddenBridge') as HTMLIFrameElement | null;
+            if (!bridge) {
+              bridge = document.createElement('iframe');
+              bridge.id = 'aeScriptHiddenBridge';
+              bridge.src = '/svga-to-after-effects.html';
+              bridge.style.display = 'none';
+              document.body.appendChild(bridge);
+            }
+            const onMsg = (event: MessageEvent) => {
+              if (event.data?.type === 'svga-ae-progress') {
+                status(`[${event.data.percent}%] ${event.data.text}`);
+              } else if (event.data?.type === 'svga-ae-done') {
+                window.removeEventListener('message', onMsg);
+                status(`تم تحميل سكريبت وحزمة After Effects بنجاح: ${event.data.fileName || 'ملف ZIP'}`);
+                toast('تم تصدير وتحميل حزمة After Effects بنجاح!');
+                resolve();
+              } else if (event.data?.type === 'svga-ae-error') {
+                window.removeEventListener('message', onMsg);
+                status('خطأ في تصدير سكريبت After Effects: ' + event.data.error);
+                reject(new Error(event.data.error || 'Failed to export After Effects package'));
+              }
+            };
+            window.addEventListener('message', onMsg);
+            const send = () => {
+              try {
+                bridge!.contentWindow?.postMessage(
+                  {
+                    type: 'svga-ae-export',
+                    file,
+                    name: file.name.replace(/\.[^.]+$/i, ''),
+                  },
+                  window.location.origin
+                );
+              } catch (e) {
+                window.removeEventListener('message', onMsg);
+                reject(e);
+              }
+            };
+            if ((bridge as any).__loaded) {
+              send();
+            } else {
+              bridge.onload = () => {
+                (bridge as any).__loaded = true;
+                setTimeout(send, 200);
+              };
+              setTimeout(send, 600);
+            }
+          });
+        };
         try {
-          if (F === 'vap' || F === 'yyeva') await exportVY(F);
+          if (F === 'ae_script') await exportAeScriptPackage(cur);
+          else if (F === 'vap' || F === 'yyeva') await exportVY(F);
           else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
           else if (F === 'orig' && source.meta) {
             const unchanged =
@@ -4588,7 +5165,8 @@ export function initMotionToolsFixed() {
               $('#mirror').value === 'none' &&
               +$('#scale').value === 100 &&
               $('#fit').value === 'stretch' &&
-              !featherOn;
+              !featherOn &&
+              !chromaOn;
             if (unchanged) await dl(cur, cur.name);
             else await exportVY(source.meta.kind.toLowerCase());
           } else {
@@ -4832,6 +5410,9 @@ export function initMotionToolsFixed() {
           const raw = S.draw;
           S.draw = (x, W, H) => contentDraw(raw, x, W, H);
           $('#trimEnd').value = (S.vid ? S.vid.duration : S.n / S.fps).toFixed(3);
+          if ((window as any).__chromaKey?.enabled) {
+            (window as any).__applyChromaKeyToStageAndAssets?.((window as any).__chromaKey);
+          }
           status('Ready to export or save the project.');
         } else status('Could not open this file.');
       } catch (e) {
@@ -4848,7 +5429,9 @@ export function initMotionToolsFixed() {
       restoreProject,
       encodeMP4,
       load,
+      getCurrentFile: () => cur || (window as any).__currentMotionFile || null,
       version: '12.0-fixed',
     };
+    (window as any).__getCurrentFile = () => cur || (window as any).__currentMotionFile || null;
   })();
 }

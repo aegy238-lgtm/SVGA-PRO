@@ -3,6 +3,7 @@ import { initMotionToolsFixed } from './engine/motionTools';
 import SvgaAeEditor from './components/SvgaAeEditor';
 import AdminDashboardModal, { AdminDashboardTabId } from './components/AdminDashboardModal';
 import EdgeFeatherModal from './components/EdgeFeatherModal';
+import ChromaKeyModal from './components/ChromaKeyModal';
 import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
@@ -15,6 +16,11 @@ import {
   applyEdgeFeatherToContext,
   applyEdgeFeatherToStageView,
 } from './utils/edgeFeather';
+import {
+  ChromaKeyConfig,
+  INITIAL_CHROMA_KEY,
+  applyChromaKeyToContext,
+} from './utils/chromaKey';
 import { isScreenCaptureShortcut } from './utils/giftStudioUtils';
 import {
   NotificationsPopover,
@@ -78,12 +84,16 @@ export default function App() {
   const [externalSvgaFile, setExternalSvgaFile] = useState<File | null>(null);
   const [edgeFeather, setEdgeFeather] = useState<EdgeFeatherConfig>(INITIAL_EDGE_FEATHER);
   const [edgeFeatherModalOpen, setEdgeFeatherModalOpen] = useState(false);
+  const [chromaKey, setChromaKey] = useState<ChromaKeyConfig>(INITIAL_CHROMA_KEY);
+  const [chromaKeyModalOpen, setChromaKeyModalOpen] = useState(false);
   const [batchModalOpen, setBatchModalOpen] = useState(false);
   const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   const [activeWatermarkCount, setActiveWatermarkCount] = useState(0);
   const [motionAssetsMap, setMotionAssetsMap] = useState<Record<string, string>>({});
   const edgeFeatherRef = useRef<EdgeFeatherConfig>(edgeFeather);
   edgeFeatherRef.current = edgeFeather;
+  const chromaKeyRef = useRef<ChromaKeyConfig>(chromaKey);
+  chromaKeyRef.current = chromaKey;
 
   const [platformState, setPlatformState] = useState<PlatformState>(() => loadPlatformState());
   const { settings, users, currentUserId, notifications, readNotificationIds, adminPreviewRole } =
@@ -102,7 +112,7 @@ export default function App() {
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [screenShieldActive, setScreenShieldActive] = useState(false);
   const [guestAttemptTrigger, setGuestAttemptTrigger] = useState(0);
-  const [activeView, setActiveView] = useState<string>('home');
+  const [activeView, setActiveView] = useState<string>('convert');
   const [leftClickExportEnabled] = useState<boolean>(true);
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
   const [previewBlockMode, setPreviewBlockMode] = useState<'account' | 'network' | null>(null);
@@ -147,6 +157,7 @@ export default function App() {
     // Automatic ping, live connection verification, and legacy admin purge on boot
     testFirebaseConnection();
     purgeLegacyAdminsFromFirestore();
+    (window as any).__openAeScriptModal = () => setAeScriptModalOpen(true);
   }, []);
 
   // Sync active language to Gift Studio embedded iframe
@@ -661,6 +672,16 @@ export default function App() {
       setActiveView('editor');
     };
 
+    const onMessageFromStudio = (e: MessageEvent) => {
+      if (e.data && e.data.type === 'MOTIONTOOLS_OPEN_IN_SVGA_EDITOR' && e.data.fileBuffer) {
+        const f = new File([e.data.fileBuffer], e.data.fileName || 'gift.svga', {
+          type: 'application/octet-stream',
+        });
+        (window as any).__openInSvgaEditor?.(f);
+      }
+    };
+    window.addEventListener('message', onMessageFromStudio);
+
     (window as any).__checkConversionAccess = (targetFmt: string, sourceFileName?: string) => {
       const st = stateRef.current;
       const currentUser = st.users.find((u) => u.id === st.currentUserId) || null;
@@ -856,6 +877,7 @@ export default function App() {
         notifOpen ||
         proModalOpen ||
         edgeFeatherModalOpen ||
+        chromaKeyModalOpen ||
         batchModalOpen ||
         watermarkModalOpen ||
         aeModalOpen ||
@@ -928,6 +950,7 @@ export default function App() {
     notifOpen,
     proModalOpen,
     edgeFeatherModalOpen,
+    chromaKeyModalOpen,
     batchModalOpen,
     watermarkModalOpen,
     aeModalOpen,
@@ -973,14 +996,33 @@ export default function App() {
     }
   };
 
+  const handleApplyChromaKey = async (nextCfg: ChromaKeyConfig) => {
+    setChromaKey(nextCfg);
+    chromaKeyRef.current = nextCfg;
+    (window as any).__chromaKey = nextCfg;
+    if (typeof (window as any).__applyChromaKeyToStageAndAssets === 'function') {
+      await (window as any).__applyChromaKeyToStageAndAssets(nextCfg);
+      const updated = (window as any).__getMotionAssets?.() || {};
+      setMotionAssetsMap({ ...updated });
+    }
+  };
+
   useEffect(() => {
     (window as any).__edgeFeather = edgeFeatherRef.current;
+    (window as any).__chromaKey = chromaKeyRef.current;
     (window as any).__applyEdgeFeatherToContext = (
       ctx: CanvasRenderingContext2D,
       W: number,
       H: number
     ) => {
       applyEdgeFeatherToContext(ctx, W, H, edgeFeatherRef.current);
+    };
+    (window as any).__applyChromaKeyToContext = (
+      ctx: CanvasRenderingContext2D,
+      W: number,
+      H: number
+    ) => {
+      applyChromaKeyToContext(ctx, W, H, chromaKeyRef.current);
     };
     (window as any).__reapplyStageEdgeFeather = () => {
       applyEdgeFeatherToStageView(edgeFeatherRef.current);
@@ -1231,7 +1273,7 @@ export default function App() {
   return (
     <>
       <nav style={{ position: 'relative', zIndex: 200 }}>
-        <div className="logo" style={{ cursor: 'pointer' }} data-v="home">
+        <div className="logo" style={{ cursor: 'pointer' }} data-v="convert">
           {safeNavbarLogoUrl ? (
             <img
               id="siteBrandLogoImg"
@@ -1252,7 +1294,7 @@ export default function App() {
         </div>
 
         <div className="links">
-          <a data-v="home" className="on">
+          <a data-v="convert" className="on">
             {t.navMotionProcessing}
           </a>
           <a
@@ -1726,7 +1768,7 @@ export default function App() {
       )}
 
       <main>
-        <section className="view on" id="home">
+        <section className="view" id="home">
           <canvas id="bg"></canvas>
           <div className="hero">
             <div className="chips">
@@ -1785,7 +1827,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="view" id="convert">
+        <section className="view on" id="convert">
           <div className="app">
             <aside className="side">
               <div
@@ -1873,6 +1915,67 @@ export default function App() {
                       e.stopPropagation();
                       handleApplyEdgeFeather({
                         ...edgeFeather,
+                        enabled: false,
+                      });
+                    }}
+                    style={{
+                      marginInlineStart: '4px',
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.45)',
+                      color: '#fca5a5',
+                      borderRadius: '4px',
+                      padding: '0px 5px',
+                      fontSize: '12px',
+                      lineHeight: '16px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <h4>{t.chromaKey}</h4>
+              <div
+                className="box"
+                id="chromaKeyBox"
+                onClick={() => setChromaKeyModalOpen(true)}
+                style={{
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '7px',
+                  borderColor: chromaKey.enabled ? '#10b981' : undefined,
+                  background: chromaKey.enabled ? 'rgba(16, 185, 129, 0.1)' : undefined,
+                }}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={chromaKey.enabled ? '#34d399' : '#9a7cff'}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ flexShrink: 0 }}
+                >
+                  <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+                </svg>
+                <span>
+                  {chromaKey.enabled
+                    ? t.chromaKeyActive(chromaKey.similarity)
+                    : t.addChromaKey}
+                </span>
+                {chromaKey.enabled && (
+                  <button
+                    type="button"
+                    id="chromaKeyResetBtn"
+                    title={isAr ? 'إلغاء إزالة الكروما' : 'Remove chroma key'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleApplyChromaKey({
+                        ...chromaKey,
                         enabled: false,
                       });
                     }}
@@ -2292,6 +2395,7 @@ export default function App() {
                 <label>{t.formatConversion}</label>
                 <select id="fmt" defaultValue="orig">
                   <option value="orig">{t.fmtKeepOriginal}</option>
+                  <option value="ae_script">🎬 {t.aeScriptBtn} (After Effects)</option>
                   <option value="zip">PNG Sequence{fmtTag('zip')}</option>
                   <option value="lottie">Lottie{fmtTag('lottie')}</option>
                   <option value="dotlottie">DotLottie{fmtTag('dotlottie')}</option>
@@ -2308,6 +2412,7 @@ export default function App() {
                   <option value="svga">SVGA{fmtTag('svga')}</option>
                 </select>
               </div>
+
               <div className="row">
                 <label>{t.compressionQuality}</label>
                 <input type="number" id="qual" defaultValue="100" min="1" max="100" />
@@ -2422,6 +2527,26 @@ export default function App() {
         isAr={isAr}
         onClose={() => setEdgeFeatherModalOpen(false)}
         onApply={handleApplyEdgeFeather}
+      />
+
+      {/* Headless Bridge for Direct After Effects Script & Package Export */}
+      <iframe
+        id="aeScriptHiddenBridge"
+        src="/svga-to-after-effects.html"
+        style={{ display: 'none' }}
+        title="AE Script Bridge"
+        onLoad={(e) => {
+          (e.currentTarget as any).__loaded = true;
+        }}
+      />
+
+      {/* Chroma Key (Green Screen) Studio Modal */}
+      <ChromaKeyModal
+        open={chromaKeyModalOpen}
+        config={chromaKey}
+        isAr={isAr}
+        onClose={() => setChromaKeyModalOpen(false)}
+        onApply={handleApplyChromaKey}
       />
 
       {/* Batch Image Operations Modal */}

@@ -9,6 +9,8 @@ import {
   ArrowUpToLine,
   Trash2,
   CopyPlus,
+  FlipHorizontal2,
+  Clapperboard,
   Eraser,
   X,
 } from 'lucide-react';
@@ -45,6 +47,9 @@ interface SvgaCropAndContextMenuProps {
   onSendLayerBackward: (targetId: string) => void;
   onBringLayerForward: (targetId: string) => void;
   onDeleteLayer: (targetId: string) => void;
+  onDuplicateLayer?: (targetId: string, mirrorMode: 'none' | 'canvas' | 'local') => void;
+  onFlipLayerHorizontally?: (targetId: string, mirrorMode: 'canvas' | 'local') => void;
+  onOpenCopyMotionModal?: (addedLayerId: string) => void;
 }
 
 export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
@@ -65,6 +70,9 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
   onSendLayerBackward,
   onBringLayerForward,
   onDeleteLayer,
+  onDuplicateLayer,
+  onFlipLayerHorizontally,
+  onOpenCopyMotionModal,
 }) => {
   const hasValidCrop = cropRect && cropRect.w >= 4 && cropRect.h >= 4;
 
@@ -187,9 +195,9 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
           onContextMenu={(e) => e.preventDefault()}
           style={{
             position: 'fixed',
-            left: `${Math.min(window.innerWidth - 245, Math.max(8, contextMenu.x))}px`,
-            top: `${Math.min(window.innerHeight - 310, Math.max(8, contextMenu.y))}px`,
-            width: '235px',
+            left: `${Math.min(window.innerWidth - 265, Math.max(8, contextMenu.x))}px`,
+            top: `${Math.min(window.innerHeight - 380, Math.max(8, contextMenu.y))}px`,
+            width: '255px',
             background: '#12121c',
             border: '1px solid #2e2e44',
             borderRadius: '10px',
@@ -346,6 +354,111 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
           {contextMenu.targetId !== 'DOCUMENT' && (
             <>
               <div style={{ height: '1px', background: '#1f1f2e', margin: '3px 0' }} />
+
+              {contextMenu.targetId.startsWith('layer_') && onOpenCopyMotionModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenCopyMotionModal(contextMenu.targetId);
+                    onCloseContextMenu();
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '7px 10px',
+                    borderRadius: '6px',
+                    border: 0,
+                    background: 'rgba(16, 185, 129, 0.12)',
+                    color: '#6ee7b7',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  <Clapperboard size={13} color="#10b981" />
+                  <span>نسخ نفس الحركة والفريمات من طبقة SVGA</span>
+                </button>
+              )}
+
+              {onDuplicateLayer && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDuplicateLayer(contextMenu.targetId, 'none');
+                      onCloseContextMenu();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '7px 10px',
+                      borderRadius: '6px',
+                      border: 0,
+                      background: 'transparent',
+                      color: '#c4b5fd',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <CopyPlus size={13} color="#a78bfa" />
+                    <span>نسخ طبقة ثانية (Duplicate Layer)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDuplicateLayer(contextMenu.targetId, 'canvas');
+                      onCloseContextMenu();
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '7px 10px',
+                      borderRadius: '6px',
+                      border: 0,
+                      background: 'rgba(56, 189, 248, 0.1)',
+                      color: '#7dd3fc',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <FlipHorizontal2 size={13} color="#38bdf8" />
+                    <span>نسخ الطبقة وعكسها من الشمال لليمين</span>
+                  </button>
+                </>
+              )}
+
+              {onFlipLayerHorizontally && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onFlipLayerHorizontally(contextMenu.targetId, 'canvas');
+                    onCloseContextMenu();
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '7px 10px',
+                    borderRadius: '6px',
+                    border: 0,
+                    background: 'transparent',
+                    color: '#fcd34d',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  <FlipHorizontal2 size={13} color="#f59e0b" />
+                  <span>عكس الطبقة الحالية من الشمال لليمين</span>
+                </button>
+              )}
+
+              <div style={{ height: '1px', background: '#1f1f2e', margin: '3px 0' }} />
+
               <button
                 type="button"
                 onClick={() => {

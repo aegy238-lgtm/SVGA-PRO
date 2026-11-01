@@ -298,9 +298,26 @@ export const PRO_TOOLS_DEFINITIONS: ProToolDefinition[] = [
     defaultIsPro: true,
     defaultFreeAttempts: 2,
   },
+  {
+    key: 'ae2_editor',
+    labelAr: 'أفتر إفكت 2',
+    labelEn: 'After Effects 2 Suite',
+    icon: '✨',
+    descAr: 'محرر ومحرك Motion Processing المتقدم 2 مع دمج الطبقات وتعديل الكي فريم التلقائي.',
+    descEn: 'Advanced After Effects 2 motion timeline, layer grouping & keyframe editor.',
+    defaultScope: 'export',
+    defaultIsPro: true,
+    defaultFreeAttempts: 3,
+  },
 ];
 
 export const DEFAULT_PRO_FEATURE_RULES: Record<string, ProFeatureRule> = {
+  ae2_editor: {
+    isPro: true,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+  },
   gifts_studio: {
     isPro: true,
     scope: 'export',

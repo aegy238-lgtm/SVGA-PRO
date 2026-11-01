@@ -5,6 +5,7 @@ import {
   Shapes,
   GitCommitHorizontal,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   FolderOpen,
   ImagePlus,
@@ -34,8 +35,14 @@ import {
   Plus,
   Check,
   Scissors,
+  MoveUp,
+  MoveDown,
+  CopyPlus,
+  FlipHorizontal2,
+  Clapperboard,
 } from 'lucide-react';
-import { parseMovie, SvgaMovie } from '../utils/codecs';
+import { parseMovie, SvgaFrame, SvgaMovie } from '../utils/codecs';
+import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
 import {
   LayerTransform,
   AnimatableProperty,
@@ -55,6 +62,15 @@ import {
   invertAffine,
   parseSvgaShapeEntity,
   DecomposedExtraLayer,
+  isIdentityLayerTransform,
+  multiplyAffine,
+  cloneSvgaFrame,
+  copySpriteFramesToLayer,
+  retargetCopiedFramesDimensions,
+  cloneLayerPropertyKeyframes,
+  mirrorSvgaFramesHorizontally,
+  mirrorLayerTransformHorizontally,
+  duplicateSvgaSprite,
 } from '../utils/svgaEditorLogic';
 import { SvgaTimelinePanel } from './SvgaTimelinePanel';
 import {
@@ -76,6 +92,9 @@ interface AddedLayer {
   transform: LayerTransform;
   inFrame: number;
   outFrame: number;
+  copiedFrames?: SvgaFrame[];
+  copiedFromKey?: string;
+  copiedFromDisplayNum?: number;
 }
 
 interface ShapeObject {
@@ -98,6 +117,14 @@ interface ShapeObject {
   outFrame: number;
 }
 
+export interface MergedGroup {
+  id: string;
+  name: string;
+  spriteIds: string[];
+  transform: LayerTransform;
+  isUngrouped: boolean;
+}
+
 interface HistorySnapshot {
   docTransform: LayerTransform;
   layerTransforms: Record<string, LayerTransform>;
@@ -107,9 +134,11 @@ interface HistorySnapshot {
   deletedSpriteIndices: number[];
   addedLayers: AddedLayer[];
   shapes: ShapeObject[];
+  mergedGroups?: MergedGroup[];
 }
 
 interface SvgaAeEditorProps {
+  title?: string;
   externalSvgaFile?: File | null;
   onSyncToMotionTools?: (file: File) => void;
   aeModalOpen?: boolean;
@@ -215,6 +244,7 @@ const EMPTY_MOVIE: SvgaMovie = {
 };
 
 export default function SvgaAeEditor({
+  title,
   externalSvgaFile,
   onSyncToMotionTools,
   aeModalOpen = false,
@@ -256,7 +286,7 @@ export default function SvgaAeEditor({
   const [expandedTimelineLayerIds, setExpandedTimelineLayerIds] = useState<Set<string>>(
     () => new Set()
   );
-  const [scaleLinked, setScaleLinked] = useState<boolean>(true);
+  const [scaleLinked, setScaleLinked] = useState<boolean>(false);
 
   const [docTransform, setDocTransform] = useState<LayerTransform>({ ...DEFAULT_TRANSFORM });
   // Keyed by `sprite_${idx}` or asset key
@@ -270,6 +300,7 @@ export default function SvgaAeEditor({
   const [deletedSpriteIndices, setDeletedSpriteIndices] = useState<Set<number>>(() => new Set());
   const [isAllLayersGrouped, setIsAllLayersGrouped] = useState<boolean>(false);
   const [isGroupSublayersExpanded, setIsGroupSublayersExpanded] = useState<boolean>(false);
+  const [mergedGroups, setMergedGroups] = useState<MergedGroup[]>([]);
 
   const [addedLayers, setAddedLayers] = useState<AddedLayer[]>([]);
   const [shapes, setShapes] = useState<ShapeObject[]>([]);
@@ -295,6 +326,10 @@ export default function SvgaAeEditor({
   const [newTextColor, setNewTextColor] = useState<string>('#fde047');
   const [newTextStroke, setNewTextStroke] = useState<string>('#7c5cff');
   const [newTextSize, setNewTextSize] = useState<number>(36);
+
+  // Modal to pick a source SVGA layer to copy motion/animation/frames onto an AddedLayer
+  const [copyMotionModalLayerId, setCopyMotionModalLayerId] = useState<string | null>(null);
+  const [copyMotionSearch, setCopyMotionSearch] = useState<string>('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const activeHandlesRef = useRef<
@@ -323,6 +358,7 @@ export default function SvgaAeEditor({
         spriteFrameRanges?: Record<number, SpriteFrameRange>;
         addedLayers?: AddedLayer[];
         shapes?: ShapeObject[];
+        mergedGroups?: MergedGroup[];
       }
     ) => {
       const snap: HistorySnapshot = {
@@ -334,11 +370,12 @@ export default function SvgaAeEditor({
         deletedSpriteIndices: Array.from(nextDeleted),
         addedLayers: overrides?.addedLayers ?? [...addedLayers],
         shapes: overrides?.shapes ?? [...shapes],
+        mergedGroups: overrides?.mergedGroups ?? [...mergedGroups],
       };
       setHistory((prev) => [...prev.slice(0, historyIdx + 1), snap]);
       setHistoryIdx((idx) => idx + 1);
     },
-    [historyIdx, layerKeyframes, spriteFrameRanges, addedLayers, shapes]
+    [historyIdx, layerKeyframes, spriteFrameRanges, addedLayers, shapes, mergedGroups]
   );
 
   const handleUndo = useCallback(() => {
@@ -353,6 +390,7 @@ export default function SvgaAeEditor({
       setDeletedSpriteIndices(new Set(prev.deletedSpriteIndices));
       setAddedLayers(prev.addedLayers || []);
       setShapes(prev.shapes || []);
+      setMergedGroups(prev.mergedGroups || []);
       setLastAction('رجوع للخلف / تراجع (Undo)');
     }
   }, [history, historyIdx]);
@@ -369,6 +407,7 @@ export default function SvgaAeEditor({
       setDeletedSpriteIndices(new Set(next.deletedSpriteIndices));
       setAddedLayers(next.addedLayers || []);
       setShapes(next.shapes || []);
+      setMergedGroups(next.mergedGroups || []);
       setLastAction('تقدم للأمام / إعادة (Redo)');
     }
   }, [history, historyIdx]);
@@ -418,13 +457,24 @@ export default function SvgaAeEditor({
           } catch {}
         }
 
+        const initialGroupId = `merged_group_main_${Date.now()}`;
+        const initialSpriteIds = m.sp.map((_, idx) => `sprite_${idx}`);
+        const initialGroup: MergedGroup = {
+          id: initialGroupId,
+          name: `📁 ${name}`,
+          spriteIds: initialSpriteIds,
+          transform: { ...DEFAULT_TRANSFORM },
+          isUngrouped: true,
+        };
+
         setMovie(m);
         setBitmaps(newBitmaps);
         setThumbs(newThumbs);
         setDocName(name);
         setFileSize(reportedSize ?? buf.byteLength);
         setCurrentFrame(0);
-        setSelectedTarget('DOCUMENT');
+        setMergedGroups([initialGroup]);
+        setSelectedTarget(initialGroupId);
         setSelectedAssetKey(null);
         setDocTransform({ ...DEFAULT_TRANSFORM });
         setLayerTransforms({});
@@ -447,6 +497,7 @@ export default function SvgaAeEditor({
             deletedSpriteIndices: [],
             addedLayers: [],
             shapes: [],
+            mergedGroups: [initialGroup],
           },
         ]);
         setHistoryIdx(0);
@@ -564,6 +615,11 @@ export default function SvgaAeEditor({
       if (layerId === 'DOCUMENT' || layerId === 'GROUP_ALL') {
         return interpolateLayerTransform(docTransform, layerKeyframes['DOCUMENT'], frame);
       }
+      if (layerId.startsWith('merged_group_')) {
+        const mg = mergedGroups.find((g) => g.id === layerId);
+        const base = mg ? mg.transform : DEFAULT_TRANSFORM;
+        return interpolateLayerTransform(base, layerKeyframes[layerId], frame);
+      }
       const added = addedLayers.find((l) => l.id === layerId);
       if (added) {
         return interpolateLayerTransform(added.transform, layerKeyframes[layerId], frame);
@@ -580,7 +636,7 @@ export default function SvgaAeEditor({
         layerKeyframes[layerId] || (assetKey ? layerKeyframes[assetKey] : undefined);
       return interpolateLayerTransform(base, kfs, frame);
     },
-    [docTransform, layerTransforms, layerKeyframes, addedLayers, shapes]
+    [docTransform, layerTransforms, layerKeyframes, addedLayers, shapes, mergedGroups]
   );
 
   // Canvas 2D Render Loop (uses exact same matrix math as serializeDecomposedSvga)
@@ -616,12 +672,31 @@ export default function SvgaAeEditor({
       label: string;
     } | null = null;
 
-    // 1. Render original decomposed SVGA sprites in stacking order 0 .. sp.length - 1
-    movie.sp.forEach((s, idx) => {
+    // 1. Render original decomposed SVGA sprites (top group in mergedGroups renders last = visually in front)
+    const spriteToGroupMap = new Map<number, MergedGroup>();
+    mergedGroups.forEach((g) => {
+      g.spriteIds.forEach((sid) => {
+        const idx = Number(sid.replace('sprite_', ''));
+        spriteToGroupMap.set(idx, g);
+      });
+    });
+
+    const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
+      const groupA = spriteToGroupMap.get(a);
+      const groupB = spriteToGroupMap.get(b);
+      const orderA = groupA ? mergedGroups.indexOf(groupA) : mergedGroups.length;
+      const orderB = groupB ? mergedGroups.indexOf(groupB) : mergedGroups.length;
+      if (orderA !== orderB) return orderB - orderA;
+      return a - b;
+    });
+
+    orderedSpriteIndices.forEach((idx) => {
       if (deletedSpriteIndices.has(idx)) return;
       const spriteId = `sprite_${idx}`;
-      if (hiddenLayerIds.has(spriteId)) return;
+      const parentGroup = spriteToGroupMap.get(idx);
+      if (hiddenLayerIds.has(spriteId) || (parentGroup && hiddenLayerIds.has(parentGroup.id))) return;
 
+      const s = movie.sp[idx];
       const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[idx]);
       const f = resolved.frameObj;
       if (!f || !resolved.visible) return;
@@ -630,13 +705,28 @@ export default function SvgaAeEditor({
       if (f.a <= 0.001 && !hasShapes) return;
 
       const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
+      const groupT =
+        parentGroup && !parentGroup.isUngrouped
+          ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
+          : DEFAULT_TRANSFORM;
+
       const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
-      const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * docAlpha * layerAlpha));
+      const groupAlpha = Math.max(0, Math.min(1, groupT.opacity / 100));
+      const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * docAlpha * groupAlpha * layerAlpha));
       if (finalAlpha <= 0.001) return;
 
       const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
       const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
-      const mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, docT);
+
+      let mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, DEFAULT_TRANSFORM);
+      if (!isIdentityLayerTransform(groupT)) {
+        const mGroup = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, groupT);
+        mat = multiplyAffine(mGroup, mat);
+      }
+      if (!isIdentityLayerTransform(docT)) {
+        const mDoc = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
+        mat = multiplyAffine(mDoc, mat);
+      }
 
       const fw = f.w > 0 ? f.w : assetW;
       const fh = f.h > 0 ? f.h : assetH;
@@ -735,45 +825,99 @@ export default function SvgaAeEditor({
       }
     });
 
-    // 2. Render added decomposed image layers
+    // 2. Render added decomposed image layers (supporting both static/keyframed and copied SVGA sprite motion)
     for (const al of addedLayers) {
       if (hiddenLayerIds.has(al.id)) continue;
       if (currentFrame < al.inFrame || currentFrame > al.outFrame) continue;
       const lt = getEffectiveTransform(al.id, al.assetKey, currentFrame);
-      const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
-      if (finalAlpha <= 0.001) continue;
 
-      const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
+      if (al.copiedFrames && al.copiedFrames.length > 0) {
+        const cf = al.copiedFrames[Math.min(currentFrame, al.copiedFrames.length - 1)];
+        if (!cf || (cf.a ?? 0) <= 0.001) continue;
+        const finalAlpha = Math.max(
+          0,
+          Math.min(1, (cf.a ?? 1) * (lt.opacity / 100) * docAlpha)
+        );
+        if (finalAlpha <= 0.001) continue;
 
-      for (const p of [
-        { x: 0, y: 0 },
-        { x: al.width, y: 0 },
-        { x: al.width, y: al.height },
-        { x: 0, y: al.height },
-      ]) {
-        const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
-        const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
-        if (sx < compMinX) compMinX = sx;
-        if (sy < compMinY) compMinY = sy;
-        if (sx > compMaxX) compMaxX = sx;
-        if (sy > compMaxY) compMaxY = sy;
-      }
+        const fw = cf.w > 0 ? cf.w : al.width;
+        const fh = cf.h > 0 ? cf.h : al.height;
+        const fx = cf.x || 0;
+        const fy = cf.y || 0;
+        const mat = computeSpriteFrameMatrix(cf, fw, fh, W, H, lt, docT);
 
-      ctx.save();
-      ctx.globalAlpha = finalAlpha;
-      ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-      ctx.drawImage(al.bitmap, 0, 0, al.width, al.height);
-      ctx.restore();
+        for (const p of [
+          { x: fx, y: fy },
+          { x: fx + fw, y: fy },
+          { x: fx + fw, y: fy + fh },
+          { x: fx, y: fy + fh },
+        ]) {
+          const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+          const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+          if (sx < compMinX) compMinX = sx;
+          if (sy < compMinY) compMinY = sy;
+          if (sx > compMaxX) compMaxX = sx;
+          if (sy > compMaxY) compMaxY = sy;
+        }
 
-      if (selectedTarget === al.id && !isAllLayersGrouped) {
-        selectedBounds = {
-          x: 0,
-          y: 0,
-          w: al.width,
-          h: al.height,
-          mat,
-          label: al.name,
-        };
+        ctx.save();
+        ctx.globalAlpha = finalAlpha;
+        ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+        if (cf.clipPath) {
+          try {
+            const clipP = new Path2D(cf.clipPath);
+            ctx.clip(clipP);
+          } catch {}
+        }
+        ctx.drawImage(al.bitmap, fx, fy, fw, fh);
+        ctx.restore();
+
+        if (selectedTarget === al.id && !isAllLayersGrouped) {
+          selectedBounds = {
+            x: fx,
+            y: fy,
+            w: fw,
+            h: fh,
+            mat,
+            label: `${al.name} (🎬 ${al.copiedFromKey || 'SVGA'})`,
+          };
+        }
+      } else {
+        const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
+        if (finalAlpha <= 0.001) continue;
+
+        const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
+
+        for (const p of [
+          { x: 0, y: 0 },
+          { x: al.width, y: 0 },
+          { x: al.width, y: al.height },
+          { x: 0, y: al.height },
+        ]) {
+          const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+          const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+          if (sx < compMinX) compMinX = sx;
+          if (sy < compMinY) compMinY = sy;
+          if (sx > compMaxX) compMaxX = sx;
+          if (sy > compMaxY) compMaxY = sy;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = finalAlpha;
+        ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+        ctx.drawImage(al.bitmap, 0, 0, al.width, al.height);
+        ctx.restore();
+
+        if (selectedTarget === al.id && !isAllLayersGrouped) {
+          selectedBounds = {
+            x: 0,
+            y: 0,
+            w: al.width,
+            h: al.height,
+            mat,
+            label: al.name,
+          };
+        }
       }
     }
 
@@ -910,7 +1054,68 @@ export default function SvgaAeEditor({
     }
 
     // 5. Render editor selection bounding box overlay (not exported into SVGA)
-    if (isAllLayersGrouped || selectedTarget === 'GROUP_ALL') {
+    if (selectedTarget.startsWith('merged_group_')) {
+      const mg = mergedGroups.find((g) => g.id === selectedTarget);
+      if (mg) {
+        let groupMinX = Infinity;
+        let groupMinY = Infinity;
+        let groupMaxX = -Infinity;
+        let groupMaxY = -Infinity;
+
+        movie.sp.forEach((s, idx) => {
+          const spriteId = `sprite_${idx}`;
+          if (!mg.spriteIds.includes(spriteId) || deletedSpriteIndices.has(idx) || hiddenLayerIds.has(spriteId)) return;
+          const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[idx]);
+          const f = resolved.frameObj;
+          if (!f || !resolved.visible || f.a <= 0.001) return;
+
+          const bm = s.key ? bitmaps[s.key] : undefined;
+          const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
+          const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
+          const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
+          const groupT = getEffectiveTransform(mg.id, undefined, currentFrame);
+
+          let mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, DEFAULT_TRANSFORM);
+          if (!isIdentityLayerTransform(groupT)) {
+            const mGroup = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, groupT);
+            mat = multiplyAffine(mGroup, mat);
+          }
+          if (!isIdentityLayerTransform(docT)) {
+            const mDoc = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
+            mat = multiplyAffine(mDoc, mat);
+          }
+
+          const fw = f.w > 0 ? f.w : assetW;
+          const fh = f.h > 0 ? f.h : assetH;
+          const fx = f.x || 0;
+          const fy = f.y || 0;
+          for (const p of [
+            { x: fx, y: fy },
+            { x: fx + fw, y: fy },
+            { x: fx + fw, y: fy + fh },
+            { x: fx, y: fy + fh },
+          ]) {
+            const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
+            const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
+            if (sx < groupMinX) groupMinX = sx;
+            if (sy < groupMinY) groupMinY = sy;
+            if (sx > groupMaxX) groupMaxX = sx;
+            if (sy > groupMaxY) groupMaxY = sy;
+          }
+        });
+
+        if (Number.isFinite(groupMinX) && Number.isFinite(groupMaxX) && groupMinX < groupMaxX && groupMinY < groupMaxY) {
+          selectedBounds = {
+            x: groupMinX,
+            y: groupMinY,
+            w: groupMaxX - groupMinX,
+            h: groupMaxY - groupMinY,
+            mat: [1, 0, 0, 1, 0, 0],
+            label: mg.name,
+          };
+        }
+      }
+    } else if (isAllLayersGrouped || selectedTarget === 'GROUP_ALL') {
       const hasContent = Number.isFinite(compMinX) && Number.isFinite(compMaxX) && compMinX < compMaxX && compMinY < compMaxY;
       const totalLayers = movie.sp.length + addedLayers.length + shapes.length;
       const bX = hasContent ? Math.max(0, compMinX) : 0;
@@ -1065,6 +1270,8 @@ export default function SvgaAeEditor({
     canvasW,
     canvasH,
     totalFrames,
+    mergedGroups,
+    isAllLayersGrouped,
   ]);
 
   const activeLayerTransform: LayerTransform = useMemo(() => {
@@ -1148,14 +1355,31 @@ export default function SvgaAeEditor({
         return;
       }
 
-      const addedIdx = addedLayers.findIndex((l) => l.id === targetId);
-      if (addedIdx >= 0) {
-        const nextAdded = addedLayers.map((l, i) =>
-          i === addedIdx ? { ...l, transform: { ...l.transform, ...patch } } : l
+      if (targetId.startsWith('merged_group_')) {
+        const nextGroups = mergedGroups.map((g) =>
+          g.id === targetId ? { ...g, transform: { ...g.transform, ...patch } } : g
         );
-        setAddedLayers(nextAdded);
+        setMergedGroups(nextGroups);
         syncKeyframePatch(targetId, mergedEff, patch);
         pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          mergedGroups: nextGroups,
+        });
+        const gName = mergedGroups.find((g) => g.id === targetId)?.name || targetId;
+        if (actionDesc) setLastAction(`${actionDesc} (${gName})`);
+        return;
+      }
+
+      const addedIdx = addedLayers.findIndex((l) => l.id === targetId);
+      if (addedIdx >= 0) {
+        const updatedTransform = { ...addedLayers[addedIdx].transform, ...patch };
+        const nextAdded = addedLayers.map((l, i) =>
+          i === addedIdx ? { ...l, transform: updatedTransform } : l
+        );
+        const nextLayerMap = { ...layerTransforms, [targetId]: updatedTransform };
+        setAddedLayers(nextAdded);
+        setLayerTransforms(nextLayerMap);
+        syncKeyframePatch(targetId, mergedEff, patch);
+        pushHistory(docTransform, nextLayerMap, hiddenLayerIds, deletedSpriteIndices, {
           addedLayers: nextAdded,
         });
         if (actionDesc) setLastAction(`${actionDesc} (${addedLayers[addedIdx].name})`);
@@ -1164,12 +1388,15 @@ export default function SvgaAeEditor({
 
       const shapeIdx = shapes.findIndex((s) => s.id === targetId);
       if (shapeIdx >= 0) {
+        const updatedTransform = { ...shapes[shapeIdx].transform, ...patch };
         const nextShapes = shapes.map((s, i) =>
-          i === shapeIdx ? { ...s, transform: { ...s.transform, ...patch } } : s
+          i === shapeIdx ? { ...s, transform: updatedTransform } : s
         );
+        const nextLayerMap = { ...layerTransforms, [targetId]: updatedTransform };
         setShapes(nextShapes);
+        setLayerTransforms(nextLayerMap);
         syncKeyframePatch(targetId, mergedEff, patch);
-        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        pushHistory(docTransform, nextLayerMap, hiddenLayerIds, deletedSpriteIndices, {
           shapes: nextShapes,
         });
         if (actionDesc) setLastAction(`${actionDesc} (${shapes[shapeIdx].name})`);
@@ -1522,6 +1749,10 @@ export default function SvgaAeEditor({
             width: cw,
             height: ch,
             bytes: pngBytes.byteLength,
+            copiedFrames:
+              al.copiedFrames && al.copiedFrames.length > 0
+                ? retargetCopiedFramesDimensions(al.copiedFrames, cw, ch)
+                : al.copiedFrames,
             transform: {
               ...al.transform,
               x: Number((al.transform.x + dxStage).toFixed(2)),
@@ -1843,6 +2074,27 @@ export default function SvgaAeEditor({
   const handleDeleteLayer = useCallback(
     (targetId: string) => {
       if (targetId === 'DOCUMENT') return;
+      if (targetId.startsWith('merged_group_')) {
+        const mg = mergedGroups.find((g) => g.id === targetId);
+        if (mg) {
+          setDeletedSpriteIndices((prev) => {
+            const next = new Set(prev);
+            mg.spriteIds.forEach((id) => {
+              const idx = Number(id.replace('sprite_', ''));
+              if (Number.isFinite(idx)) next.add(idx);
+            });
+            pushHistory(docTransform, layerTransforms, hiddenLayerIds, next);
+            return next;
+          });
+          setMergedGroups((prev) => prev.filter((g) => g.id !== targetId));
+          if (selectedTarget === targetId) {
+            setSelectedTarget('DOCUMENT');
+            setSelectedAssetKey(null);
+          }
+          setLastAction(`تم حذف ${mg.name}`);
+        }
+        return;
+      }
       if (targetId.startsWith('sprite_')) {
         const idx = Number(targetId.replace('sprite_', ''));
         if (Number.isFinite(idx)) {
@@ -1890,6 +2142,7 @@ export default function SvgaAeEditor({
       }
     },
     [
+      mergedGroups,
       movie.sp,
       addedLayers,
       shapes,
@@ -1901,6 +2154,161 @@ export default function SvgaAeEditor({
       pushHistory,
     ]
   );
+
+  const handleMoveSpriteLayerUp = useCallback(
+    (spriteIdx: number) => {
+      if (spriteIdx >= movie.sp.length - 1) return;
+      const targetIdx = spriteIdx + 1;
+      setMovie((prev) => {
+        const nextSp = [...prev.sp];
+        const temp = nextSp[spriteIdx];
+        nextSp[spriteIdx] = nextSp[targetIdx];
+        nextSp[targetIdx] = temp;
+        return { ...prev, sp: nextSp };
+      });
+      setLayerTransforms((prev) => {
+        const k1 = `sprite_${spriteIdx}`;
+        const k2 = `sprite_${targetIdx}`;
+        const next = { ...prev };
+        const t1 = next[k1];
+        const t2 = next[k2];
+        if (t2) next[k1] = t2; else delete next[k1];
+        if (t1) next[k2] = t1; else delete next[k2];
+        return next;
+      });
+      setMergedGroups((prev) =>
+        prev.map((g) => ({
+          ...g,
+          spriteIds: g.spriteIds.map((id) => {
+            if (id === `sprite_${spriteIdx}`) return `sprite_${targetIdx}`;
+            if (id === `sprite_${targetIdx}`) return `sprite_${spriteIdx}`;
+            return id;
+          }),
+        }))
+      );
+      setSelectedTarget(`sprite_${targetIdx}`);
+      setLastAction(`رفع الطبقة #${movie.sp.length - targetIdx} للأعلى (Move Up)`);
+    },
+    [movie.sp.length]
+  );
+
+  const handleMoveSpriteLayerDown = useCallback(
+    (spriteIdx: number) => {
+      if (spriteIdx <= 0) return;
+      const targetIdx = spriteIdx - 1;
+      setMovie((prev) => {
+        const nextSp = [...prev.sp];
+        const temp = nextSp[spriteIdx];
+        nextSp[spriteIdx] = nextSp[targetIdx];
+        nextSp[targetIdx] = temp;
+        return { ...prev, sp: nextSp };
+      });
+      setLayerTransforms((prev) => {
+        const k1 = `sprite_${spriteIdx}`;
+        const k2 = `sprite_${targetIdx}`;
+        const next = { ...prev };
+        const t1 = next[k1];
+        const t2 = next[k2];
+        if (t2) next[k1] = t2; else delete next[k1];
+        if (t1) next[k2] = t1; else delete next[k2];
+        return next;
+      });
+      setMergedGroups((prev) =>
+        prev.map((g) => ({
+          ...g,
+          spriteIds: g.spriteIds.map((id) => {
+            if (id === `sprite_${spriteIdx}`) return `sprite_${targetIdx}`;
+            if (id === `sprite_${targetIdx}`) return `sprite_${spriteIdx}`;
+            return id;
+          }),
+        }))
+      );
+      setSelectedTarget(`sprite_${targetIdx}`);
+      setLastAction(`خفض الطبقة #${movie.sp.length - targetIdx} للأسفل (Move Down)`);
+    },
+    [movie.sp.length]
+  );
+
+  const handleMoveAddedLayerUp = useCallback((idx: number) => {
+    if (idx <= 0) return;
+    setAddedLayers((prev) => {
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx - 1];
+      next[idx - 1] = temp;
+      return next;
+    });
+    setLastAction('رفع طبقة الصورة للأعلى (Move Up)');
+  }, []);
+
+  const handleMoveAddedLayerDown = useCallback((idx: number) => {
+    setAddedLayers((prev) => {
+      if (idx >= prev.length - 1) return prev;
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx + 1];
+      next[idx + 1] = temp;
+      return next;
+    });
+    setLastAction('خفض طبقة الصورة للأسفل (Move Down)');
+  }, []);
+
+  const handleMoveShapeUp = useCallback((idx: number) => {
+    if (idx <= 0) return;
+    setShapes((prev) => {
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx - 1];
+      next[idx - 1] = temp;
+      return next;
+    });
+    setLastAction('رفع الشكل/النص للأعلى (Move Up)');
+  }, []);
+
+  const handleMoveShapeDown = useCallback((idx: number) => {
+    setShapes((prev) => {
+      if (idx >= prev.length - 1) return prev;
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx + 1];
+      next[idx + 1] = temp;
+      return next;
+    });
+    setLastAction('خفض الشكل/النص للأسفل (Move Down)');
+  }, []);
+
+  const handleMoveMergedGroupUp = useCallback((groupId: string) => {
+    setMergedGroups((prev) => {
+      const idx = prev.findIndex((g) => g.id === groupId);
+      if (idx <= 0) return prev;
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx - 1];
+      next[idx - 1] = temp;
+      return next;
+    });
+    setLastAction('رفع المجموعة المدمجة للأعلى (Move Up)');
+  }, []);
+
+  const handleMoveMergedGroupDown = useCallback((groupId: string) => {
+    setMergedGroups((prev) => {
+      const idx = prev.findIndex((g) => g.id === groupId);
+      if (idx < 0 || idx >= prev.length - 1) return prev;
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[idx + 1];
+      next[idx + 1] = temp;
+      return next;
+    });
+    setLastAction('خفض المجموعة المدمجة للأسفل (Move Down)');
+  }, []);
+
+  const handleToggleGroupUngroup = useCallback((groupId: string) => {
+    setMergedGroups((prev) =>
+      prev.map((g) => (g.id === groupId ? { ...g, isUngrouped: !g.isUngrouped } : g))
+    );
+    setLastAction('تبديل حالة التجميع / فك التجميع (Group / Ungroup)');
+  }, []);
 
   // Purge all unused assets from movie.im
   const handlePurgeUnusedAssets = useCallback(() => {
@@ -1925,6 +2333,660 @@ export default function SvgaAeEditor({
       return next;
     });
   };
+
+  // 1. Copy frame-by-frame motion, relative transform deltas, alpha & frame range from an SVGA sprite onto an Added Image Layer
+  // while preserving 100% of the dimensions, scale, and placement that the user fixed on the Added Image Layer
+  const handleCopyMotionFromSpriteToAddedLayer = useCallback(
+    (addedLayerId: string, sourceSpriteIdx: number) => {
+      const sourceSprite = movie.sp[sourceSpriteIdx];
+      if (!sourceSprite) return;
+      const targetLayer = addedLayers.find((al) => al.id === addedLayerId);
+      if (!targetLayer) return;
+
+      const sKey = sourceSprite.key || '';
+      const bm = sKey ? bitmaps[sKey] : undefined;
+      const sourceAssetW = bm?.width || thumbs[sKey]?.w || canvasW;
+      const sourceAssetH = bm?.height || thumbs[sKey]?.h || canvasH;
+
+      const sourceSpriteId = `sprite_${sourceSpriteIdx}`;
+      const sourceOverrideTransform =
+        layerTransforms[sourceSpriteId] ||
+        (sKey ? layerTransforms[sKey] : undefined) ||
+        DEFAULT_TRANSFORM;
+      const sourceKf =
+        layerKeyframes[sourceSpriteId] || (sKey ? layerKeyframes[sKey] : undefined);
+
+      const copied = copySpriteFramesToLayer(
+        sourceSprite,
+        sourceAssetW,
+        sourceAssetH,
+        totalFrames,
+        spriteFrameRanges[sourceSpriteIdx],
+        {
+          targetWidth: targetLayer.width,
+          targetHeight: targetLayer.height,
+          canvasW,
+          canvasH,
+          referenceFrame: currentFrame,
+          preserveTargetBounds: true,
+          sourceLayerTransform: sourceOverrideTransform,
+          sourceLayerKeyframes: sourceKf,
+        }
+      );
+      const displayNum = Math.max(1, movie.sp.length - sourceSpriteIdx);
+
+      // Keep the user's fixed transform (dimensions/scale sx, sy, position x, y, rotation, opacity) intact
+      const preservedUserTransform: LayerTransform = {
+        ...targetLayer.transform,
+      };
+
+      const nextAdded = addedLayers.map((al) =>
+        al.id === addedLayerId
+          ? {
+              ...al,
+              copiedFrames: copied.frames,
+              copiedFromKey: `${sKey || 'Layer'} (#${displayNum})`,
+              copiedFromDisplayNum: displayNum,
+              inFrame: copied.inFrame,
+              outFrame: copied.outFrame,
+              transform: preservedUserTransform,
+            }
+          : al
+      );
+      const nextLayerMap = {
+        ...layerTransforms,
+        [addedLayerId]: preservedUserTransform,
+      };
+
+      setAddedLayers(nextAdded);
+      setLayerTransforms(nextLayerMap);
+      pushHistory(docTransform, nextLayerMap, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+      });
+
+      setCopyMotionModalLayerId(null);
+      const fixedW = Math.max(
+        1,
+        Math.round((targetLayer.width * Math.abs(preservedUserTransform.sx)) / 100)
+      );
+      const fixedH = Math.max(
+        1,
+        Math.round((targetLayer.height * Math.abs(preservedUserTransform.sy)) / 100)
+      );
+      setLastAction(
+        `🎬 تم نسخ نفس الحركة والفريمات (F${copied.inFrame}–${copied.outFrame}) من الطبقة #${displayNum} (${sKey}) مع الحفاظ على مقاسات وأبعاد طبقتك (${fixedW}×${fixedH}px)`
+      );
+    },
+    [
+      movie.sp,
+      addedLayers,
+      bitmaps,
+      thumbs,
+      canvasW,
+      canvasH,
+      totalFrames,
+      currentFrame,
+      spriteFrameRanges,
+      layerTransforms,
+      layerKeyframes,
+      docTransform,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  const handleClearCopiedMotionFromAddedLayer = useCallback((addedLayerId: string) => {
+    setAddedLayers((prev) =>
+      prev.map((al) => {
+        if (al.id !== addedLayerId) return al;
+        const next = { ...al };
+        delete next.copiedFrames;
+        delete next.copiedFromKey;
+        delete next.copiedFromDisplayNum;
+        return next;
+      })
+    );
+    setLastAction('تم إلغاء الحركة المنسوخة والعودة للتحكم الحر بطبقة الصورة مع الاحتفاظ بمقاساتها');
+  }, []);
+
+  const handleCopyMotionFromAddedLayerToAddedLayer = useCallback(
+    (targetAddedLayerId: string, sourceAddedLayerId: string) => {
+      const src = addedLayers.find((a) => a.id === sourceAddedLayerId);
+      const targetLayer = addedLayers.find((a) => a.id === targetAddedLayerId);
+      if (!src || !targetLayer || src.id === targetAddedLayerId) return;
+
+      const preservedUserTransform: LayerTransform = { ...targetLayer.transform };
+      const nextCopiedFrames =
+        src.copiedFrames && src.copiedFrames.length > 0
+          ? retargetCopiedFramesDimensions(src.copiedFrames, targetLayer.width, targetLayer.height)
+          : undefined;
+
+      const nextAdded = addedLayers.map((al) =>
+        al.id === targetAddedLayerId
+          ? {
+              ...al,
+              inFrame: src.inFrame,
+              outFrame: src.outFrame,
+              transform: preservedUserTransform,
+              copiedFrames: nextCopiedFrames,
+              copiedFromKey: src.copiedFromKey || src.name,
+            }
+          : al
+      );
+      const nextLayerMap = {
+        ...layerTransforms,
+        [targetAddedLayerId]: preservedUserTransform,
+      };
+      setAddedLayers(nextAdded);
+      setLayerTransforms(nextLayerMap);
+      pushHistory(docTransform, nextLayerMap, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+      });
+      setCopyMotionModalLayerId(null);
+      setLastAction(
+        `🎬 تم نسخ نفس الحركة والفريمات (F${src.inFrame}–${src.outFrame}) من الطبقة (${src.name}) مع الاحتفاظ بمقاسات وأبعاد الطبقة`
+      );
+    },
+    [
+      addedLayers,
+      layerTransforms,
+      docTransform,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  // Bake / Lock current scaled dimensions (W x H) directly into the Added Image Layer's bitmap and frames
+  const handleBakeAddedLayerDimensions = useCallback(
+    async (addedLayerId: string) => {
+      const idx = addedLayers.findIndex((al) => al.id === addedLayerId);
+      if (idx < 0) return;
+      const al = addedLayers[idx];
+      const effT = getEffectiveTransform(al.id, al.assetKey, currentFrame);
+      const signX = effT.sx < 0 ? -1 : 1;
+      const signY = effT.sy < 0 ? -1 : 1;
+      const bakedW = Math.max(2, Math.round((al.width * Math.abs(effT.sx)) / 100));
+      const bakedH = Math.max(2, Math.round((al.height * Math.abs(effT.sy)) / 100));
+
+      const c = document.createElement('canvas');
+      c.width = bakedW;
+      c.height = bakedH;
+      const ctx = c.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(al.bitmap, 0, 0, bakedW, bakedH);
+      const blob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
+      if (!blob) return;
+      const pngBytes = new Uint8Array(await blob.arrayBuffer());
+      const newBm = await createImageBitmap(blob);
+      const dataUrl = c.toDataURL('image/png');
+
+      const bakedTransform: LayerTransform = {
+        ...effT,
+        sx: signX * 100,
+        sy: signY * 100,
+      };
+      const updatedCopiedFrames =
+        al.copiedFrames && al.copiedFrames.length > 0
+          ? retargetCopiedFramesDimensions(al.copiedFrames, bakedW, bakedH)
+          : al.copiedFrames;
+
+      const updatedLayer: AddedLayer = {
+        ...al,
+        bitmap: newBm,
+        pngBytes,
+        dataUrl,
+        width: bakedW,
+        height: bakedH,
+        bytes: pngBytes.byteLength,
+        transform: bakedTransform,
+        copiedFrames: updatedCopiedFrames,
+      };
+
+      const nextAdded = addedLayers.map((item, i) => (i === idx ? updatedLayer : item));
+      const nextLayerMap = { ...layerTransforms, [addedLayerId]: bakedTransform };
+      setAddedLayers(nextAdded);
+      setLayerTransforms(nextLayerMap);
+      pushHistory(docTransform, nextLayerMap, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+      });
+      setLastAction(
+        `📌 تم تثبيت المقاسات والأبعاد (${bakedW}×${bakedH}px) على الطبقة (${al.name}) بنجاح`
+      );
+    },
+    [
+      addedLayers,
+      getEffectiveTransform,
+      currentFrame,
+      layerTransforms,
+      docTransform,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  // 2. Duplicate any layer (SVGA sprite, Added Image Layer, or Shape/Text Layer) with optional horizontal Left-to-Right mirror
+  const handleDuplicateLayer = useCallback(
+    (targetId: string, mirrorMode: 'none' | 'canvas' | 'local' = 'none') => {
+      if (!targetId || targetId === 'DOCUMENT' || targetId === 'GROUP_ALL') return;
+
+      // Case A: Added Image Layer
+      if (targetId.startsWith('layer_')) {
+        const srcLayer = addedLayers.find((al) => al.id === targetId);
+        if (!srcLayer) return;
+        const newId = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newAssetKey = `user_img_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
+        const baseTransform =
+          srcLayer.transform || layerTransforms[srcLayer.id] || DEFAULT_TRANSFORM;
+
+        let nextTransform: LayerTransform = { ...baseTransform };
+        let nextCopiedFrames = srcLayer.copiedFrames
+          ? srcLayer.copiedFrames.map(cloneSvgaFrame)
+          : undefined;
+
+        if (mirrorMode !== 'none') {
+          if (nextCopiedFrames && nextCopiedFrames.length > 0) {
+            nextCopiedFrames = mirrorSvgaFramesHorizontally(
+              nextCopiedFrames,
+              canvasW,
+              srcLayer.width,
+              srcLayer.height,
+              mirrorMode
+            );
+            nextTransform = {
+              ...baseTransform,
+              x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+              rotation: -baseTransform.rotation,
+            };
+          } else {
+            nextTransform = mirrorLayerTransformHorizontally(baseTransform, mirrorMode);
+          }
+        } else {
+          // Slight offset when duplicating without mirror if not animated so user sees the new copy clearly
+          if (!nextCopiedFrames) {
+            nextTransform = {
+              ...baseTransform,
+              x: baseTransform.x + 12,
+              y: baseTransform.y + 12,
+            };
+          }
+        }
+
+        const suffix = mirrorMode !== 'none' ? ' (معكوس ↔)' : ' (نسخة)';
+        const newLayer: AddedLayer = {
+          ...srcLayer,
+          id: newId,
+          assetKey: newAssetKey,
+          name: `${srcLayer.name}${suffix}`,
+          transform: nextTransform,
+          copiedFrames: nextCopiedFrames,
+        };
+
+        setAddedLayers((prev) => {
+          const idx = prev.findIndex((a) => a.id === targetId);
+          if (idx < 0) return [...prev, newLayer];
+          const next = [...prev];
+          next.splice(idx + 1, 0, newLayer);
+          return next;
+        });
+        setLayerTransforms((prev) => ({
+          ...prev,
+          [newId]: nextTransform,
+        }));
+        const clonedKf = cloneLayerPropertyKeyframes(
+          layerKeyframes[srcLayer.id],
+          mirrorMode,
+          Boolean(nextCopiedFrames && nextCopiedFrames.length > 0)
+        );
+        if (clonedKf) {
+          setLayerKeyframes((prev) => ({
+            ...prev,
+            [newId]: clonedKf,
+          }));
+        }
+        setSelectedTarget(newId);
+        setSelectedAssetKey(null);
+        setLastAction(
+          mirrorMode !== 'none'
+            ? `🪞 تم نسخ طبقة الصورة وعكسها من الشمال لليمين بنفس المقاسات (${newLayer.name})`
+            : `📋 تم نسخ طبقة الصورة بنفس المقاسات والأبعاد (${newLayer.name})`
+        );
+        return;
+      }
+
+      // Case B: Shape / Text Layer
+      if (targetId.startsWith('shape_')) {
+        const srcShape = shapes.find((sh) => sh.id === targetId);
+        if (!srcShape) return;
+        const newId = `shape_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newAssetKey = `shape_asset_${Date.now().toString(36)}`;
+        const baseTransform =
+          srcShape.transform || layerTransforms[srcShape.id] || DEFAULT_TRANSFORM;
+        const nextTransform =
+          mirrorMode !== 'none'
+            ? mirrorLayerTransformHorizontally(baseTransform, mirrorMode)
+            : { ...baseTransform, x: baseTransform.x + 14, y: baseTransform.y + 14 };
+
+        const suffix = mirrorMode !== 'none' ? ' (معكوس ↔)' : ' (نسخة)';
+        const newShape: ShapeObject = {
+          ...srcShape,
+          id: newId,
+          assetKey: newAssetKey,
+          name: `${srcShape.name}${suffix}`,
+          transform: nextTransform,
+        };
+        setShapes((prev) => [...prev, newShape]);
+        setLayerTransforms((prev) => ({
+          ...prev,
+          [newId]: nextTransform,
+        }));
+        setSelectedTarget(newId);
+        setSelectedAssetKey(null);
+        setLastAction(
+          mirrorMode !== 'none'
+            ? `🪞 تم نسخ الشكل/النص وعكسه من الشمال لليمين (${newShape.name})`
+            : `📋 تم نسخ الشكل/النص بنجاح (${newShape.name})`
+        );
+        return;
+      }
+
+      // Case C: Decomposed SVGA Sprite Layer (sprite_N)
+      if (targetId.startsWith('sprite_')) {
+        const sIdx = Number(targetId.replace('sprite_', ''));
+        if (Number.isNaN(sIdx) || !movie.sp[sIdx]) return;
+        const s = movie.sp[sIdx];
+        const sKey = s.key || '';
+        const bm = sKey ? bitmaps[sKey] : undefined;
+        const defaultW = bm?.width || thumbs[sKey]?.w || canvasW;
+        const defaultH = bm?.height || thumbs[sKey]?.h || canvasH;
+
+        const dupResult = duplicateSvgaSprite(movie, sIdx, {
+          mirrorMode,
+          assetW: defaultW,
+          assetH: defaultH,
+        });
+        if (!dupResult) return;
+        const newSpriteIdx = dupResult.newIndex;
+        const newSpriteId = `sprite_${newSpriteIdx}`;
+
+        setMovie((prev) => ({
+          ...prev,
+          sp: [...prev.sp, dupResult.sprite],
+        }));
+
+        // Copy range & transforms to the new sprite index
+        if (spriteFrameRanges[sIdx]) {
+          setSpriteFrameRanges((prev) => ({
+            ...prev,
+            [newSpriteIdx]: { ...prev[sIdx] },
+          }));
+        }
+
+        const baseTransform =
+          layerTransforms[targetId] || (sKey ? layerTransforms[sKey] : undefined) || DEFAULT_TRANSFORM;
+        const nextTransform: LayerTransform =
+          mirrorMode !== 'none'
+            ? {
+                ...baseTransform,
+                x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+                rotation: -baseTransform.rotation,
+              }
+            : { ...baseTransform };
+
+        setLayerTransforms((prev) => ({
+          ...prev,
+          [newSpriteId]: nextTransform,
+        }));
+
+        const clonedKf = cloneLayerPropertyKeyframes(
+          layerKeyframes[targetId],
+          mirrorMode,
+          true
+        );
+        if (clonedKf) {
+          setLayerKeyframes((prev) => ({
+            ...prev,
+            [newSpriteId]: clonedKf,
+          }));
+        }
+
+        // If the original sprite belonged to a mergedGroup, include the new sprite in that group as well
+        setMergedGroups((prev) =>
+          prev.map((g) =>
+            g.spriteIds.includes(targetId)
+              ? { ...g, spriteIds: [...g.spriteIds, newSpriteId] }
+              : g
+          )
+        );
+
+        setSelectedTarget(newSpriteId);
+        setSelectedAssetKey(sKey || null);
+        setLastAction(
+          mirrorMode !== 'none'
+            ? `🪞 تم نسخ الطبقة (${sKey}) وعكسها من الشمال لليمين بنفس الأنيميشن والفريمات`
+            : `📋 تم نسخ طبقة ثانية من (${sKey}) بنفس الأنيميشن والفريمات`
+        );
+      }
+    },
+    [
+      addedLayers,
+      shapes,
+      movie,
+      bitmaps,
+      thumbs,
+      canvasW,
+      canvasH,
+      layerTransforms,
+      layerKeyframes,
+      spriteFrameRanges,
+    ]
+  );
+
+  // 3. Flip/Mirror an existing layer horizontally in-place or across the canvas width
+  const handleFlipLayerHorizontally = useCallback(
+    (targetId: string, mirrorMode: 'canvas' | 'local' = 'canvas') => {
+      if (!targetId || targetId === 'DOCUMENT' || targetId === 'GROUP_ALL') return;
+
+      if (targetId.startsWith('layer_')) {
+        const srcLayer = addedLayers.find((al) => al.id === targetId);
+        if (!srcLayer) return;
+        const baseTransform =
+          srcLayer.transform || layerTransforms[srcLayer.id] || DEFAULT_TRANSFORM;
+
+        if (srcLayer.copiedFrames && srcLayer.copiedFrames.length > 0) {
+          const flippedFrames = mirrorSvgaFramesHorizontally(
+            srcLayer.copiedFrames,
+            canvasW,
+            srcLayer.width,
+            srcLayer.height,
+            mirrorMode
+          );
+          const nextT: LayerTransform = {
+            ...baseTransform,
+            x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+            rotation: -baseTransform.rotation,
+          };
+          setAddedLayers((prev) =>
+            prev.map((al) =>
+              al.id === targetId
+                ? { ...al, copiedFrames: flippedFrames, transform: nextT }
+                : al
+            )
+          );
+          setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
+        } else {
+          const nextT = mirrorLayerTransformHorizontally(baseTransform, mirrorMode);
+          setAddedLayers((prev) =>
+            prev.map((al) => (al.id === targetId ? { ...al, transform: nextT } : al))
+          );
+          setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
+        }
+        setLastAction('↔️ تم عكس طبقة الصورة أفقياً من الشمال لليمين مع الحفاظ على مقاساتها');
+        return;
+      }
+
+      if (targetId.startsWith('shape_')) {
+        const srcShape = shapes.find((sh) => sh.id === targetId);
+        if (!srcShape) return;
+        const baseTransform =
+          srcShape.transform || layerTransforms[srcShape.id] || DEFAULT_TRANSFORM;
+        const nextT = mirrorLayerTransformHorizontally(baseTransform, mirrorMode);
+        setShapes((prev) =>
+          prev.map((sh) => (sh.id === targetId ? { ...sh, transform: nextT } : sh))
+        );
+        setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
+        setLastAction('↔️ تم عكس الشكل/النص أفقياً من الشمال لليمين');
+        return;
+      }
+
+      if (targetId.startsWith('sprite_')) {
+        const sIdx = Number(targetId.replace('sprite_', ''));
+        if (Number.isNaN(sIdx) || !movie.sp[sIdx]) return;
+        const s = movie.sp[sIdx];
+        const sKey = s.key || '';
+        const bm = sKey ? bitmaps[sKey] : undefined;
+        const defaultW = bm?.width || thumbs[sKey]?.w || canvasW;
+        const defaultH = bm?.height || thumbs[sKey]?.h || canvasH;
+
+        setMovie((prev) => {
+          const targetSp = prev.sp[sIdx];
+          if (!targetSp) return prev;
+          const flippedFrames = mirrorSvgaFramesHorizontally(
+            targetSp.fr || [],
+            canvasW,
+            defaultW,
+            defaultH,
+            mirrorMode
+          );
+          const nextSp = [...prev.sp];
+          nextSp[sIdx] = { ...targetSp, fr: flippedFrames };
+          return { ...prev, sp: nextSp };
+        });
+
+        const baseTransform = layerTransforms[targetId] || DEFAULT_TRANSFORM;
+        const nextT: LayerTransform = {
+          ...baseTransform,
+          x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+          rotation: -baseTransform.rotation,
+        };
+        setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
+        setLastAction(`↔️ تم عكس الطبقة (${sKey}) من الشمال لليمين عبر الكانفاس`);
+      }
+    },
+    [addedLayers, shapes, movie.sp, bitmaps, thumbs, canvasW, canvasH, layerTransforms]
+  );
+
+  // Expose programmatic helpers on window for automated E2E verification
+  useEffect(() => {
+    (window as any).__svgaCopyMotionToAddedLayer = handleCopyMotionFromSpriteToAddedLayer;
+    (window as any).__svgaDuplicateLayer = handleDuplicateLayer;
+    (window as any).__svgaFlipLayerHorizontally = handleFlipLayerHorizontally;
+    (window as any).__svgaBakeAddedLayerDimensions = handleBakeAddedLayerDimensions;
+    (window as any).__svgaUpdateLayerTransform = updateLayerTransformById;
+    (window as any).__svgaSeedTestProject = async () => {
+      const c1 = document.createElement('canvas');
+      c1.width = 240;
+      c1.height = 240;
+      const ctx1 = c1.getContext('2d')!;
+      ctx1.fillStyle = '#a855f7';
+      ctx1.beginPath();
+      ctx1.arc(120, 120, 90, 0, Math.PI * 2);
+      ctx1.fill();
+      const blob1: Blob = await new Promise((r) => c1.toBlob((b) => r(b!), 'image/png'));
+      const bm1 = await createImageBitmap(blob1);
+      const bytes1 = new Uint8Array(await blob1.arrayBuffer());
+
+      const c2 = document.createElement('canvas');
+      c2.width = 120;
+      c2.height = 120;
+      const ctx2 = c2.getContext('2d')!;
+      ctx2.fillStyle = '#f59e0b';
+      ctx2.fillRect(10, 10, 100, 100);
+      ctx2.strokeStyle = '#fef08a';
+      ctx2.lineWidth = 6;
+      ctx2.strokeRect(10, 10, 100, 100);
+      const blob2: Blob = await new Promise((r) => c2.toBlob((b) => r(b!), 'image/png'));
+      const bm2 = await createImageBitmap(blob2);
+      const bytes2 = new Uint8Array(await blob2.arrayBuffer());
+
+      const frames = Array.from({ length: 30 }, (_, i) => ({
+        a: 1,
+        x: 0,
+        y: 0,
+        w: 240,
+        h: 240,
+        t: [1 + i * 0.01, 0, 0, 1 + i * 0.01, 130 + i * 2, 130] as [
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+        ],
+        shapesRaw: [],
+      }));
+
+      setMovie({
+        w: 500,
+        h: 500,
+        fps: 30,
+        n: 30,
+        im: { crown_glow: bytes1 },
+        sp: [{ key: 'crown_glow', fr: frames }],
+      });
+      setBitmaps({ crown_glow: bm1 });
+      setThumbs({ crown_glow: { url: c1.toDataURL('image/png'), w: 240, h: 240 } });
+
+      const addedId = 'layer_test_1';
+      const newLayer: AddedLayer = {
+        id: addedId,
+        assetKey: 'custom_badge_1',
+        name: 'custom_badge',
+        bitmap: bm2,
+        pngBytes: bytes2,
+        dataUrl: c2.toDataURL('image/png'),
+        width: 120,
+        height: 120,
+        bytes: bytes2.byteLength,
+        transform: { ...DEFAULT_TRANSFORM },
+        inFrame: 0,
+        outFrame: 29,
+      };
+      setAddedLayers([newLayer]);
+      setSelectedTarget(addedId);
+      setSelectedAssetKey(null);
+      return addedId;
+    };
+    (window as any).__svgaEditorState = () => ({
+      spriteCount: movie.sp.length,
+      addedLayers: addedLayers.map((a) => ({
+        id: a.id,
+        name: a.name,
+        width: a.width,
+        height: a.height,
+        transform: a.transform,
+        effectivePixelWidth: Math.max(1, Math.round((a.width * Math.abs(a.transform.sx)) / 100)),
+        effectivePixelHeight: Math.max(1, Math.round((a.height * Math.abs(a.transform.sy)) / 100)),
+        inFrame: a.inFrame,
+        outFrame: a.outFrame,
+        copiedFromKey: a.copiedFromKey || null,
+        copiedFramesCount: a.copiedFrames?.length || 0,
+      })),
+      selectedTarget,
+    });
+  }, [
+    handleCopyMotionFromSpriteToAddedLayer,
+    handleDuplicateLayer,
+    handleFlipLayerHorizontally,
+    handleBakeAddedLayerDimensions,
+    updateLayerTransformById,
+    movie.sp.length,
+    addedLayers,
+    selectedTarget,
+  ]);
+
 
   // Keyboard shortcuts (Ctrl+Z Undo, Ctrl+Y Redo, Delete to delete layer, Space to play/pause)
   // Also Mouse Back / Forward buttons (button 3 / 4) for Undo / Redo!
@@ -2009,6 +3071,24 @@ export default function SvgaAeEditor({
       if (hiddenLayerIds.has(al.id)) continue;
       if (currentFrame < al.inFrame || currentFrame > al.outFrame) continue;
       const lt = getEffectiveTransform(al.id, al.assetKey, currentFrame);
+      if (al.copiedFrames && al.copiedFrames.length > 0) {
+        const safeIdx = Math.max(0, Math.min(al.copiedFrames.length - 1, currentFrame));
+        const cf = al.copiedFrames[safeIdx];
+        if (!cf || cf.a <= 0.01) continue;
+        const fw = cf.w || al.width || canvasW;
+        const fh = cf.h || al.height || canvasH;
+        const mat = computeSpriteFrameMatrix(cf, fw, fh, canvasW, canvasH, lt, docT);
+        const inv = invertAffine(mat);
+        if (!inv) continue;
+        const lx = inv[0] * cx + inv[2] * cy + inv[4];
+        const ly = inv[1] * cx + inv[3] * cy + inv[5];
+        const fx = cf.x || 0;
+        const fy = cf.y || 0;
+        if (lx >= fx && lx <= fx + fw && ly >= fy && ly <= fy + fh) {
+          return { target: al.id, assetKey: null };
+        }
+        continue;
+      }
       const mat = computeAddedLayerFrameMatrix(al.width, al.height, canvasW, canvasH, lt, docT);
       const inv = invertAffine(mat);
       if (!inv) continue;
@@ -2019,11 +3099,32 @@ export default function SvgaAeEditor({
       }
     }
 
-    // 3. Check SVGA sprites from topmost (sp.length - 1) down to 0
-    for (let idx = movie.sp.length - 1; idx >= 0; idx--) {
+    // 3. Check SVGA sprites from topmost visual layer down to backmost
+    const spriteToGroupMap = new Map<number, MergedGroup>();
+    mergedGroups.forEach((g) => {
+      g.spriteIds.forEach((sid) => {
+        const sIdx = Number(sid.replace('sprite_', ''));
+        spriteToGroupMap.set(sIdx, g);
+      });
+    });
+
+    const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
+      const groupA = spriteToGroupMap.get(a);
+      const groupB = spriteToGroupMap.get(b);
+      const orderA = groupA ? mergedGroups.indexOf(groupA) : mergedGroups.length;
+      const orderB = groupB ? mergedGroups.indexOf(groupB) : mergedGroups.length;
+      if (orderA !== orderB) return orderB - orderA;
+      return a - b;
+    });
+
+    for (let k = orderedSpriteIndices.length - 1; k >= 0; k--) {
+      const idx = orderedSpriteIndices[k];
       if (deletedSpriteIndices.has(idx)) continue;
       const spriteId = `sprite_${idx}`;
       if (hiddenLayerIds.has(spriteId)) continue;
+      const parentGroup = spriteToGroupMap.get(idx);
+      if (parentGroup && hiddenLayerIds.has(parentGroup.id)) continue;
+
       const s = movie.sp[idx];
       const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[idx]);
       const f = resolved.frameObj;
@@ -2032,7 +3133,21 @@ export default function SvgaAeEditor({
       const assetW = bm?.width || thumbs[s.key]?.w || f.w || canvasW;
       const assetH = bm?.height || thumbs[s.key]?.h || f.h || canvasH;
       const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
-      const mat = computeSpriteFrameMatrix(f, assetW, assetH, canvasW, canvasH, lt, docT);
+      const groupT =
+        parentGroup && !parentGroup.isUngrouped
+          ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
+          : DEFAULT_TRANSFORM;
+
+      let mat = computeSpriteFrameMatrix(f, assetW, assetH, canvasW, canvasH, lt, DEFAULT_TRANSFORM);
+      if (!isIdentityLayerTransform(groupT)) {
+        const mGroup = buildPivotTransformMatrix(canvasW / 2, canvasH / 2, canvasW / 2, canvasH / 2, groupT);
+        mat = multiplyAffine(mGroup, mat);
+      }
+      if (!isIdentityLayerTransform(docT)) {
+        const mDoc = buildPivotTransformMatrix(canvasW / 2, canvasH / 2, canvasW / 2, canvasH / 2, docT);
+        mat = multiplyAffine(mDoc, mat);
+      }
+
       const inv = invertAffine(mat);
       if (!inv) continue;
       const lx = inv[0] * cx + inv[2] * cy + inv[4];
@@ -2042,6 +3157,9 @@ export default function SvgaAeEditor({
       const fw = f.w || assetW;
       const fh = f.h || assetH;
       if (lx >= fx && lx <= fx + fw && ly >= fy && ly <= fy + fh) {
+        if (parentGroup && !parentGroup.isUngrouped) {
+          return { target: parentGroup.id, assetKey: null };
+        }
         return { target: spriteId, assetKey: s.key || null };
       }
     }
@@ -2340,21 +3458,26 @@ export default function SvgaAeEditor({
       let newSx = origSx;
       let newSy = origSy;
 
+      const signX = origSx < 0 ? -1 : 1;
+      const signY = origSy < 0 ? -1 : 1;
+      const absOrigSx = Math.max(1, Math.abs(origSx));
+      const absOrigSy = Math.max(1, Math.abs(origSy));
+
       if (handle === 'tl' || handle === 'tr' || handle === 'br' || handle === 'bl') {
         const curDist = Math.hypot(pt.x - centerCanvasX, pt.y - centerCanvasY);
         const factor = curDist / Math.max(2, initialDist);
-        newSx = Math.max(5, Math.min(1000, Number((origSx * factor).toFixed(1))));
-        newSy = Math.max(5, Math.min(1000, Number((origSy * factor).toFixed(1))));
+        newSx = signX * Math.max(2, Math.min(1000, Number((absOrigSx * factor).toFixed(1))));
+        newSy = signY * Math.max(2, Math.min(1000, Number((absOrigSy * factor).toFixed(1))));
       } else if (handle === 'mr' || handle === 'ml') {
         const curDistX = Math.abs(pt.x - centerCanvasX);
         const initDistX = Math.abs(initialHandleX - centerCanvasX);
         const factorX = curDistX / Math.max(2, initDistX);
-        newSx = Math.max(5, Math.min(1000, Number((origSx * factorX).toFixed(1))));
+        newSx = signX * Math.max(2, Math.min(1000, Number((absOrigSx * factorX).toFixed(1))));
       } else if (handle === 'tm' || handle === 'bm') {
         const curDistY = Math.abs(pt.y - centerCanvasY);
         const initDistY = Math.abs(initialHandleY - centerCanvasY);
         const factorY = curDistY / Math.max(2, initDistY);
-        newSy = Math.max(5, Math.min(1000, Number((origSy * factorY).toFixed(1))));
+        newSy = signY * Math.max(2, Math.min(1000, Number((absOrigSy * factorY).toFixed(1))));
       }
 
       updateLayerTransformById(
@@ -2491,6 +3614,7 @@ export default function SvgaAeEditor({
         } catch {}
       }
 
+      const startIdx = movie.sp.length;
       const targetFrames = Math.max(movie.n || 1, other.n || 1);
       const mergedSprites = [
         ...movie.sp,
@@ -2499,6 +3623,65 @@ export default function SvgaAeEditor({
           key: keyMap[s.key] || s.key,
         })),
       ];
+
+      let updatedMergedGroups = [...mergedGroups];
+      let nextDocTransform = docTransform;
+
+      // Ensure existing File 1 layers have their own separate independent group
+      // and migrate any GROUP_ALL / docTransform into File 1's group so File 1 and File 2 move independently
+      const hasFile1Group = updatedMergedGroups.some((g) => g.spriteIds.includes('sprite_0'));
+      if (!hasFile1Group && startIdx > 0) {
+        const file1GroupId = `merged_group_main_${Date.now()}`;
+        const file1SpriteIds = Array.from({ length: startIdx }, (_, i) => `sprite_${i}`);
+        updatedMergedGroups.push({
+          id: file1GroupId,
+          name: `📁 الملف الأساسي (#1): ${docName || 'الملف الأول'}`,
+          spriteIds: file1SpriteIds,
+          transform: { ...docTransform },
+          isUngrouped: false,
+        });
+        nextDocTransform = { ...DEFAULT_TRANSFORM };
+        setDocTransform(nextDocTransform);
+      } else if (isAllLayersGrouped && !isIdentityLayerTransform(docTransform) && updatedMergedGroups.length === 1) {
+        updatedMergedGroups = updatedMergedGroups.map((g, idx) =>
+          idx === 0
+            ? {
+                ...g,
+                transform: {
+                  ...g.transform,
+                  x: Number((g.transform.x + docTransform.x).toFixed(2)),
+                  y: Number((g.transform.y + docTransform.y).toFixed(2)),
+                  sx: Number(((g.transform.sx * docTransform.sx) / 100).toFixed(2)),
+                  sy: Number(((g.transform.sy * docTransform.sy) / 100).toFixed(2)),
+                  rotation: Number((g.transform.rotation + docTransform.rotation).toFixed(2)),
+                },
+              }
+            : g
+        );
+        nextDocTransform = { ...DEFAULT_TRANSFORM };
+        setDocTransform(nextDocTransform);
+      }
+
+      // Always disable global GROUP_ALL lock when multiple independent SVGA groups exist
+      if (isAllLayersGrouped) {
+        setIsAllLayersGrouped(false);
+      }
+
+      // Create independent group for File 2 and place it at top of list (in front on canvas)
+      const newGroupId = `merged_group_${Date.now() + 1}`;
+      const newSpriteIds: string[] = [];
+      for (let i = 0; i < other.sp.length; i++) {
+        newSpriteIds.push(`sprite_${startIdx + i}`);
+      }
+      const newGroup: MergedGroup = {
+        id: newGroupId,
+        name: `📁 ملف SVGA المدمج (#${updatedMergedGroups.length + 1}): ${f.name}`,
+        spriteIds: newSpriteIds,
+        transform: { ...DEFAULT_TRANSFORM },
+        isUngrouped: false,
+      };
+
+      updatedMergedGroups = [newGroup, ...updatedMergedGroups];
 
       setBitmaps(nextBm);
       setThumbs(nextTh);
@@ -2511,8 +3694,17 @@ export default function SvgaAeEditor({
         im: nextIm,
         sp: mergedSprites,
       });
+
+      setMergedGroups(updatedMergedGroups);
+      pushHistory(nextDocTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        mergedGroups: updatedMergedGroups,
+      });
+
+      setSelectedTarget(newGroupId);
+      setSelectedAssetKey(null);
+
       setLastAction(
-        `Merged ${f.name} (+${other.sp.length} decomposed layers, +${Object.keys(other.im).length} assets)`
+        `دمج ملف SVGA (${f.name}) كطبقة مستقلة منفصلة (+${other.sp.length} طبقة) — يمكنك تحريكها بمفردها`
       );
     } catch (err: any) {
       setLastAction(`Merge failed: ${err?.message || 'Invalid SVGA'}`);
@@ -2695,6 +3887,46 @@ export default function SvgaAeEditor({
       return;
     }
 
+    // If there are multiple merged groups, toggle group/ungroup on the selected group or all groups
+    if (mergedGroups.length > 0) {
+      setIsAllLayersGrouped(false);
+      const anyGrouped = mergedGroups.some((g) => !g.isUngrouped);
+      const nextGroups = mergedGroups.map((g) => ({ ...g, isUngrouped: anyGrouped }));
+      setMergedGroups(nextGroups);
+      if (!anyGrouped && nextGroups[0]) {
+        setSelectedTarget(nextGroups[0].id);
+        setSelectedAssetKey(null);
+        setLastAction('تم تجميع كل ملف SVGA في طبقة مستقلة منفصلة — يمكنك تحريك كل ملف وترتيبه للأعلى أو للأسفل');
+      } else {
+        setSelectedTarget('DOCUMENT');
+        setSelectedAssetKey(null);
+        setLastAction('تم فك تجميع الملفات — يمكنك الآن التحكم في كل طبقة فرعية على حدة');
+      }
+      return;
+    }
+
+    // Single file loaded: create a dedicated MergedGroup for File 1 so it has MoveUp/MoveDown arrows and stays separate when File 2 is merged
+    if (movie.sp.length > 0) {
+      const file1GroupId = `merged_group_main_${Date.now()}`;
+      const file1SpriteIds = Array.from({ length: movie.sp.length }, (_, i) => `sprite_${i}`);
+      const nextGroup: MergedGroup = {
+        id: file1GroupId,
+        name: `📁 الملف الأساسي (#1): ${docName || 'الملف الأول'}`,
+        spriteIds: file1SpriteIds,
+        transform: { ...docTransform },
+        isUngrouped: false,
+      };
+      setDocTransform({ ...DEFAULT_TRANSFORM });
+      setIsAllLayersGrouped(false);
+      setMergedGroups([nextGroup]);
+      setSelectedTarget(file1GroupId);
+      setSelectedAssetKey(null);
+      setLastAction(
+        `تم تجميع الملف (${movie.sp.length} طبقة) في لير مستقل — يمكنك تحريكه لوحده أو رفع ملف ثانٍ وتحريك كل ملف منفصلاً`
+      );
+      return;
+    }
+
     if (isAllLayersGrouped) {
       setIsAllLayersGrouped(false);
       setSelectedTarget('DOCUMENT');
@@ -2721,22 +3953,70 @@ export default function SvgaAeEditor({
 
     for (const al of addedLayers) {
       if (hiddenLayerIds.has(al.id)) continue;
+      const kfForAl = layerKeyframes[al.id];
+      const hasScaleKeyframes = Boolean(kfForAl?.scale && Object.keys(kfForAl.scale).length > 0);
+      const absSx = Math.abs(al.transform.sx);
+      const absSy = Math.abs(al.transform.sy);
+      const needsDimensionBake =
+        !hasScaleKeyframes && (Math.abs(absSx - 100) > 0.25 || Math.abs(absSy - 100) > 0.25);
+
+      let exportPngBytes = al.pngBytes;
+      let exportW = al.width;
+      let exportH = al.height;
+      let exportTransform: LayerTransform = { ...al.transform };
+      let exportCopiedFrames = al.copiedFrames;
+
+      if (needsDimensionBake && al.bitmap) {
+        const bakedW = Math.max(2, Math.round((al.width * absSx) / 100));
+        const bakedH = Math.max(2, Math.round((al.height * absSy) / 100));
+        const c = document.createElement('canvas');
+        c.width = bakedW;
+        c.height = bakedH;
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(al.bitmap, 0, 0, bakedW, bakedH);
+          const blob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
+          if (blob) {
+            const rawBaked = new Uint8Array(await blob.arrayBuffer());
+            exportPngBytes = compressPngBufferLikeReference(rawBaked, 100, 'png8_only').bytes;
+            exportW = bakedW;
+            exportH = bakedH;
+            exportTransform = {
+              ...al.transform,
+              sx: al.transform.sx < 0 ? -100 : 100,
+              sy: al.transform.sy < 0 ? -100 : 100,
+            };
+            if (al.copiedFrames && al.copiedFrames.length > 0) {
+              exportCopiedFrames = retargetCopiedFramesDimensions(al.copiedFrames, bakedW, bakedH);
+            }
+          }
+        }
+      } else if (exportPngBytes && exportPngBytes.byteLength > 0) {
+        exportPngBytes = compressPngBufferLikeReference(exportPngBytes, 100, 'png8_only').bytes;
+      }
+
       extraLayers.push({
         id: al.id,
         assetKey: al.assetKey,
         name: al.name,
-        pngBytes: al.pngBytes,
-        width: al.width,
-        height: al.height,
-        transform: al.transform,
+        pngBytes: exportPngBytes,
+        width: exportW,
+        height: exportH,
+        transform: exportTransform,
         inFrame: al.inFrame,
         outFrame: al.outFrame,
+        copiedFrames: exportCopiedFrames,
+        copiedFromKey: al.copiedFromKey,
       });
     }
 
     for (const sh of shapes) {
       if (hiddenLayerIds.has(sh.id)) continue;
-      const pngBytes = await renderShapeObjectToPngBytes(sh);
+      const rawShapePng = await renderShapeObjectToPngBytes(sh);
+      const pngBytes =
+        rawShapePng.byteLength > 0
+          ? compressPngBufferLikeReference(rawShapePng, 100, 'png8_only').bytes
+          : rawShapePng;
       if (pngBytes.byteLength > 0) {
         extraLayers.push({
           id: sh.id,
@@ -2772,11 +4052,19 @@ export default function SvgaAeEditor({
       deletedSpriteIndices,
       assetDimensions,
       extraLayers,
+      mergedGroups,
     });
 
     const deflated = await compressDeflate(rawProto);
     return new Blob([deflated as any], { type: 'application/octet-stream' });
   };
+
+  useEffect(() => {
+    (window as any).__buildEditedSvgaFile = async (name = 'edited_gift.svga') => {
+      const blob = await buildEditedSvgaBlob();
+      return new File([blob], name, { type: 'application/octet-stream' });
+    };
+  });
 
   const handleExportSvga = async () => {
     if (typeof (window as any).__checkConversionAccess === 'function') {
@@ -3096,54 +4384,123 @@ export default function SvgaAeEditor({
             overflow: 'hidden',
           }}
         >
-          <span style={{ color: '#7e7e90' }}>Local drafts</span>
+          <span style={{ color: '#a78bfa', fontWeight: 700 }}>{title || 'Local drafts'}</span>
           <span style={{ color: '#4a4a5a' }}>/</span>
           {isRenamingDoc ? (
-            <input
-              type="text"
-              value={docName}
-              autoFocus
-              onChange={(e) => setDocName(e.target.value)}
-              onBlur={() => setIsRenamingDoc(false)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') setIsRenamingDoc(false);
-              }}
-              style={{
-                width: '180px',
-                background: '#14141e',
-                border: '1px solid #7c5cff',
-                borderRadius: '5px',
-                padding: '2px 6px',
-                color: '#fff',
-                fontSize: '12px',
-              }}
-            />
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <input
+                type="text"
+                value={docName}
+                placeholder="اكتب الاسم الجديد (مثل Ahmed)..."
+                autoFocus
+                onChange={(e) => setDocName(e.target.value)}
+                onBlur={() => {
+                  const clean = docName
+                    .replace(/[\\/:*?"<>|\u0000-\u001F]+/g, '')
+                    .replace(/\.svga$/i, '')
+                    .replace(/^\.+|\.+$/g, '')
+                    .trim();
+                  setDocName(clean ? `${clean}.svga` : 'SVGA.svga');
+                  setIsRenamingDoc(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const clean = docName
+                      .replace(/[\\/:*?"<>|\u0000-\u001F]+/g, '')
+                      .replace(/\.svga$/i, '')
+                      .replace(/^\.+|\.+$/g, '')
+                      .trim();
+                    const finalName = clean ? `${clean}.svga` : 'SVGA.svga';
+                    setDocName(finalName);
+                    setIsRenamingDoc(false);
+                    setLastAction(`تم حذف الاسم القديم وتسمية الملف: ${finalName}`);
+                  } else if (e.key === 'Escape') {
+                    setIsRenamingDoc(false);
+                  }
+                }}
+                style={{
+                  width: '170px',
+                  background: '#14141e',
+                  border: '1px solid #a855f7',
+                  borderRadius: '5px',
+                  padding: '2px 6px',
+                  color: '#fff',
+                  fontSize: '12px',
+                }}
+              />
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  color: '#c084fc',
+                  background: 'rgba(168,85,247,0.16)',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  border: '1px solid rgba(168,85,247,0.35)',
+                }}
+              >
+                .svga
+              </span>
+            </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedTarget('DOCUMENT');
-                setSelectedAssetKey(null);
-              }}
-              onDoubleClick={() => setIsRenamingDoc(true)}
-              title="Click to inspect document, double-click to rename"
-              style={{
-                background: 'transparent',
-                border: 0,
-                color: '#f0f0f6',
-                fontWeight: 600,
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                padding: '2px 4px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{docName}</span>
-              <ChevronDown size={12} color="#7e7e90" />
-            </button>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedTarget('DOCUMENT');
+                  setSelectedAssetKey(null);
+                }}
+                onDoubleClick={() => {
+                  setDocName('');
+                  setIsRenamingDoc(true);
+                }}
+                title="اضغط لتحديد المستند، أو اضغط زر تغيير الاسم لحذف الاسم القديم وكتابة اسم جديد"
+                style={{
+                  background: 'transparent',
+                  border: 0,
+                  color: '#f0f0f6',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '2px 4px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  maxWidth: '210px',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {docName.endsWith('.svga') ? docName : `${docName}.svga`}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDocName('');
+                  setIsRenamingDoc(true);
+                }}
+                title="حذف الاسم القديم بالكامل وكتابة اسم جديد بجانب .svga"
+                style={{
+                  height: '24px',
+                  padding: '0 8px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(168,85,247,0.45)',
+                  background: 'rgba(168,85,247,0.14)',
+                  color: '#e9d5ff',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  flexShrink: 0,
+                }}
+              >
+                <Pencil size={11} />
+                <span>تغيير الاسم (.svga)</span>
+              </button>
+            </div>
           )}
         </div>
 
@@ -3467,38 +4824,43 @@ export default function SvgaAeEditor({
                       {spriteLayers.length + addedLayers.length + shapes.length} decomposed layers
                     </span>
                     <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      <button
-                        type="button"
-                        id="edMergeAllLayers"
-                        onClick={handleToggleGroupAllLayers}
-                        title={
-                          isAllLayersGrouped
-                            ? 'فك تجميع الطبقات والرجوع للتحكم في كل طبقة منفردة'
-                            : 'تجميع كل الطبقات في لير واحد مجمع لتسهيل تحريكه وتكبيره وتصغيره معاً دون فقدان جودة وبدون تحويل لصور'
-                        }
-                        style={{
-                          background: isAllLayersGrouped
-                            ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.28), rgba(248, 113, 113, 0.18))'
-                            : 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(167, 139, 250, 0.18))',
-                          border: isAllLayersGrouped
-                            ? '1px solid rgba(239, 68, 68, 0.55)'
-                            : '1px solid rgba(139, 92, 246, 0.55)',
-                          color: isAllLayersGrouped ? '#fca5a5' : '#ddd6fe',
-                          borderRadius: '5px',
-                          padding: '2px 7px',
-                          fontSize: '10px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '3px',
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        <Layers size={10} color={isAllLayersGrouped ? '#fca5a5' : '#a78bfa'} />
-                        <span>{isAllLayersGrouped ? 'فك التجميع (Ungroup)' : 'دمج الطبقات كلها في لير واحد'}</span>
-                      </button>
+                      {(() => {
+                        const isAnyGrouped = isAllLayersGrouped || mergedGroups.some((g) => !g.isUngrouped);
+                        return (
+                          <button
+                            type="button"
+                            id="edMergeAllLayers"
+                            onClick={handleToggleGroupAllLayers}
+                            title={
+                              isAnyGrouped
+                                ? 'فك تجميع الطبقات والرجوع للتحكم في كل طبقة منفردة'
+                                : 'تجميع كل ملف في لير واحد مستقل لتسهيل تحريكه وترتيبه للأعلى والأسفل دون فقدان جودة'
+                            }
+                            style={{
+                              background: isAnyGrouped
+                                ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.28), rgba(248, 113, 113, 0.18))'
+                                : 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(167, 139, 250, 0.18))',
+                              border: isAnyGrouped
+                                ? '1px solid rgba(239, 68, 68, 0.55)'
+                                : '1px solid rgba(139, 92, 246, 0.55)',
+                              color: isAnyGrouped ? '#fca5a5' : '#ddd6fe',
+                              borderRadius: '5px',
+                              padding: '2px 7px',
+                              fontSize: '10px',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <Layers size={10} color={isAnyGrouped ? '#fca5a5' : '#a78bfa'} />
+                            <span>{isAnyGrouped ? 'فك التجميع (Ungroup)' : 'دمج الطبقات كلها في لير واحد'}</span>
+                          </button>
+                        );
+                      })()}
                       {selectedTarget !== 'DOCUMENT' && selectedTarget !== 'GROUP_ALL' && (
                         <button
                           type="button"
@@ -3652,8 +5014,160 @@ export default function SvgaAeEditor({
                     </span>
                   </div>
 
+                  {/* Merged SVGA Group Layers */}
+                  {mergedGroups.map((mg, gIdx) => {
+                    const isHidden = hiddenLayerIds.has(mg.id);
+                    const isSel = selectedTarget === mg.id;
+                    return (
+                      <div
+                        key={mg.id}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', `merged_group_idx:${gIdx}`);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const raw = e.dataTransfer.getData('text/plain');
+                          if (raw.startsWith('merged_group_idx:')) {
+                            const fromIdx = Number(raw.replace('merged_group_idx:', ''));
+                            if (Number.isFinite(fromIdx) && fromIdx !== gIdx && fromIdx >= 0 && fromIdx < mergedGroups.length) {
+                              setMergedGroups((prev) => {
+                                const next = [...prev];
+                                const [moved] = next.splice(fromIdx, 1);
+                                next.splice(gIdx, 0, moved);
+                                return next;
+                              });
+                              setSelectedTarget(mg.id);
+                              setLastAction(`تم نقل ${mg.name} بالماوس إلى الترتيب #${gIdx + 1}`);
+                            }
+                          }
+                        }}
+                        style={{
+                          marginTop: '4px',
+                          marginBottom: '4px',
+                          border: isSel ? '1.5px solid #a78bfa' : '1px solid rgba(124, 92, 255, 0.35)',
+                          borderRadius: '7px',
+                          background: isSel ? 'rgba(124, 92, 255, 0.25)' : 'rgba(124, 92, 255, 0.08)',
+                          overflow: 'hidden',
+                          opacity: isHidden ? 0.45 : 1,
+                          cursor: 'grab',
+                        }}
+                      >
+                        <div
+                          onClick={() => {
+                            setSelectedTarget(mg.id);
+                            setSelectedAssetKey(null);
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            padding: '6px 8px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleLayerVisibility(mg.id);
+                            }}
+                            title={isHidden ? 'إظهار المجموعة' : 'إخفاء المجموعة'}
+                            style={{
+                              background: 0,
+                              border: 0,
+                              color: isHidden ? '#555566' : '#a78bfa',
+                              cursor: 'pointer',
+                              padding: 0,
+                              display: 'grid',
+                              placeItems: 'center',
+                            }}
+                          >
+                            {isHidden ? <EyeOff size={13} /> : <Eye size={13} />}
+                          </button>
+                          <Layers size={14} color="#a78bfa" />
+                          <span
+                            style={{
+                              flex: 1,
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              color: '#f3e8ff',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {mg.name} ({mg.spriteIds.length} طبقة)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleGroupUngroup(mg.id);
+                            }}
+                            title={mg.isUngrouped ? 'تجميع الطبقات المدمجة' : 'فك التجميع (Ungroup)'}
+                            style={{
+                              background: mg.isUngrouped
+                                ? 'rgba(239, 68, 68, 0.25)'
+                                : 'rgba(124, 92, 255, 0.3)',
+                              border: mg.isUngrouped
+                                ? '1px solid rgba(239, 68, 68, 0.5)'
+                                : '1px solid #a78bfa',
+                              color: mg.isUngrouped ? '#fca5a5' : '#e9d5ff',
+                              borderRadius: '4px',
+                              padding: '2px 5px',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {mg.isUngrouped ? 'تجميع' : 'فك التجميع (Ungroup)'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveMergedGroupUp(mg.id);
+                            }}
+                            title="رفع المجموعة للأعلى"
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px' }}
+                          >
+                            <MoveUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveMergedGroupDown(mg.id);
+                            }}
+                            title="خفض المجموعة للأسفل"
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px' }}
+                          >
+                            <MoveDown size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteLayer(mg.id);
+                            }}
+                            title="حذف المجموعة"
+                            style={{ background: 0, border: 0, color: '#f87171', cursor: 'pointer', padding: '1px' }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+
                   {/* Added Shape / Text Layers */}
-                  {shapes.map((sh) => {
+                  {shapes.map((sh, index) => {
                     const isHidden = hiddenLayerIds.has(sh.id);
                     const isSel = selectedTarget === sh.id;
                     return (
@@ -3711,6 +5225,30 @@ export default function SvgaAeEditor({
                         >
                           {sh.name}
                         </span>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveShapeUp(index);
+                            }}
+                            title="رفع الطبقة للأعلى (Move Up)"
+                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                          >
+                            <ChevronUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveShapeDown(index);
+                            }}
+                            title="خفض الطبقة للأسفل (Move Down)"
+                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                          >
+                            <ChevronDown size={12} />
+                          </button>
+                        </div>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -3733,7 +5271,7 @@ export default function SvgaAeEditor({
                   })}
 
                   {/* Added Image Layers */}
-                  {addedLayers.map((al) => {
+                  {addedLayers.map((al, index) => {
                     const isHidden = hiddenLayerIds.has(al.id);
                     const isSel = selectedTarget === al.id;
                     return (
@@ -3745,69 +5283,194 @@ export default function SvgaAeEditor({
                         }}
                         style={{
                           display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '5px 8px 5px 18px',
-                          borderRadius: '6px',
+                          flexDirection: 'column',
+                          gap: '5px',
+                          padding: '6px 8px',
+                          borderRadius: '7px',
                           cursor: 'pointer',
-                          marginTop: '2px',
-                          background: isSel ? '#1d1d2d' : 'transparent',
-                          border: isSel ? '1px solid #7c5cff' : '1px solid transparent',
+                          marginTop: '3px',
+                          background: isSel ? '#1d1d2d' : 'rgba(255,255,255,0.02)',
+                          border: isSel ? '1px solid #7c5cff' : '1px solid #222230',
                           opacity: isHidden ? 0.45 : 1,
                         }}
                       >
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleLayerVisibility(al.id);
-                          }}
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: isHidden ? '#555566' : '#8e8ea0',
-                            cursor: 'pointer',
-                            padding: 0,
-                            display: 'grid',
-                            placeItems: 'center',
-                          }}
-                        >
-                          {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                        <ImageIcon size={12} color="#a78bfa" />
-                        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                          <span
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleLayerVisibility(al.id);
+                            }}
                             style={{
-                              fontWeight: 500,
-                              color: '#e8e8ee',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
+                              background: 0,
+                              border: 0,
+                              color: isHidden ? '#555566' : '#8e8ea0',
+                              cursor: 'pointer',
+                              padding: 0,
+                              display: 'grid',
+                              placeItems: 'center',
+                              flexShrink: 0,
+                            }}
+                          >
+                            {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                          </button>
+                          <ImageIcon size={12} color="#a78bfa" style={{ flexShrink: 0 }} />
+                          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                            <span
+                              style={{
+                                fontWeight: 600,
+                                color: '#e8e8ee',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {al.name}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '9.5px',
+                                color: al.copiedFromKey ? '#34d399' : '#727284',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {al.copiedFromKey
+                                ? `🎬 حركة: ${al.copiedFromKey} · F${al.inFrame}–${al.outFrame}`
+                                : `ADDED · ${al.width}×${al.height}`}
+                            </span>
+                          </div>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveAddedLayerUp(index);
+                              }}
+                              title="رفع الطبقة للأعلى (Move Up)"
+                              style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                            >
+                              <ChevronUp size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveAddedLayerDown(index);
+                              }}
+                              title="خفض الطبقة للأسفل (Move Down)"
+                              style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                            >
+                              <ChevronDown size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteLayer(al.id);
+                              }}
+                              title="Delete layer"
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: '#727284',
+                                cursor: 'pointer',
+                                padding: '1px',
+                              }}
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingLeft: '16px' }}>
+                          <button
+                            type="button"
+                            className="btn-copy-motion-layer"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedTarget(al.id);
+                              setSelectedAssetKey(null);
+                              setCopyMotionSearch('');
+                              setCopyMotionModalLayerId(al.id);
+                            }}
+                            title="اختر طبقة من ملف SVGA لأخذ نفس الحركة والأنيميشن والفريمات"
+                            style={{
+                              flex: 1,
+                              background: al.copiedFromKey
+                                ? 'rgba(16, 185, 129, 0.2)'
+                                : 'rgba(245, 158, 11, 0.18)',
+                              border: al.copiedFromKey
+                                ? '1px solid rgba(16, 185, 129, 0.5)'
+                                : '1px solid rgba(245, 158, 11, 0.45)',
+                              color: al.copiedFromKey ? '#6ee7b7' : '#fcd34d',
+                              borderRadius: '5px',
+                              padding: '3px 6px',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {al.name}
-                          </span>
-                          <span style={{ fontSize: '10px', color: '#727284' }}>
-                            ADDED · {al.width}×{al.height}
-                          </span>
+                            <Clapperboard size={10} />
+                            <span>{al.copiedFromKey ? 'تغيير الحركة' : 'نسخ حركة SVGA'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateLayer(al.id, 'none');
+                            }}
+                            title="نسخ طبقة ثانية (Duplicate Layer)"
+                            style={{
+                              background: 'rgba(56, 189, 248, 0.14)',
+                              border: '1px solid rgba(56, 189, 248, 0.35)',
+                              color: '#7dd3fc',
+                              borderRadius: '5px',
+                              padding: '3px 6px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <CopyPlus size={10} />
+                            <span>نسخ</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateLayer(al.id, 'canvas');
+                            }}
+                            title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
+                            style={{
+                              background: 'rgba(236, 72, 153, 0.14)',
+                              border: '1px solid rgba(236, 72, 153, 0.35)',
+                              color: '#f9a8d4',
+                              borderRadius: '5px',
+                              padding: '3px 6px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <FlipHorizontal2 size={10} />
+                            <span>عكس</span>
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteLayer(al.id);
-                          }}
-                          title="Delete layer"
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: '#727284',
-                            cursor: 'pointer',
-                            padding: 0,
-                          }}
-                        >
-                          <Trash2 size={11} />
-                        </button>
                       </div>
                     );
                   })}
@@ -3817,6 +5480,10 @@ export default function SvgaAeEditor({
                     const isHidden = hiddenLayerIds.has(sl.id);
                     const isSel = selectedTarget === sl.id;
                     const th = thumbs[sl.key];
+                    const parentGroup = mergedGroups.find((g) => g.spriteIds.includes(sl.id));
+                    // If in a grouped merged group, skip rendering in main list unless ungrouped
+                    if (parentGroup && !parentGroup.isUngrouped) return null;
+
                     return (
                       <div
                         key={sl.id}
@@ -3900,6 +5567,72 @@ export default function SvgaAeEditor({
                             F{sl.span.firstFrame}–{sl.span.lastFrame} ({sl.span.activeCount}f)
                             {sl.span.isStatic ? ' · static' : ''}
                           </span>
+                        </div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                          <button
+                            type="button"
+                            className="btn-dup-sprite"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateLayer(sl.id, 'none');
+                            }}
+                            title="نسخ طبقة ثانية (Duplicate Layer)"
+                            style={{
+                              background: 'rgba(56, 189, 248, 0.12)',
+                              border: '1px solid rgba(56, 189, 248, 0.3)',
+                              color: '#7dd3fc',
+                              borderRadius: '4px',
+                              padding: '2px 3px',
+                              cursor: 'pointer',
+                              display: 'grid',
+                              placeItems: 'center',
+                            }}
+                          >
+                            <CopyPlus size={11} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-mirror-sprite"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDuplicateLayer(sl.id, 'canvas');
+                            }}
+                            title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
+                            style={{
+                              background: 'rgba(236, 72, 153, 0.12)',
+                              border: '1px solid rgba(236, 72, 153, 0.3)',
+                              color: '#f9a8d4',
+                              borderRadius: '4px',
+                              padding: '2px 3px',
+                              cursor: 'pointer',
+                              display: 'grid',
+                              placeItems: 'center',
+                            }}
+                          >
+                            <FlipHorizontal2 size={11} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveSpriteLayerUp(sl.spriteIdx);
+                            }}
+                            title="رفع الطبقة للأعلى (Move Up)"
+                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                          >
+                            <ChevronUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveSpriteLayerDown(sl.spriteIdx);
+                            }}
+                            title="خفض الطبقة للأسفل (Move Down)"
+                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                          >
+                            <ChevronDown size={12} />
+                          </button>
                         </div>
                         <button
                           type="button"
@@ -4434,26 +6167,51 @@ export default function SvgaAeEditor({
                       {spriteLayers.length + addedLayers.length + shapes.length} layers) as an Adobe
                       After Effects ExtendScript (.jsx) panel.
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleDownloadAeScript}
-                      style={{
-                        padding: '7px 10px',
-                        borderRadius: '7px',
-                        border: '1px solid #7c5cff',
-                        background: '#7c5cff',
-                        color: '#fff',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px',
-                      }}
-                    >
-                      <Download size={13} />
-                      <span>Download AE Script (.jsx)</span>
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={handleDownloadAeScript}
+                        style={{
+                          padding: '7px 10px',
+                          borderRadius: '7px',
+                          border: '1px solid #7c5cff',
+                          background: '#7c5cff',
+                          color: '#fff',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <Download size={13} />
+                        <span>Download AE Script (.jsx)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => (window as any).__openAeScriptModal?.()}
+                        style={{
+                          padding: '7px 10px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(168, 85, 247, 0.65)',
+                          background:
+                            'linear-gradient(135deg, rgba(147, 51, 234, 0.35), rgba(79, 70, 229, 0.35))',
+                          color: '#f5f3ff',
+                          fontWeight: 700,
+                          fontSize: '11px',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                        }}
+                        title="فتح أداة إنشاء سكريبت وحزمة After Effects المتكاملة"
+                      >
+                        <Sparkles size={12} className="text-[#facc15]" />
+                        <span>سكريبت افتر افكت (حزمة شاملة JSX + Assets)</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div
@@ -4635,6 +6393,12 @@ export default function SvgaAeEditor({
             onSendLayerBackward={handleSendLayerBackward}
             onBringLayerForward={handleBringLayerForward}
             onDeleteLayer={handleDeleteLayer}
+            onDuplicateLayer={handleDuplicateLayer}
+            onFlipLayerHorizontally={handleFlipLayerHorizontally}
+            onOpenCopyMotionModal={(layerId) => {
+              setCopyMotionSearch('');
+              setCopyMotionModalLayerId(layerId);
+            }}
           />
 
           <div
@@ -4877,6 +6641,179 @@ export default function SvgaAeEditor({
                         : 'تحديد وقص جزء من الطبقة بالماوس'}
                     </span>
                   </button>
+
+                  {/* LAYER MOTION COPY, DUPLICATE & MIRROR (LEFT-TO-RIGHT) PANEL */}
+                  <div
+                    style={{
+                      background: 'rgba(19, 19, 31, 0.9)',
+                      border: '1px solid #252538',
+                      borderRadius: '9px',
+                      padding: '10px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '7px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        color: '#e2e8f0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span>⚡ أدوات الطبقة والأنيميشن</span>
+                      <span style={{ fontSize: '9.5px', color: '#94a3b8', fontWeight: 500 }}>
+                        نسخ · عكس · حركة
+                      </span>
+                    </div>
+
+                    {selectedAddedLayer && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                        <button
+                          type="button"
+                          id="edInspectorCopyMotionBtn"
+                          onClick={() => {
+                            setCopyMotionSearch('');
+                            setCopyMotionModalLayerId(selectedAddedLayer.id);
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '8px 10px',
+                            borderRadius: '7px',
+                            border: '1px solid rgba(245, 158, 11, 0.5)',
+                            background: 'linear-gradient(135deg, rgba(245,158,11,0.22), rgba(217,119,6,0.14))',
+                            color: '#fde68a',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                          }}
+                        >
+                          <Clapperboard size={13} />
+                          <span>🎬 اختر طبقة من SVGA لأخذ نفس الحركة والفريمات</span>
+                        </button>
+
+                        {selectedAddedLayer.copiedFromKey && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '6px',
+                              padding: '5px 8px',
+                              borderRadius: '6px',
+                              background: 'rgba(16, 185, 129, 0.12)',
+                              border: '1px solid rgba(16, 185, 129, 0.35)',
+                              fontSize: '10.5px',
+                              color: '#6ee7b7',
+                            }}
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              ✓ مرتبطة بحركة: <b>{selectedAddedLayer.copiedFromKey}</b>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleClearCopiedMotionFromAddedLayer(selectedAddedLayer.id)}
+                              style={{
+                                background: 'rgba(239,68,68,0.18)',
+                                border: '1px solid rgba(239,68,68,0.4)',
+                                color: '#fca5a5',
+                                borderRadius: '4px',
+                                padding: '2px 6px',
+                                fontSize: '9.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                flexShrink: 0,
+                              }}
+                            >
+                              إلغاء الحركة
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                      <button
+                        type="button"
+                        id="edInspectorDuplicateBtn"
+                        onClick={() => handleDuplicateLayer(selectedTarget, 'none')}
+                        title="نسخ طبقة ثانية بنفس الحركة والفريمات"
+                        style={{
+                          padding: '7px 8px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(56, 189, 248, 0.45)',
+                          background: 'rgba(56, 189, 248, 0.14)',
+                          color: '#bae6fd',
+                          fontWeight: 700,
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <CopyPlus size={12} />
+                        <span>نسخ طبقة ثانية</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        id="edInspectorDuplicateMirrorBtn"
+                        onClick={() => handleDuplicateLayer(selectedTarget, 'canvas')}
+                        title="نسخ الطبقة وعكسها من الشمال لليمين عبر الكانفاس"
+                        style={{
+                          padding: '7px 8px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(236, 72, 153, 0.45)',
+                          background: 'rgba(236, 72, 153, 0.15)',
+                          color: '#fbcfe8',
+                          fontWeight: 700,
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <FlipHorizontal2 size={12} />
+                        <span>نسخ وعكس (شمال↔يمين)</span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="edInspectorFlipInPlaceBtn"
+                      onClick={() => handleFlipLayerHorizontally(selectedTarget, 'canvas')}
+                      title="عكس الطبقة الحالية نفسها من الشمال لليمين"
+                      style={{
+                        width: '100%',
+                        padding: '6px 8px',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(168, 85, 247, 0.35)',
+                        background: 'rgba(168, 85, 247, 0.1)',
+                        color: '#e9d5ff',
+                        fontWeight: 600,
+                        fontSize: '10.5px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                      }}
+                    >
+                      <FlipHorizontal2 size={12} />
+                      <span>↔️ عكس الطبقة الحالية من الشمال لليمين</span>
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -5082,9 +7019,231 @@ export default function SvgaAeEditor({
 
               {/* TRANSFORM SECTION */}
               <div style={{ borderTop: '1px solid #1b1b26', paddingTop: '12px' }}>
-                <div style={{ fontWeight: 700, color: '#e8e8ee', marginBottom: '10px' }}>
-                  Transform
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <span style={{ fontWeight: 700, color: '#e8e8ee' }}>
+                    Transform · المقاسات والأبعاد
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setScaleLinked((prev) => !prev)}
+                    title={
+                      scaleLinked
+                        ? 'فك ربط العرض والارتفاع (تحكم حر في كل بُعد)'
+                        : 'ربط نسبة العرض والارتفاع معاً'
+                    }
+                    style={{
+                      background: scaleLinked ? 'rgba(124, 92, 255, 0.2)' : '#14141e',
+                      border: scaleLinked ? '1px solid #7c5cff' : '1px solid #28283a',
+                      color: scaleLinked ? '#c4b5fd' : '#94a3b8',
+                      borderRadius: '5px',
+                      padding: '2px 7px',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {scaleLinked ? '🔗 متناسق' : '🔓 أبعاد حرة'}
+                  </button>
                 </div>
+
+                {/* DIRECT PIXEL DIMENSIONS (W x H px) FOR ADDED OR SELECTED LAYER */}
+                {(() => {
+                  const baseW = selectedAddedLayer
+                    ? selectedAddedLayer.width
+                    : selectedShapeLayer
+                      ? selectedShapeLayer.w
+                      : selectedAssetKey && thumbs[selectedAssetKey]
+                        ? thumbs[selectedAssetKey].w
+                        : canvasW;
+                  const baseH = selectedAddedLayer
+                    ? selectedAddedLayer.height
+                    : selectedShapeLayer
+                      ? selectedShapeLayer.h
+                      : selectedAssetKey && thumbs[selectedAssetKey]
+                        ? thumbs[selectedAssetKey].h
+                        : canvasH;
+                  const curPixelW = Math.max(
+                    1,
+                    Math.round((baseW * Math.abs(activeLayerTransform.sx)) / 100)
+                  );
+                  const curPixelH = Math.max(
+                    1,
+                    Math.round((baseH * Math.abs(activeLayerTransform.sy)) / 100)
+                  );
+                  const signX = activeLayerTransform.sx < 0 ? -1 : 1;
+                  const signY = activeLayerTransform.sy < 0 ? -1 : 1;
+
+                  return (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        marginBottom: '8px',
+                        padding: '7px 8px',
+                        borderRadius: '7px',
+                        background: 'rgba(124, 92, 255, 0.07)',
+                        border: '1px solid rgba(124, 92, 255, 0.25)',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '52px 1fr 1fr',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <span style={{ color: '#c4b5fd', fontSize: '10.5px', fontWeight: 700 }}>
+                          الأبعاد px
+                        </span>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            background: '#14141e',
+                            border: '1px solid #2b2b40',
+                            borderRadius: '6px',
+                            padding: '0 6px',
+                          }}
+                        >
+                          <span style={{ color: '#a78bfa', fontSize: '10px', marginRight: '4px' }}>
+                            W
+                          </span>
+                          <input
+                            id="edInspectorPixelWidthInput"
+                            type="number"
+                            min="1"
+                            max="4096"
+                            aria-label="Layer width in pixels"
+                            value={curPixelW}
+                            onChange={(e) => {
+                              const targetW = Math.max(1, Number(e.target.value) || 1);
+                              const newSx =
+                                signX * Number(((targetW / Math.max(1, baseW)) * 100).toFixed(2));
+                              if (scaleLinked) {
+                                const ratio = targetW / Math.max(1, curPixelW);
+                                const newSy =
+                                  signY *
+                                  Number(
+                                    (Math.abs(activeLayerTransform.sy) * ratio).toFixed(2)
+                                  );
+                                updateActiveTransform(
+                                  { sx: newSx, sy: newSy },
+                                  `تحديد عرض الطبقة ${targetW}px`
+                                );
+                              } else {
+                                updateActiveTransform(
+                                  { sx: newSx },
+                                  `تحديد عرض الطبقة ${targetW}px`
+                                );
+                              }
+                            }}
+                            style={{
+                              border: 0,
+                              background: 'transparent',
+                              padding: '4px 0',
+                              textAlign: 'right',
+                              width: '100%',
+                            }}
+                          />
+                          <span style={{ color: '#6e6e80', fontSize: '9.5px', marginLeft: '2px' }}>
+                            px
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            background: '#14141e',
+                            border: '1px solid #2b2b40',
+                            borderRadius: '6px',
+                            padding: '0 6px',
+                          }}
+                        >
+                          <span style={{ color: '#a78bfa', fontSize: '10px', marginRight: '4px' }}>
+                            H
+                          </span>
+                          <input
+                            id="edInspectorPixelHeightInput"
+                            type="number"
+                            min="1"
+                            max="4096"
+                            aria-label="Layer height in pixels"
+                            value={curPixelH}
+                            onChange={(e) => {
+                              const targetH = Math.max(1, Number(e.target.value) || 1);
+                              const newSy =
+                                signY * Number(((targetH / Math.max(1, baseH)) * 100).toFixed(2));
+                              if (scaleLinked) {
+                                const ratio = targetH / Math.max(1, curPixelH);
+                                const newSx =
+                                  signX *
+                                  Number(
+                                    (Math.abs(activeLayerTransform.sx) * ratio).toFixed(2)
+                                  );
+                                updateActiveTransform(
+                                  { sx: newSx, sy: newSy },
+                                  `تحديد ارتفاع الطبقة ${targetH}px`
+                                );
+                              } else {
+                                updateActiveTransform(
+                                  { sy: newSy },
+                                  `تحديد ارتفاع الطبقة ${targetH}px`
+                                );
+                              }
+                            }}
+                            style={{
+                              border: 0,
+                              background: 'transparent',
+                              padding: '4px 0',
+                              textAlign: 'right',
+                              width: '100%',
+                            }}
+                          />
+                          <span style={{ color: '#6e6e80', fontSize: '9.5px', marginLeft: '2px' }}>
+                            px
+                          </span>
+                        </div>
+                      </div>
+
+                      {selectedAddedLayer && (
+                        <button
+                          type="button"
+                          id="edBakeDimensionsBtn"
+                          onClick={() => handleBakeAddedLayerDimensions(selectedAddedLayer.id)}
+                          style={{
+                            width: '100%',
+                            padding: '5px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid rgba(16, 185, 129, 0.45)',
+                            background: 'rgba(16, 185, 129, 0.14)',
+                            color: '#6ee7b7',
+                            fontSize: '10.5px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '5px',
+                          }}
+                        >
+                          <Check size={12} />
+                          <span>
+                            📌 تثبيت المقاسات والأبعاد الحالية ({curPixelW}×{curPixelH}px)
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div
                   style={{
@@ -6086,6 +8245,361 @@ export default function SvgaAeEditor({
                 <Download size={14} />
                 <span>Download SVGA AE Script (.jsx)</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COPY MOTION / ANIMATION / FRAMES FROM SVGA SPRITE MODAL */}
+      {copyMotionModalLayerId && (
+        <div
+          id="copyMotionModalBackdrop"
+          onClick={() => setCopyMotionModalLayerId(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 6, 12, 0.82)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 9998,
+            display: 'grid',
+            placeItems: 'center',
+            padding: '20px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '560px',
+              maxHeight: '82vh',
+              background: '#11111a',
+              border: '1px solid #2d2d44',
+              borderRadius: '14px',
+              padding: '18px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.85)',
+              direction: 'rtl',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '9px',
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    color: '#fff',
+                  }}
+                >
+                  <Clapperboard size={18} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: '14px', color: '#fff' }}>
+                    🎬 اختر طبقة من ملف SVGA لأخذ نفس الحركة والأنيميشن والفريمات
+                  </div>
+                  <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>
+                    سيتم نسخ مسار الحركة (Transform Matrix) والشفافية والفريمات (F0–F{totalFrames - 1}) وتطبيقها فوراً على طبقة الصورة المضافة
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCopyMotionModalLayerId(null)}
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '8px',
+                  width: '30px',
+                  height: '30px',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  display: 'grid',
+                  placeItems: 'center',
+                }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div style={{ position: 'relative' }}>
+              <Search
+                size={13}
+                color="#7e7e92"
+                style={{
+                  position: 'absolute',
+                  right: '10px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                }}
+              />
+              <input
+                type="text"
+                value={copyMotionSearch}
+                onChange={(e) => setCopyMotionSearch(e.target.value)}
+                placeholder="ابحث برقم الطبقة أو اسمها (مثال: #12 أو img_263)..."
+                style={{
+                  width: '100%',
+                  height: '34px',
+                  padding: '0 32px 0 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #2b2b40',
+                  background: '#171723',
+                  color: '#f1f5f9',
+                  fontSize: '12px',
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                padding: '4px 2px',
+                maxHeight: '420px',
+              }}
+            >
+              {spriteLayers
+                .filter((sl) => {
+                  const q = copyMotionSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    sl.key.toLowerCase().includes(q) ||
+                    `#${sl.displayNum}`.includes(q) ||
+                    String(sl.displayNum).includes(q)
+                  );
+                })
+                .map((sl) => {
+                  const th = thumbs[sl.key];
+                  return (
+                    <div
+                      key={sl.id}
+                      onClick={() =>
+                        handleCopyMotionFromSpriteToAddedLayer(copyMotionModalLayerId, sl.spriteIdx)
+                      }
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '10px',
+                        padding: '8px 12px',
+                        borderRadius: '9px',
+                        background: '#181826',
+                        border: '1px solid #27273a',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                        <div
+                          style={{
+                            width: '36px',
+                            height: '36px',
+                            borderRadius: '6px',
+                            background:
+                              'repeating-conic-gradient(#22222c 0 25%, #17171f 0 50%) 0 0 / 8px 8px',
+                            display: 'grid',
+                            placeItems: 'center',
+                            overflow: 'hidden',
+                            border: '1px solid #2e2e42',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {th ? (
+                            <img
+                              src={th.url}
+                              alt={sl.key}
+                              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                            />
+                          ) : (
+                            <ImageIcon size={14} color="#94a3b8" />
+                          )}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span
+                              style={{
+                                background: 'rgba(124, 92, 255, 0.2)',
+                                color: '#c4b5fd',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                              }}
+                            >
+                              #{sl.displayNum}
+                            </span>
+                            <span
+                              style={{
+                                fontWeight: 700,
+                                color: '#f1f5f9',
+                                fontSize: '12.5px',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {sl.key}
+                            </span>
+                          </div>
+                          <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>
+                            الفريمات النشطة: <b>F{sl.span.firstFrame}–{sl.span.lastFrame}</b> ({sl.span.activeCount}{' '}
+                            فريم) · {sl.span.isStatic ? 'ثابتة' : 'متحركة (Animated)'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="btn-confirm-copy-motion"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCopyMotionFromSpriteToAddedLayer(
+                            copyMotionModalLayerId,
+                            sl.spriteIdx
+                          );
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(245, 158, 11, 0.5)',
+                          background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                          color: '#fff',
+                          fontWeight: 700,
+                          fontSize: '11px',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
+                        }}
+                      >
+                        🎬 أخذ نفس الحركة والفريمات
+                      </button>
+                    </div>
+                  );
+                })}
+
+              {addedLayers
+                .filter((al) => {
+                  if (al.id === copyMotionModalLayerId) return false;
+                  const q = copyMotionSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return al.name.toLowerCase().includes(q);
+                })
+                .map((al) => (
+                  <div
+                    key={al.id}
+                    onClick={() =>
+                      handleCopyMotionFromAddedLayerToAddedLayer(copyMotionModalLayerId, al.id)
+                    }
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '10px',
+                      padding: '8px 12px',
+                      borderRadius: '9px',
+                      background: '#181826',
+                      border: '1px solid #27273a',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                      <div
+                        style={{
+                          width: '36px',
+                          height: '36px',
+                          borderRadius: '6px',
+                          background: '#1f1f30',
+                          display: 'grid',
+                          placeItems: 'center',
+                          border: '1px solid #383854',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <ImageIcon size={15} color="#a78bfa" />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span
+                            style={{
+                              background: 'rgba(16, 185, 129, 0.18)',
+                              color: '#6ee7b7',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              fontSize: '10.5px',
+                              fontWeight: 700,
+                            }}
+                          >
+                            طبقة مضافة
+                          </span>
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: '#f1f5f9',
+                              fontSize: '12.5px',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {al.name}
+                          </span>
+                        </div>
+                        <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>
+                          الفريمات النشطة: <b>F{al.inFrame}–{al.outFrame}</b> · {al.width}×{al.height}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn-confirm-copy-motion"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopyMotionFromAddedLayerToAddedLayer(
+                          copyMotionModalLayerId,
+                          al.id
+                        );
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(245, 158, 11, 0.5)',
+                        background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                        color: '#fff',
+                        fontWeight: 700,
+                        fontSize: '11px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
+                      }}
+                    >
+                      🎬 أخذ نفس الحركة والفريمات
+                    </button>
+                  </div>
+                ))}
+
+              {spriteLayers.length === 0 && addedLayers.filter((a) => a.id !== copyMotionModalLayerId).length === 0 && (
+                <div
+                  style={{
+                    padding: '24px',
+                    textAlign: 'center',
+                    color: '#94a3b8',
+                    fontSize: '12px',
+                    background: '#151522',
+                    borderRadius: '8px',
+                    border: '1px dashed #2e2e44',
+                  }}
+                >
+                  افتح ملف <b>SVGA</b> أولاً (من زر Open SVGA بالأعلى أو من استوديو الهدايا) لتظهر هنا جميع طبقات الهدية وتختار أي طبقة لأخذ حركتها وفريماتها.
+                </div>
+              )}
             </div>
           </div>
         </div>

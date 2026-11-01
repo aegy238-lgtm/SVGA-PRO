@@ -29,6 +29,15 @@ import {
   deriveCleanGiftNameFromArchivePath,
   unwrapLockedGiftPayload,
   getGiftStudioTranslations,
+  resolveGiftFormatLabel,
+  sanitizeCustomGiftName,
+  buildFormatRenamedFileName,
+  buildFormatRenamedBatch,
+  computeMobilePreviewDimensions,
+  stepMobilePreviewItemIndex,
+  getOptimalAudioFrameSize,
+  computeAudioChunkSampleOffset,
+  interleaveTimestampedMediaChunks,
   type GiftStudioExportItemLike,
 } from './giftStudioUtils.ts';
 
@@ -210,6 +219,13 @@ test('computeSideBySideVideoLayout arranges multiple gifts side-by-side in one v
   assert.equal(sixLayout.cells.length, 6);
   assert.ok(sixLayout.cols >= 3);
   assert.ok(sixLayout.rows >= 2);
+
+  // 46 gifts side-by-side produces a balanced multi-column grid with near-square cells
+  const fortySixLayout = computeSideBySideVideoLayout(46, 720);
+  assert.equal(fortySixLayout.cells.length, 46);
+  assert.ok(fortySixLayout.cols >= 8 && fortySixLayout.cols <= 10);
+  assert.ok(fortySixLayout.rows >= 5 && fortySixLayout.rows <= 6);
+  assert.ok(fortySixLayout.cells[0].height >= 160);
 });
 
 test('computeTightAlphaBounds and computeAutoCropDrawRect tightly frame gift graphics for high-clarity snapshots', () => {
@@ -260,18 +276,29 @@ test('custom video duration mode preserves original duration when OFF and overri
   assert.equal(resolveEffectiveGiftDuration(2.1, { enabled: true, seconds: 6 }, 3), 6);
   assert.equal(resolveEffectiveGiftDuration(11.1, { enabled: true, seconds: 4 }, 3), 4);
 
-  // 3. Live preview playback rate stays at 1.0x native fluid rate for smooth rendering
-  assert.equal(computeCustomPlaybackRate(2.1, { enabled: true, seconds: 4.2 }), 1);
-  assert.equal(computeCustomPlaybackRate(10, { enabled: true, seconds: 5 }), 1);
+  // 3. Live preview playback rate stays at 1.0x native fluid rate for short looping gifts, and scales down/up when fitting long gifts
+  assert.equal(computeCustomPlaybackRate(2.1, { enabled: true, seconds: 4.2, mode: 'loop' }), 1);
+  assert.equal(computeCustomPlaybackRate(10, { enabled: true, seconds: 5, mode: 'loop' }), 2);
+  assert.equal(computeCustomPlaybackRate(4.0, { enabled: true, seconds: 10, mode: 'fit' }), 1.2);
 
-  // 4. Export frame-to-native time mapping loops the gift animation fluidly at 30fps without slowdown or stuttering
+  // 4. Export frame-to-native time mapping loops short gifts fluidly at 30fps without slowdown or stuttering
   // Suppose a 2.1s SVGA gift is exported over 6.0s at 30fps (180 frames total)
-  const tStart = mapExportFrameToNativeTime(0, 30, 6.0, 2.1, false, true);
-  const tFrame30 = mapExportFrameToNativeTime(30, 30, 6.0, 2.1, false, true); // 1.0s into export
-  const tLoopStart = mapExportFrameToNativeTime(63, 30, 6.0, 2.1, false, true); // 2.1s -> 0.0s loop
+  const tStart = mapExportFrameToNativeTime(0, 30, 6.0, 2.1, false, true, 'loop');
+  const tFrame30 = mapExportFrameToNativeTime(30, 30, 6.0, 2.1, false, true, 'loop'); // 1.0s into export
+  const tLoopStart = mapExportFrameToNativeTime(63, 30, 6.0, 2.1, false, true, 'loop'); // 2.1s -> 0.0s loop
   assert.equal(tStart, 0);
   assert.ok(Math.abs(tFrame30 - 1.0) < 0.01);
   assert.ok(Math.abs(tLoopStart - 0.0) < 0.01);
+
+  // Long gift (12s native) exported into a 6s custom duration fits full 12s animation into 6s instead of cutting off at 50%
+  const tLongMid = mapExportFrameToNativeTime(90, 30, 6.0, 12.0, false, true, 'loop');
+  assert.ok(Math.abs(tLongMid - 6.0) < 0.05);
+  const tLongEnd = mapExportFrameToNativeTime(179, 30, 6.0, 12.0, false, true, 'loop');
+  assert.ok(tLongEnd > 11.8);
+
+  // Fit mode completes exact integer cycles (e.g. 4.0s gift in 10.0s -> 3 complete cycles)
+  const tFitEnd = mapExportFrameToNativeTime(299, 30, 10.0, 4.0, false, true, 'fit');
+  assert.ok(tFitEnd > 3.9);
 
   // When custom duration is OFF, frame time maps 1:1 with native time
   const tNativeMid = mapExportFrameToNativeTime(30, 30, 2.1, 2.1, false, false);
@@ -356,5 +383,178 @@ test('getGiftStudioTranslations provides complete coordinated Arabic and English
   assert.equal(en.popDurUnit, 's');
   assert.ok(ar.popDurHintActive(5).includes('مفعّل'));
   assert.ok(en.popDurHintActive(5).includes('Active'));
+});
+
+test('resolveGiftFormatLabel and buildFormatRenamedBatch completely delete old names and join new name and format with a dot "."', () => {
+  const sampleItems = [
+    { id: 1, name: '[1360] response_res.echoliveapp.com_h0.svga', fmt: 'svga', kind: 'SVGA' },
+    { id: 2, name: 'old_luxury_car_effect_99.mp4', fmt: 'mp4', kind: 'VAP', isVap: true },
+    { id: 3, name: 'effect.pag', fmt: 'pag', kind: 'PAG' },
+    { id: 4, name: 'badge.json', fmt: 'lottie', kind: 'Lottie' },
+  ];
+
+  assert.equal(resolveGiftFormatLabel(sampleItems[0]), 'SVGA');
+  assert.equal(resolveGiftFormatLabel(sampleItems[1]), 'VAP');
+  assert.equal(resolveGiftFormatLabel(sampleItems[2]), 'PAG');
+  assert.equal(resolveGiftFormatLabel(sampleItems[3]), 'Lottie');
+
+  assert.equal(sanitizeCustomGiftName('  .Ahmed / VIP*.  '), 'Ahmed VIP');
+
+  // 1. Default mode ('ext_only', separator '.'): completely deletes old name and builds <NewName>.<formatExt>
+  const renamedDefaultDot = buildFormatRenamedBatch(sampleItems, {
+    customName: 'Ahmed',
+    order: 'ext_only',
+    separator: '.',
+    alwaysNumber: false,
+  });
+
+  assert.deepEqual(renamedDefaultDot, [
+    'Ahmed.svga',
+    'Ahmed.mp4',
+    'Ahmed.pag',
+    'Ahmed.json',
+  ]);
+
+  // 2. Format + Name mode ('fmt_first', separator '.'): builds <Format>.<NewName>.<formatExt>
+  const renamedFmtFirstDot = buildFormatRenamedBatch(sampleItems, {
+    customName: 'Ahmed',
+    order: 'fmt_first',
+    separator: '.',
+    alwaysNumber: false,
+  });
+
+  assert.deepEqual(renamedFmtFirstDot, [
+    'SVGA.Ahmed.svga',
+    'VAP.Ahmed.mp4',
+    'PAG.Ahmed.pag',
+    'Lottie.Ahmed.json',
+  ]);
+
+  // 3. When multiple files share the same format (e.g. 2 SVGA files), automatic numbering uses '.'
+  const multiSvga = [
+    { id: 1, name: '[1360] response_res.echoliveapp.com_h0.svga', fmt: 'svga', kind: 'SVGA' },
+    { id: 2, name: 'second_old_file_name.svga', fmt: 'svga', kind: 'SVGA' },
+    { id: 3, name: 'car_old_name.mp4', fmt: 'mp4', kind: 'VAP', isVap: true },
+  ];
+  const renamedMultiExtOnly = buildFormatRenamedBatch(multiSvga, {
+    customName: 'King',
+    order: 'ext_only',
+    separator: '.',
+    alwaysNumber: false,
+  });
+  assert.deepEqual(renamedMultiExtOnly, [
+    'King.1.svga',
+    'King.2.svga',
+    'King.mp4',
+  ]);
+
+  const renamedMultiFmtFirst = buildFormatRenamedBatch(multiSvga, {
+    customName: 'King',
+    order: 'fmt_first',
+    separator: '.',
+    alwaysNumber: false,
+  });
+  assert.deepEqual(renamedMultiFmtFirst, [
+    'SVGA.King.1.svga',
+    'SVGA.King.2.svga',
+    'VAP.King.mp4',
+  ]);
+
+  // 4. Support name_first order with '.' and prevent duplicate extensions if user typed 'VIP.svga'
+  const nameFirst = buildFormatRenamedFileName(sampleItems[0], 'VIP', {
+    order: 'name_first',
+    separator: '.',
+  });
+  assert.equal(nameFirst, 'VIP.SVGA.svga');
+
+  const noDoubleExt = buildFormatRenamedFileName(sampleItems[0], 'Ahmed.svga', {
+    order: 'ext_only',
+    separator: '.',
+  });
+  assert.equal(noDoubleExt, 'Ahmed.svga');
+});
+
+test('computeMobilePreviewDimensions and stepMobilePreviewItemIndex size mobile phone frame and navigate gifts cleanly', () => {
+  const phoneDims = computeMobilePreviewDimensions(1440, 900, 'phone', 120);
+  assert.equal(phoneDims.aspectLabel, '9:16');
+  assert.ok(phoneDims.frameHeight >= 600 && phoneDims.frameHeight <= 740);
+  assert.ok(phoneDims.frameWidth >= 320 && phoneDims.frameWidth < phoneDims.frameHeight);
+  assert.equal(phoneDims.giftScale, 1.2);
+
+  const tabletDims = computeMobilePreviewDimensions(1440, 900, 'tablet', 100);
+  assert.equal(tabletDims.aspectLabel, '3:4');
+  assert.ok(tabletDims.frameWidth > phoneDims.frameWidth);
+
+  const fullDims = computeMobilePreviewDimensions(1440, 900, 'full', 150);
+  assert.equal(fullDims.aspectLabel, '16:10');
+  assert.ok(fullDims.frameWidth > tabletDims.frameWidth);
+  assert.equal(fullDims.giftScale, 1.5);
+
+  const ids = [10, 20, 30];
+  assert.equal(stepMobilePreviewItemIndex(10, ids, 1), 20);
+  assert.equal(stepMobilePreviewItemIndex(30, ids, 1), 10);
+  assert.equal(stepMobilePreviewItemIndex(10, ids, -1), 30);
+  assert.equal(stepMobilePreviewItemIndex(99, ids, 1), 10);
+  assert.equal(stepMobilePreviewItemIndex(10, [], 1), null);
+});
+
+test('resampleChannelFloat32 never produces NaN or silent dropouts when passed IEEE-754 non-integer float offsets (VAP/YYEVA audio stutter regression)', () => {
+  const sr = 48000;
+  const totalSamples = sr * 2; // 2 seconds of 440Hz sine wave
+  const src = new Float32Array(totalSamples);
+  for (let i = 0; i < totalSamples; i++) {
+    src[i] = Math.sin((2 * Math.PI * 440 * i) / sr) * 0.8 + 0.1; // strictly non-zero offset sine
+  }
+
+  // Specifically test off = 6720 where (6720 / 48000) * 48000 === 6720.000000000001 in IEEE-754 float64
+  const floatOffset = (6720 / sr) * sr;
+  const chunk = resampleChannelFloat32(src, sr, sr, 960, 1.0, floatOffset);
+  assert.equal(chunk.length, 960);
+
+  let nonZeroCount = 0;
+  for (let i = 0; i < chunk.length; i++) {
+    assert.equal(Number.isNaN(chunk[i]), false, `Sample ${i} must not be NaN`);
+    if (Math.abs(chunk[i]) > 1e-4) nonZeroCount++;
+  }
+  assert.ok(nonZeroCount > 950, 'Audio chunk at float offset 6720.000000000001 must retain full waveform without dropout');
+
+  // Also test across all 100 chunks of 960 samples using computeAudioChunkSampleOffset
+  for (let off = 0; off + 960 <= totalSamples; off += 960) {
+    const exactOffset = computeAudioChunkSampleOffset(0, off, sr, sr);
+    assert.equal(Number.isInteger(exactOffset), true);
+    const c = resampleChannelFloat32(src, sr, sr, 960, 1.0, exactOffset);
+    assert.ok(Math.abs(c[0] - src[off]) < 1e-5);
+  }
+});
+
+test('getOptimalAudioFrameSize and interleaveTimestampedMediaChunks align audio/video muxing for glitch-free VAP/YYEVA playback', () => {
+  assert.equal(getOptimalAudioFrameSize('aac'), 1024);
+  assert.equal(getOptimalAudioFrameSize('opus'), 960);
+
+  const vChunks = [
+    { chunk: 'v0', meta: {}, timestamp: 0 },
+    { chunk: 'v1', meta: {}, timestamp: 33333 },
+    { chunk: 'v2', meta: {}, timestamp: 66667 },
+  ];
+  const aChunks = [
+    { chunk: 'a0', meta: {}, timestamp: 0 },
+    { chunk: 'a1', meta: {}, timestamp: 21333 },
+    { chunk: 'a2', meta: {}, timestamp: 42667 },
+    { chunk: 'a3', meta: {}, timestamp: 64000 },
+  ];
+
+  const interleaved = interleaveTimestampedMediaChunks(vChunks, aChunks);
+  assert.equal(interleaved.length, 7);
+
+  // Verify timestamps are monotonically non-decreasing
+  for (let i = 1; i < interleaved.length; i++) {
+    assert.ok(
+      interleaved[i].timestamp >= interleaved[i - 1].timestamp,
+      `Chunk ${i} timestamp (${interleaved[i].timestamp}) should be >= previous (${interleaved[i - 1].timestamp})`
+    );
+  }
+  // At timestamp 0, video comes before audio
+  assert.equal(interleaved[0].kind, 'video');
+  assert.equal(interleaved[1].kind, 'audio');
 });
 

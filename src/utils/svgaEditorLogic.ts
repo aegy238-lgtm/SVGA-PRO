@@ -162,10 +162,25 @@ export function computeSpriteFrameMatrix(
     const fh = f.h > 0 ? f.h : assetH;
     const lx = (f.x || 0) + fw / 2;
     const ly = (f.y || 0) + fh / 2;
-    const cx = mOrig[0] * lx + mOrig[2] * ly + mOrig[4];
-    const cy = mOrig[1] * lx + mOrig[3] * ly + mOrig[5];
-    const mLayer = buildPivotTransformMatrix(cx, cy, cx, cy, lt);
-    m = multiplyAffine(mLayer, mOrig);
+    const det = mOrig[0] * mOrig[3] - mOrig[1] * mOrig[2];
+    const effectiveRot = det < 0 ? -lt.rotation : lt.rotation;
+    const mLocal = buildPivotTransformMatrix(lx, ly, lx, ly, {
+      x: 0,
+      y: 0,
+      sx: lt.sx,
+      sy: lt.sy,
+      rotation: effectiveRot,
+      opacity: lt.opacity,
+    });
+    const mCombined = multiplyAffine(mOrig, mLocal);
+    m = [
+      mCombined[0],
+      mCombined[1],
+      mCombined[2],
+      mCombined[3],
+      Number((mCombined[4] + lt.x).toFixed(4)),
+      Number((mCombined[5] + lt.y).toFixed(4)),
+    ];
   }
   if (!isIdentityLayerTransform(docT)) {
     const mDoc = buildPivotTransformMatrix(
@@ -499,6 +514,480 @@ export interface DecomposedExtraLayer {
   transform: LayerTransform;
   inFrame?: number;
   outFrame?: number;
+  copiedFrames?: SvgaFrame[];
+  copiedFromKey?: string;
+}
+
+export function cloneSvgaFrame(f: SvgaFrame): SvgaFrame {
+  return {
+    a: f.a,
+    x: f.x,
+    y: f.y,
+    w: f.w,
+    h: f.h,
+    t: [
+      f.t?.[0] ?? 1,
+      f.t?.[1] ?? 0,
+      f.t?.[2] ?? 0,
+      f.t?.[3] ?? 1,
+      f.t?.[4] ?? 0,
+      f.t?.[5] ?? 0,
+    ],
+    clipPath: f.clipPath,
+    shapesRaw: f.shapesRaw ? f.shapesRaw.map((s) => new Uint8Array(s)) : undefined,
+  };
+}
+
+export interface CopySpriteMotionOptions {
+  targetWidth?: number;
+  targetHeight?: number;
+  canvasW?: number;
+  canvasH?: number;
+  referenceFrame?: number;
+  preserveTargetBounds?: boolean;
+  sourceLayerTransform?: LayerTransform;
+  sourceLayerKeyframes?: Record<number, LayerTransform> | LayerPropertyKeyframes;
+}
+
+/**
+ * Copies the frame-by-frame motion, transform matrices, opacity, and active frame span
+ * from an existing SVGA sprite (`sourceSprite`) onto an added image layer.
+ * When `options.preserveTargetBounds` is true (or `targetWidth`/`targetHeight` are provided),
+ * normalizes the motion relative to the source sprite's reference frame so the added layer
+ * keeps the exact dimensions, scale, and placement fixed by the user while inheriting the
+ * frame-by-frame animation (relative scale, rotation, movement delta, and opacity).
+ */
+export function copySpriteFramesToLayer(
+  sourceSprite: SvgaSprite,
+  sourceAssetW: number,
+  sourceAssetH: number,
+  totalFrames: number,
+  customRange?: SpriteFrameRange,
+  options?: CopySpriteMotionOptions
+): {
+  frames: SvgaFrame[];
+  inFrame: number;
+  outFrame: number;
+  sourceRefCenter?: { x: number; y: number };
+} {
+  const n = Math.max(1, Math.round(totalFrames || sourceSprite.fr.length || 1));
+  const origSpan = computeSpriteFrameSpan(sourceSprite, n);
+  const safeAssetW = Math.max(1, sourceAssetW || 100);
+  const safeAssetH = Math.max(1, sourceAssetH || 100);
+  const inFrame = customRange ? customRange.inFrame : origSpan.firstFrame;
+  const outFrame = customRange ? customRange.outFrame : origSpan.lastFrame;
+
+  const preserveBounds =
+    options?.preserveTargetBounds ??
+    Boolean(options?.targetWidth && options?.targetHeight);
+
+  if (!preserveBounds) {
+    const frames: SvgaFrame[] = [];
+    for (let i = 0; i < n; i++) {
+      const resolved = resolveSpriteFrameAt(sourceSprite, i, n, customRange, origSpan);
+      const f = resolved.frameObj;
+      if (!f) {
+        frames.push({
+          a: 0,
+          x: 0,
+          y: 0,
+          w: safeAssetW,
+          h: safeAssetH,
+          t: [1, 0, 0, 1, 0, 0],
+        });
+        continue;
+      }
+      const fw = f.w > 0 ? f.w : safeAssetW;
+      const fh = f.h > 0 ? f.h : safeAssetH;
+      frames.push({
+        a: resolved.visible ? Math.max(0, Math.min(1, f.a ?? 0)) : 0,
+        x: f.x || 0,
+        y: f.y || 0,
+        w: fw,
+        h: fh,
+        t: [
+          f.t?.[0] ?? 1,
+          f.t?.[1] ?? 0,
+          f.t?.[2] ?? 0,
+          f.t?.[3] ?? 1,
+          f.t?.[4] ?? 0,
+          f.t?.[5] ?? 0,
+        ],
+        clipPath: f.clipPath,
+      });
+    }
+    return { frames, inFrame, outFrame };
+  }
+
+  const targetW = Math.max(1, options?.targetWidth || safeAssetW);
+  const targetH = Math.max(1, options?.targetHeight || safeAssetH);
+  const W = Math.max(1, options?.canvasW || 300);
+  const H = Math.max(1, options?.canvasH || 300);
+  const baseSrcLt = options?.sourceLayerTransform || DEFAULT_TRANSFORM;
+
+  interface EvaluatedSourceFrame {
+    visible: boolean;
+    alpha: number;
+    cx: number;
+    cy: number;
+    la: number;
+    lb: number;
+    lc: number;
+    ld: number;
+    scaleMag: number;
+  }
+
+  const evaluated: EvaluatedSourceFrame[] = [];
+  for (let i = 0; i < n; i++) {
+    const resolved = resolveSpriteFrameAt(sourceSprite, i, n, customRange, origSpan);
+    const f = resolved.frameObj;
+    if (!f) {
+      evaluated.push({
+        visible: false,
+        alpha: 0,
+        cx: W / 2,
+        cy: H / 2,
+        la: 1,
+        lb: 0,
+        lc: 0,
+        ld: 1,
+        scaleMag: 0,
+      });
+      continue;
+    }
+    const srcLt = interpolateLayerTransform(baseSrcLt, options?.sourceLayerKeyframes, i);
+    const fw = f.w > 0 ? f.w : safeAssetW;
+    const fh = f.h > 0 ? f.h : safeAssetH;
+    const fx = f.x || 0;
+    const fy = f.y || 0;
+    const mat = computeSpriteFrameMatrix(
+      f,
+      safeAssetW,
+      safeAssetH,
+      W,
+      H,
+      srcLt,
+      DEFAULT_TRANSFORM
+    );
+    const lx = fx + fw / 2;
+    const ly = fy + fh / 2;
+    const cx = mat[0] * lx + mat[2] * ly + mat[4];
+    const cy = mat[1] * lx + mat[3] * ly + mat[5];
+    const sxLay = fw / safeAssetW;
+    const syLay = fh / safeAssetH;
+    const la = mat[0] * sxLay;
+    const lb = mat[1] * sxLay;
+    const lc = mat[2] * syLay;
+    const ld = mat[3] * syLay;
+    const det = Math.abs(la * ld - lb * lc);
+    const scaleMag = det > 1e-7 ? Math.hypot(la, lb) + Math.hypot(lc, ld) : 0;
+    const alpha = resolved.visible
+      ? Math.max(0, Math.min(1, (f.a ?? 0) * (srcLt.opacity / 100)))
+      : 0;
+    evaluated.push({
+      visible: resolved.visible && alpha > 0.001,
+      alpha,
+      cx,
+      cy,
+      la,
+      lb,
+      lc,
+      ld,
+      scaleMag,
+    });
+  }
+
+  // Pick a stable reference frame with normal scale so pop-in frames (scale ~ 0) don't blow up target dimensions
+  const validIndices: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (evaluated[i].visible && evaluated[i].scaleMag > 1e-4) {
+      validIndices.push(i);
+    }
+  }
+
+  let refIdx = inFrame;
+  if (validIndices.length > 0) {
+    const sortedMags = validIndices.map((idx) => evaluated[idx].scaleMag).sort((a, b) => a - b);
+    const medianMag = sortedMags[Math.floor(sortedMags.length / 2)];
+    const reqRef = options?.referenceFrame;
+    if (
+      reqRef !== undefined &&
+      reqRef >= 0 &&
+      reqRef < n &&
+      evaluated[reqRef].visible &&
+      evaluated[reqRef].scaleMag >= medianMag * 0.5
+    ) {
+      refIdx = reqRef;
+    } else {
+      const firstNormal = validIndices.find((idx) => evaluated[idx].scaleMag >= medianMag * 0.85);
+      refIdx = firstNormal !== undefined ? firstNormal : validIndices[0];
+    }
+  }
+
+  const refF = evaluated[refIdx] || {
+    cx: W / 2,
+    cy: H / 2,
+    la: 1,
+    lb: 0,
+    lc: 0,
+    ld: 1,
+  };
+  const refDet = refF.la * refF.ld - refF.lb * refF.lc;
+  const invLa = Math.abs(refDet) > 1e-8 ? refF.ld / refDet : 1;
+  const invLb = Math.abs(refDet) > 1e-8 ? -refF.lb / refDet : 0;
+  const invLc = Math.abs(refDet) > 1e-8 ? -refF.lc / refDet : 0;
+  const invLd = Math.abs(refDet) > 1e-8 ? refF.la / refDet : 1;
+
+  const targetLx = targetW / 2;
+  const targetLy = targetH / 2;
+  const frames: SvgaFrame[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const ev = evaluated[i];
+    if (!ev || (!ev.visible && ev.alpha <= 0.001)) {
+      frames.push({
+        a: 0,
+        x: 0,
+        y: 0,
+        w: targetW,
+        h: targetH,
+        t: [
+          1,
+          0,
+          0,
+          1,
+          Number((W / 2 - targetLx).toFixed(4)),
+          Number((H / 2 - targetLy).toFixed(4)),
+        ],
+      });
+      continue;
+    }
+
+    const da = ev.la * invLa + ev.lc * invLb;
+    const db = ev.lb * invLa + ev.ld * invLb;
+    const dc = ev.la * invLc + ev.lc * invLd;
+    const dd = ev.lb * invLc + ev.ld * invLd;
+
+    const dx = ev.cx - refF.cx;
+    const dy = ev.cy - refF.cy;
+
+    const tx = W / 2 + dx - (da * targetLx + dc * targetLy);
+    const ty = H / 2 + dy - (db * targetLx + dd * targetLy);
+
+    frames.push({
+      a: ev.alpha,
+      x: 0,
+      y: 0,
+      w: targetW,
+      h: targetH,
+      t: [
+        Number(da.toFixed(6)),
+        Number(db.toFixed(6)),
+        Number(dc.toFixed(6)),
+        Number(dd.toFixed(6)),
+        Number(tx.toFixed(4)),
+        Number(ty.toFixed(4)),
+      ],
+    });
+  }
+
+  return {
+    frames,
+    inFrame,
+    outFrame,
+    sourceRefCenter: {
+      x: Number((refF.cx - W / 2).toFixed(2)),
+      y: Number((refF.cy - H / 2).toFixed(2)),
+    },
+  };
+}
+
+/**
+ * Retargets an array of copied SVGA frames to a new local layer size (`newWidth × newHeight`)
+ * while preserving each frame's exact canvas center and 2x2 transformation matrix.
+ */
+export function retargetCopiedFramesDimensions(
+  frames: SvgaFrame[],
+  newWidth: number,
+  newHeight: number
+): SvgaFrame[] {
+  const nw = Math.max(1, newWidth);
+  const nh = Math.max(1, newHeight);
+  const newLx = nw / 2;
+  const newLy = nh / 2;
+
+  return frames.map((f) => {
+    const cloned = cloneSvgaFrame(f);
+    const [a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0] = cloned.t || [1, 0, 0, 1, 0, 0];
+    const oldFw = cloned.w > 0 ? cloned.w : nw;
+    const oldFh = cloned.h > 0 ? cloned.h : nh;
+    const oldLx = (cloned.x || 0) + oldFw / 2;
+    const oldLy = (cloned.y || 0) + oldFh / 2;
+    const cx = a * oldLx + c * oldLy + tx;
+    const cy = b * oldLx + d * oldLy + ty;
+
+    const newTx = cx - (a * newLx + c * newLy);
+    const newTy = cy - (b * newLx + d * newLy);
+
+    return {
+      ...cloned,
+      x: 0,
+      y: 0,
+      w: nw,
+      h: nh,
+      t: [
+        Number(a.toFixed(6)),
+        Number(b.toFixed(6)),
+        Number(c.toFixed(6)),
+        Number(d.toFixed(6)),
+        Number(newTx.toFixed(4)),
+        Number(newTy.toFixed(4)),
+      ],
+    };
+  });
+}
+
+/**
+ * Clones (and optionally mirrors horizontally) a `LayerPropertyKeyframes` object.
+ */
+export function cloneLayerPropertyKeyframes(
+  pkf: LayerPropertyKeyframes | undefined,
+  mirrorMode: 'none' | 'canvas' | 'local' = 'none',
+  hasCopiedFrames = false
+): LayerPropertyKeyframes | undefined {
+  if (!pkf) return undefined;
+  const next: LayerPropertyKeyframes = {};
+  if (pkf.position) {
+    next.position = {};
+    for (const [k, v] of Object.entries(pkf.position)) {
+      next.position[Number(k)] = {
+        x: mirrorMode === 'canvas' ? (Math.abs(v.x) < 1e-6 ? 0 : -v.x) : v.x,
+        y: v.y,
+      };
+    }
+  }
+  if (pkf.scale) {
+    next.scale = {};
+    for (const [k, v] of Object.entries(pkf.scale)) {
+      next.scale[Number(k)] = {
+        sx: mirrorMode !== 'none' && !hasCopiedFrames ? -v.sx : v.sx,
+        sy: v.sy,
+      };
+    }
+  }
+  if (pkf.rotation) {
+    next.rotation = {};
+    for (const [k, v] of Object.entries(pkf.rotation)) {
+      next.rotation[Number(k)] = mirrorMode !== 'none' ? (Math.abs(v) < 1e-6 ? 0 : -v) : v;
+    }
+  }
+  if (pkf.opacity) {
+    next.opacity = { ...pkf.opacity };
+  }
+  return next;
+}
+
+/**
+ * Mirrors an array of SVGA frames horizontally:
+ * - mode === 'canvas': reflects left-to-right across the full canvas width (`X' = canvasW - X`)
+ * - mode === 'local': flips horizontally in-place around each frame's own center (`X' = 2*cx - X`)
+ */
+export function mirrorSvgaFramesHorizontally(
+  frames: SvgaFrame[],
+  canvasW: number,
+  defaultW: number,
+  defaultH: number,
+  mode: 'canvas' | 'local' = 'canvas'
+): SvgaFrame[] {
+  const W = Math.max(1, canvasW || 300);
+  const safeW = Math.max(1, defaultW || W);
+  const safeH = Math.max(1, defaultH || W);
+
+  return frames.map((f) => {
+    const cloned = cloneSvgaFrame(f);
+    const [a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0] = cloned.t || [1, 0, 0, 1, 0, 0];
+    if (mode === 'canvas') {
+      cloned.t = [
+        Number((-a).toFixed(6)),
+        Number(b.toFixed(6)),
+        Number((-c).toFixed(6)),
+        Number(d.toFixed(6)),
+        Number((W - tx).toFixed(4)),
+        Number(ty.toFixed(4)),
+      ];
+    } else {
+      const fw = cloned.w > 0 ? cloned.w : safeW;
+      const fh = cloned.h > 0 ? cloned.h : safeH;
+      const lx = (cloned.x || 0) + fw / 2;
+      const ly = (cloned.y || 0) + fh / 2;
+      const cx = a * lx + c * ly + tx;
+      cloned.t = [
+        Number((-a).toFixed(6)),
+        Number(b.toFixed(6)),
+        Number((-c).toFixed(6)),
+        Number(d.toFixed(6)),
+        Number((2 * cx - tx).toFixed(4)),
+        Number(ty.toFixed(4)),
+      ];
+    }
+    return cloned;
+  });
+}
+
+/**
+ * Mirrors a LayerTransform horizontally (either across canvas center X=0 or in-place).
+ */
+export function mirrorLayerTransformHorizontally(
+  lt: LayerTransform,
+  mode: 'canvas' | 'local' = 'canvas'
+): LayerTransform {
+  return {
+    ...lt,
+    x: mode === 'canvas' ? (Math.abs(lt.x) < 1e-6 ? 0 : Number((-lt.x).toFixed(2))) : lt.x,
+    sx: Number((-lt.sx).toFixed(2)),
+    rotation: Math.abs(lt.rotation) < 1e-6 ? 0 : Number((-lt.rotation).toFixed(2)),
+  };
+}
+
+/**
+ * Duplicates a sprite in `movie.sp` at `spriteIdx` (optionally mirroring its frames horizontally).
+ */
+export function duplicateSvgaSprite(
+  movie: SvgaMovie,
+  spriteIdx: number,
+  options?: {
+    mirrorMode?: 'none' | 'canvas' | 'local';
+    assetW?: number;
+    assetH?: number;
+  }
+): { sprite: SvgaSprite; newIndex: number } | null {
+  const src = movie.sp[spriteIdx];
+  if (!src) return null;
+  const mirrorMode = options?.mirrorMode || 'none';
+  const assetW = options?.assetW || movie.w || 300;
+  const assetH = options?.assetH || movie.h || 300;
+
+  const clonedFrames =
+    mirrorMode === 'none'
+      ? src.fr.map(cloneSvgaFrame)
+      : mirrorSvgaFramesHorizontally(src.fr, movie.w || 300, assetW, assetH, mirrorMode);
+
+  const sprite: SvgaSprite = {
+    key: src.key,
+    fr: clonedFrames,
+    mk: src.mk,
+  };
+  return {
+    sprite,
+    newIndex: movie.sp.length,
+  };
+}
+
+export interface MergedGroupInfo {
+  id: string;
+  spriteIds: string[];
+  transform: LayerTransform;
+  isUngrouped?: boolean;
 }
 
 export interface SerializeDecomposedOptions {
@@ -513,6 +1002,7 @@ export interface SerializeDecomposedOptions {
   deletedSpriteIndices?: Set<number>;
   assetDimensions?: Record<string, { w: number; h: number }>;
   extraLayers?: DecomposedExtraLayer[];
+  mergedGroups?: MergedGroupInfo[];
 }
 
 export function serializeDecomposedSvga(
@@ -532,6 +1022,7 @@ export function serializeDecomposedSvga(
   const deletedSprites = options.deletedSpriteIndices || new Set<number>();
   const assetDims = options.assetDimensions || {};
   const extraLayers = options.extraLayers || [];
+  const mergedGroups = options.mergedGroups || [];
 
   const TE = new TextEncoder();
   const cat = (arr: Uint8Array[]): Uint8Array => {
@@ -578,11 +1069,35 @@ export function serializeDecomposedSvga(
     parts.push(pb(3, cat([ps(1, key), pb(2, bytes)])));
   }
 
-  // 2. Original Decomposed SpriteEntity tracks (field 4)
-  movie.sp.forEach((sp, idx) => {
+  // Helper map to locate sprite's parent merged group and visual stacking order
+  const spriteToGroupMap = new Map<string, MergedGroupInfo>();
+  const spriteToGroupOrderMap = new Map<string, number>();
+  mergedGroups.forEach((mg, gIdx) => {
+    if (mg.spriteIds) {
+      for (const spId of mg.spriteIds) {
+        spriteToGroupOrderMap.set(spId, gIdx);
+        if (!mg.isUngrouped) {
+          spriteToGroupMap.set(spId, mg);
+        }
+      }
+    }
+  });
+
+  // 2. Original Decomposed SpriteEntity tracks (field 4) ordered by mergedGroups (top group in UI = drawn last / on top)
+  const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
+    const orderA = spriteToGroupOrderMap.get(`sprite_${a}`) ?? mergedGroups.length;
+    const orderB = spriteToGroupOrderMap.get(`sprite_${b}`) ?? mergedGroups.length;
+    if (orderA !== orderB) return orderB - orderA;
+    return a - b;
+  });
+
+  orderedSpriteIndices.forEach((idx) => {
+    const sp = movie.sp[idx];
     if (deletedSprites.has(idx)) return;
     const spriteId = `sprite_${idx}`;
-    const isHidden = hiddenIds.has(spriteId);
+    const parentGroup = spriteToGroupMap.get(spriteId);
+    const parentHidden = parentGroup ? hiddenIds.has(parentGroup.id) : false;
+    const isHidden = hiddenIds.has(spriteId) || parentHidden;
     const baseLt =
       spriteTransforms[spriteId] ||
       (sp.key && spriteTransforms[sp.key]) ||
@@ -603,6 +1118,9 @@ export function serializeDecomposedSvga(
         t: [1, 0, 0, 1, 0, 0],
       };
       const docT = interpolateLayerTransform(docBase, layerKeyframes['DOCUMENT'], i);
+      const groupT = parentGroup
+        ? interpolateLayerTransform(parentGroup.transform, layerKeyframes[parentGroup.id], i)
+        : DEFAULT_TRANSFORM;
       const lt = interpolateLayerTransform(
         baseLt,
         layerKeyframes[spriteId] || (sp.key ? layerKeyframes[sp.key] : undefined),
@@ -612,14 +1130,31 @@ export function serializeDecomposedSvga(
       const finalAlpha =
         isHidden || !resolved.visible
           ? 0
-          : Math.max(0, Math.min(1, (origF.a ?? 0) * (docT.opacity / 100) * (lt.opacity / 100)));
+          : Math.max(
+              0,
+              Math.min(
+                1,
+                (origF.a ?? 0) *
+                  (docT.opacity / 100) *
+                  (groupT.opacity / 100) *
+                  (lt.opacity / 100)
+              )
+            );
 
       const fw = origF.w > 0 ? origF.w : dim.w;
       const fh = origF.h > 0 ? origF.h : dim.h;
       const fx = origF.x || 0;
       const fy = origF.y || 0;
 
-      const mat = computeSpriteFrameMatrix(origF, dim.w, dim.h, W, H, lt, docT);
+      let mat = computeSpriteFrameMatrix(origF, dim.w, dim.h, W, H, lt, DEFAULT_TRANSFORM);
+      if (!isIdentityLayerTransform(groupT)) {
+        const mGroup = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, groupT);
+        mat = multiplyAffine(mGroup, mat);
+      }
+      if (!isIdentityLayerTransform(docT)) {
+        const mDoc = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
+        mat = multiplyAffine(mDoc, mat);
+      }
 
       const frameFields: Uint8Array[] = [
         pf(1, finalAlpha),
@@ -660,28 +1195,68 @@ export function serializeDecomposedSvga(
     const inF = ex.inFrame ?? 0;
     const outF = ex.outFrame ?? n - 1;
     const frameMsgs: Uint8Array[] = [];
+    const hasCopiedFrames = Boolean(ex.copiedFrames && ex.copiedFrames.length > 0);
 
     for (let i = 0; i < n; i++) {
       const docT = interpolateLayerTransform(docBase, layerKeyframes['DOCUMENT'], i);
       const lt = interpolateLayerTransform(ex.transform, layerKeyframes[ex.id], i);
       const inRange = i >= inF && i <= outF;
-      const finalAlpha = inRange
-        ? Math.max(0, Math.min(1, (lt.opacity / 100) * (docT.opacity / 100)))
-        : 0;
-      const mat = computeAddedLayerFrameMatrix(ex.width, ex.height, W, H, lt, docT);
-      const layMsg = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, ex.width), pf(4, ex.height)]));
-      const trMsg = pb(
-        3,
-        cat([
-          pf(1, mat[0]),
-          pf(2, mat[1]),
-          pf(3, mat[2]),
-          pf(4, mat[3]),
-          pf(5, mat[4]),
-          pf(6, mat[5]),
-        ])
-      );
-      frameMsgs.push(pb(2, cat([pf(1, finalAlpha), layMsg, trMsg])));
+
+      if (hasCopiedFrames) {
+        const cf = ex.copiedFrames![Math.min(i, ex.copiedFrames!.length - 1)] || {
+          a: 0,
+          x: 0,
+          y: 0,
+          w: ex.width,
+          h: ex.height,
+          t: [1, 0, 0, 1, 0, 0],
+        };
+        const fw = cf.w > 0 ? cf.w : ex.width;
+        const fh = cf.h > 0 ? cf.h : ex.height;
+        const fx = cf.x || 0;
+        const fy = cf.y || 0;
+        const finalAlpha = inRange
+          ? Math.max(0, Math.min(1, (cf.a ?? 0) * (lt.opacity / 100) * (docT.opacity / 100)))
+          : 0;
+        const mat = computeSpriteFrameMatrix(cf, fw, fh, W, H, lt, docT);
+        const frameFields: Uint8Array[] = [
+          pf(1, finalAlpha),
+          pb(2, cat([pf(1, fx), pf(2, fy), pf(3, fw), pf(4, fh)])),
+          pb(
+            3,
+            cat([
+              pf(1, mat[0]),
+              pf(2, mat[1]),
+              pf(3, mat[2]),
+              pf(4, mat[3]),
+              pf(5, mat[4]),
+              pf(6, mat[5]),
+            ])
+          ),
+        ];
+        if (cf.clipPath) {
+          frameFields.push(ps(4, cf.clipPath));
+        }
+        frameMsgs.push(pb(2, cat(frameFields)));
+      } else {
+        const finalAlpha = inRange
+          ? Math.max(0, Math.min(1, (lt.opacity / 100) * (docT.opacity / 100)))
+          : 0;
+        const mat = computeAddedLayerFrameMatrix(ex.width, ex.height, W, H, lt, docT);
+        const layMsg = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, ex.width), pf(4, ex.height)]));
+        const trMsg = pb(
+          3,
+          cat([
+            pf(1, mat[0]),
+            pf(2, mat[1]),
+            pf(3, mat[2]),
+            pf(4, mat[3]),
+            pf(5, mat[4]),
+            pf(6, mat[5]),
+          ])
+        );
+        frameMsgs.push(pb(2, cat([pf(1, finalAlpha), layMsg, trMsg])));
+      }
     }
     parts.push(pb(4, cat([ps(1, ex.assetKey), ...frameMsgs])));
   }
