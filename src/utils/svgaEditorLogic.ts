@@ -7,16 +7,18 @@ export interface LayerTransform {
   y: number;
   sx: number; // percentage, e.g. 100
   sy: number; // percentage, e.g. 100
+  zoom?: number; // uniform non-stretching scale percentage, e.g. 100
   rotation: number; // degrees, e.g. 0
   opacity: number; // percentage, e.g. 100
 }
 
-export type AnimatableProperty = 'position' | 'scale' | 'rotation' | 'opacity';
+export type AnimatableProperty = 'position' | 'scale' | 'rotation' | 'zoom' | 'opacity';
 
 export interface LayerPropertyKeyframes {
   position?: Record<number, { x: number; y: number }>;
   scale?: Record<number, { sx: number; sy: number }>;
   rotation?: Record<number, number>;
+  zoom?: Record<number, number>;
   opacity?: Record<number, number>;
 }
 
@@ -34,6 +36,30 @@ export const DEFAULT_TRANSFORM: LayerTransform = {
   rotation: 0,
   opacity: 100,
 };
+
+/**
+ * Computes a transform patch for uniform non-stretching scaling (`zoom`).
+ * If the layer's `sx` and `sy` were previously uneven (stretched), normalizes them
+ * to uniform 100% (preserving flip signs) so scaling happens with zero distortion.
+ */
+export function computeUnstretchedZoomPatch(
+  current: LayerTransform,
+  newZoomPct: number
+): Partial<LayerTransform> {
+  const clampedZoom = Math.max(1, Math.min(1000, Number((Number(newZoomPct) || 100).toFixed(2))));
+  const absSx = Math.abs(current.sx);
+  const absSy = Math.abs(current.sy);
+  if (Math.abs(absSx - absSy) > 0.01) {
+    const signX = current.sx < 0 ? -1 : 1;
+    const signY = current.sy < 0 ? -1 : 1;
+    return {
+      sx: signX * 100,
+      sy: signY * 100,
+      zoom: clampedZoom,
+    };
+  }
+  return { zoom: clampedZoom };
+}
 
 export function composeAffineTransform(
   x: number,
@@ -109,8 +135,9 @@ export function buildPivotTransformMatrix(
   const rad = (lt.rotation * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
-  const sx = lt.sx / 100;
-  const sy = lt.sy / 100;
+  const zoomFactor = (lt.zoom ?? 100) / 100;
+  const sx = (lt.sx / 100) * zoomFactor;
+  const sy = (lt.sy / 100) * zoomFactor;
   const a = cos * sx;
   const b = sin * sx;
   const c = -sin * sy;
@@ -134,6 +161,7 @@ export function isIdentityLayerTransform(lt?: LayerTransform): boolean {
     Math.abs(lt.y) < 1e-4 &&
     Math.abs(lt.sx - 100) < 1e-4 &&
     Math.abs(lt.sy - 100) < 1e-4 &&
+    Math.abs((lt.zoom ?? 100) - 100) < 1e-4 &&
     Math.abs(lt.rotation) < 1e-4 &&
     Math.abs(lt.opacity - 100) < 1e-4
   );
@@ -169,6 +197,7 @@ export function computeSpriteFrameMatrix(
       y: 0,
       sx: lt.sx,
       sy: lt.sy,
+      zoom: lt.zoom,
       rotation: effectiveRot,
       opacity: lt.opacity,
     });
@@ -302,6 +331,7 @@ export function interpolateLayerTransform(
     'position' in keyframesOrProps ||
     'scale' in keyframesOrProps ||
     'rotation' in keyframesOrProps ||
+    'zoom' in keyframesOrProps ||
     'opacity' in keyframesOrProps
   ) {
     const pkf = keyframesOrProps as LayerPropertyKeyframes;
@@ -321,11 +351,15 @@ export function interpolateLayerTransform(
     );
     const rot = interpolateScalarMap(pkf.rotation, base.rotation, frame);
     const opa = Math.round(interpolateScalarMap(pkf.opacity, base.opacity, frame));
+    const hasZoom =
+      base.zoom !== undefined || Boolean(pkf.zoom && Object.keys(pkf.zoom).length > 0);
+    const zm = interpolateScalarMap(pkf.zoom, base.zoom ?? 100, frame);
     return {
       x: pos.x,
       y: pos.y,
       sx: scl.sx,
       sy: scl.sy,
+      ...(hasZoom ? { zoom: zm } : {}),
       rotation: rot,
       opacity: opa,
     };
@@ -355,11 +389,13 @@ export function interpolateLayerTransform(
   const a = keyframesByFrame[prevF];
   const b = keyframesByFrame[nextF];
   const lerp = (v1: number, v2: number) => Number((v1 + (v2 - v1) * t).toFixed(2));
+  const hasZoom = a.zoom !== undefined || b.zoom !== undefined || base.zoom !== undefined;
   return {
     x: lerp(a.x, b.x),
     y: lerp(a.y, b.y),
     sx: lerp(a.sx, b.sx),
     sy: lerp(a.sy, b.sy),
+    ...(hasZoom ? { zoom: lerp(a.zoom ?? 100, b.zoom ?? 100) } : {}),
     rotation: lerp(a.rotation, b.rotation),
     opacity: Math.round(lerp(a.opacity, b.opacity)),
   };
@@ -477,8 +513,18 @@ export function computeAssetUsage(movie: SvgaMovie): {
     const raw = movie.im[key];
     const bytes = raw ? raw.byteLength : 0;
     totalBytes += bytes;
-    const fmt =
-      raw && raw[0] === 0xff
+    const isId3 = Boolean(raw && raw.length >= 3 && raw[0] === 0x49 && raw[1] === 0x44 && raw[2] === 0x33);
+    const isMp3Sync = Boolean(
+      raw &&
+        raw.length >= 4 &&
+        raw[0] === 0xff &&
+        raw[1] !== 0xd8 &&
+        (raw[1] & 0xe0) === 0xe0
+    );
+    const isAudioAsset = isId3 || isMp3Sync || /^audio[_-]/i.test(key);
+    const fmt = isAudioAsset
+      ? 'AUDIO'
+      : raw && raw[0] === 0xff
         ? 'JPG'
         : raw && raw[0] === 0x52
           ? 'WEBP'
@@ -486,6 +532,7 @@ export function computeAssetUsage(movie: SvgaMovie): {
             ? 'GIF'
             : 'PNG';
     const entry = usageMap.get(key) || { display: [], raw: [] };
+    const effectiveUsageCount = isAudioAsset ? Math.max(1, entry.display.length) : entry.display.length;
     return {
       key,
       bytes,
@@ -493,9 +540,12 @@ export function computeAssetUsage(movie: SvgaMovie): {
       format: fmt,
       usedByIndices: entry.display,
       usedBySpriteIndices: entry.raw,
-      usedByLabel:
-        entry.display.length > 0 ? `used by #${entry.display.join(', #')}` : 'unused',
-      usageCount: entry.display.length,
+      usedByLabel: isAudioAsset
+        ? 'used by Audio'
+        : entry.display.length > 0
+          ? `used by #${entry.display.join(', #')}`
+          : 'unused',
+      usageCount: effectiveUsageCount,
     };
   });
 
@@ -516,6 +566,7 @@ export interface DecomposedExtraLayer {
   outFrame?: number;
   copiedFrames?: SvgaFrame[];
   copiedFromKey?: string;
+  matteKey?: string;
 }
 
 export function cloneSvgaFrame(f: SvgaFrame): SvgaFrame {
@@ -881,6 +932,9 @@ export function cloneLayerPropertyKeyframes(
       next.rotation[Number(k)] = mirrorMode !== 'none' ? (Math.abs(v) < 1e-6 ? 0 : -v) : v;
     }
   }
+  if (pkf.zoom) {
+    next.zoom = { ...pkf.zoom };
+  }
   if (pkf.opacity) {
     next.opacity = { ...pkf.opacity };
   }
@@ -1003,6 +1057,7 @@ export interface SerializeDecomposedOptions {
   assetDimensions?: Record<string, { w: number; h: number }>;
   extraLayers?: DecomposedExtraLayer[];
   mergedGroups?: MergedGroupInfo[];
+  layerOrder?: string[];
 }
 
 export function serializeDecomposedSvga(
@@ -1023,6 +1078,7 @@ export function serializeDecomposedSvga(
   const assetDims = options.assetDimensions || {};
   const extraLayers = options.extraLayers || [];
   const mergedGroups = options.mergedGroups || [];
+  const customLayerOrder = options.layerOrder;
 
   const TE = new TextEncoder();
   const cat = (arr: Uint8Array[]): Uint8Array => {
@@ -1064,8 +1120,26 @@ export function serializeDecomposedSvga(
     if (hiddenIds.has(ex.id)) continue;
     finalImages[ex.assetKey] = ex.pngBytes;
   }
-  for (const [key, bytes] of Object.entries(finalImages)) {
-    if (!bytes || bytes.length === 0) continue;
+  const detectedAudioKeys: string[] = [];
+  for (const [key, rawBytes] of Object.entries(finalImages)) {
+    if (!rawBytes || rawBytes.length === 0) continue;
+    let bytes = rawBytes;
+    const isId3 = bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33;
+    const isMp3Sync =
+      bytes.length >= 4 &&
+      bytes[0] === 0xff &&
+      bytes[1] !== 0xd8 &&
+      (bytes[1] & 0xe0) === 0xe0;
+    if (isId3 || isMp3Sync || /^audio[_-]/i.test(key)) {
+      detectedAudioKeys.push(key);
+      if (!isId3 && isMp3Sync) {
+        const id3 = new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        const withId3 = new Uint8Array(id3.length + bytes.length);
+        withId3.set(id3, 0);
+        withId3.set(bytes, id3.length);
+        bytes = withId3;
+      }
+    }
     parts.push(pb(3, cat([ps(1, key), pb(2, bytes)])));
   }
 
@@ -1083,17 +1157,9 @@ export function serializeDecomposedSvga(
     }
   });
 
-  // 2. Original Decomposed SpriteEntity tracks (field 4) ordered by mergedGroups (top group in UI = drawn last / on top)
-  const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
-    const orderA = spriteToGroupOrderMap.get(`sprite_${a}`) ?? mergedGroups.length;
-    const orderB = spriteToGroupOrderMap.get(`sprite_${b}`) ?? mergedGroups.length;
-    if (orderA !== orderB) return orderB - orderA;
-    return a - b;
-  });
-
-  orderedSpriteIndices.forEach((idx) => {
+  const buildSpriteEntityMsg = (idx: number): Uint8Array | null => {
     const sp = movie.sp[idx];
-    if (deletedSprites.has(idx)) return;
+    if (!sp || deletedSprites.has(idx)) return null;
     const spriteId = `sprite_${idx}`;
     const parentGroup = spriteToGroupMap.get(spriteId);
     const parentHidden = parentGroup ? hiddenIds.has(parentGroup.id) : false;
@@ -1156,16 +1222,18 @@ export function serializeDecomposedSvga(
         mat = multiplyAffine(mDoc, mat);
       }
 
+      const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
+      const safeD = Math.abs(mat[3]) < 1e-6 ? 1e-6 : mat[3];
       const frameFields: Uint8Array[] = [
         pf(1, finalAlpha),
         pb(2, cat([pf(1, fx), pf(2, fy), pf(3, fw), pf(4, fh)])),
         pb(
           3,
           cat([
-            pf(1, mat[0]),
+            pf(1, safeA),
             pf(2, mat[1]),
             pf(3, mat[2]),
-            pf(4, mat[3]),
+            pf(4, safeD),
             pf(5, mat[4]),
             pf(6, mat[5]),
           ])
@@ -1186,12 +1254,11 @@ export function serializeDecomposedSvga(
     if (sp.key) spriteFields.push(ps(1, sp.key));
     spriteFields.push(...frameMsgs);
     if (sp.mk) spriteFields.push(ps(3, sp.mk));
-    parts.push(pb(4, cat(spriteFields)));
-  });
+    return cat(spriteFields);
+  };
 
-  // 3. Added Decomposed SpriteEntity tracks
-  for (const ex of extraLayers) {
-    if (hiddenIds.has(ex.id)) continue;
+  const buildExtraLayerEntityMsg = (ex: DecomposedExtraLayer): Uint8Array | null => {
+    if (hiddenIds.has(ex.id)) return null;
     const inF = ex.inFrame ?? 0;
     const outF = ex.outFrame ?? n - 1;
     const frameMsgs: Uint8Array[] = [];
@@ -1219,16 +1286,18 @@ export function serializeDecomposedSvga(
           ? Math.max(0, Math.min(1, (cf.a ?? 0) * (lt.opacity / 100) * (docT.opacity / 100)))
           : 0;
         const mat = computeSpriteFrameMatrix(cf, fw, fh, W, H, lt, docT);
+        const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
+        const safeD = Math.abs(mat[3]) < 1e-6 ? 1e-6 : mat[3];
         const frameFields: Uint8Array[] = [
           pf(1, finalAlpha),
           pb(2, cat([pf(1, fx), pf(2, fy), pf(3, fw), pf(4, fh)])),
           pb(
             3,
             cat([
-              pf(1, mat[0]),
+              pf(1, safeA),
               pf(2, mat[1]),
               pf(3, mat[2]),
-              pf(4, mat[3]),
+              pf(4, safeD),
               pf(5, mat[4]),
               pf(6, mat[5]),
             ])
@@ -1243,14 +1312,16 @@ export function serializeDecomposedSvga(
           ? Math.max(0, Math.min(1, (lt.opacity / 100) * (docT.opacity / 100)))
           : 0;
         const mat = computeAddedLayerFrameMatrix(ex.width, ex.height, W, H, lt, docT);
+        const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
+        const safeD = Math.abs(mat[3]) < 1e-6 ? 1e-6 : mat[3];
         const layMsg = pb(2, cat([pf(1, 0), pf(2, 0), pf(3, ex.width), pf(4, ex.height)]));
         const trMsg = pb(
           3,
           cat([
-            pf(1, mat[0]),
+            pf(1, safeA),
             pf(2, mat[1]),
             pf(3, mat[2]),
-            pf(4, mat[3]),
+            pf(4, safeD),
             pf(5, mat[4]),
             pf(6, mat[5]),
           ])
@@ -1258,13 +1329,92 @@ export function serializeDecomposedSvga(
         frameMsgs.push(pb(2, cat([pf(1, finalAlpha), layMsg, trMsg])));
       }
     }
-    parts.push(pb(4, cat([ps(1, ex.assetKey), ...frameMsgs])));
+
+    const spriteFields: Uint8Array[] = [];
+    if (ex.assetKey) spriteFields.push(ps(1, ex.assetKey));
+    spriteFields.push(...frameMsgs);
+    if (ex.matteKey) spriteFields.push(ps(3, ex.matteKey));
+    return cat(spriteFields);
+  };
+
+  if (customLayerOrder && customLayerOrder.length > 0) {
+    const emittedSprites = new Set<number>();
+    const emittedExtras = new Set<string>();
+
+    for (const lid of customLayerOrder) {
+      if (lid.startsWith('sprite_')) {
+        const sIdx = Number(lid.replace('sprite_', ''));
+        if (!Number.isNaN(sIdx) && !emittedSprites.has(sIdx) && movie.sp[sIdx] && !deletedSprites.has(sIdx)) {
+          emittedSprites.add(sIdx);
+          const msg = buildSpriteEntityMsg(sIdx);
+          if (msg) parts.push(pb(4, msg));
+        }
+      } else {
+        const ex = extraLayers.find((e) => e.id === lid);
+        if (ex && !emittedExtras.has(ex.id)) {
+          emittedExtras.add(ex.id);
+          const msg = buildExtraLayerEntityMsg(ex);
+          if (msg) parts.push(pb(4, msg));
+        }
+      }
+    }
+
+    // Append any leftover sprites that weren't listed in customLayerOrder
+    for (let sIdx = 0; sIdx < movie.sp.length; sIdx++) {
+      if (!deletedSprites.has(sIdx) && !emittedSprites.has(sIdx)) {
+        const msg = buildSpriteEntityMsg(sIdx);
+        if (msg) parts.push(pb(4, msg));
+      }
+    }
+
+    // Append any leftover extra layers
+    for (const ex of extraLayers) {
+      if (!emittedExtras.has(ex.id)) {
+        const msg = buildExtraLayerEntityMsg(ex);
+        if (msg) parts.push(pb(4, msg));
+      }
+    }
+  } else {
+    // 2. Original Decomposed SpriteEntity tracks (field 4) ordered by mergedGroups
+    const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
+      const orderA = spriteToGroupOrderMap.get(`sprite_${a}`) ?? mergedGroups.length;
+      const orderB = spriteToGroupOrderMap.get(`sprite_${b}`) ?? mergedGroups.length;
+      if (orderA !== orderB) return orderB - orderA;
+      return a - b;
+    });
+
+    orderedSpriteIndices.forEach((idx) => {
+      const msg = buildSpriteEntityMsg(idx);
+      if (msg) parts.push(pb(4, msg));
+    });
+
+    // 3. Added Decomposed SpriteEntity tracks
+    for (const ex of extraLayers) {
+      const msg = buildExtraLayerEntityMsg(ex);
+      if (msg) parts.push(pb(4, msg));
+    }
   }
 
-  // 4. Preserve original AudioEntity messages (field 5)
+  // 4. Preserve original AudioEntity messages (field 5), or synthesize if audio buffers exist in images
   if (movie.audiosRaw && movie.audiosRaw.length > 0) {
     for (const rawAudio of movie.audiosRaw) {
       parts.push(pb(5, rawAudio));
+    }
+  } else if (detectedAudioKeys.length > 0) {
+    const totalTimeMs = Math.max(1, Math.round((n / Math.max(1, fps)) * 1000));
+    for (const aKey of detectedAudioKeys) {
+      parts.push(
+        pb(
+          5,
+          cat([
+            ps(1, aKey),
+            pi(2, 0),
+            pi(3, Math.max(1, n)),
+            pi(4, 0),
+            pi(5, totalTimeMs),
+          ])
+        )
+      );
     }
   }
 
@@ -1406,6 +1556,7 @@ export function generateAfterEffectsJsxScript(
     y: number;
     sx: number;
     sy: number;
+    zoom?: number;
     rotation: number;
     opacity: number;
   }[]
@@ -1414,13 +1565,19 @@ export function generateAfterEffectsJsxScript(
   const layerLines = layers
     .slice(0, 150)
     .map(
-      (l, idx) =>
-        `  // Layer ${idx + 1}: ${l.name}\n` +
-        `  var solid_${idx} = comp.layers.addSolid([0.48, 0.36, 1.0], ${JSON.stringify(l.name)}, ${w}, ${h}, 1.0, ${dur});\n` +
-        `  solid_${idx}.property("ADBE Transform Group").property("ADBE Position").setValue([${w / 2 + l.x}, ${h / 2 + l.y}]);\n` +
-        `  solid_${idx}.property("ADBE Transform Group").property("ADBE Scale").setValue([${l.sx}, ${l.sy}]);\n` +
-        `  solid_${idx}.property("ADBE Transform Group").property("ADBE Rotate Z").setValue(${l.rotation});\n` +
-        `  solid_${idx}.property("ADBE Transform Group").property("ADBE Opacity").setValue(${l.opacity});`
+      (l, idx) => {
+        const zf = (l.zoom ?? 100) / 100;
+        const effSx = Number((l.sx * zf).toFixed(2));
+        const effSy = Number((l.sy * zf).toFixed(2));
+        return (
+          `  // Layer ${idx + 1}: ${l.name}\n` +
+          `  var solid_${idx} = comp.layers.addSolid([0.48, 0.36, 1.0], ${JSON.stringify(l.name)}, ${w}, ${h}, 1.0, ${dur});\n` +
+          `  solid_${idx}.property("ADBE Transform Group").property("ADBE Position").setValue([${w / 2 + l.x}, ${h / 2 + l.y}]);\n` +
+          `  solid_${idx}.property("ADBE Transform Group").property("ADBE Scale").setValue([${effSx}, ${effSy}]);\n` +
+          `  solid_${idx}.property("ADBE Transform Group").property("ADBE Rotate Z").setValue(${l.rotation});\n` +
+          `  solid_${idx}.property("ADBE Transform Group").property("ADBE Opacity").setValue(${l.opacity});`
+        );
+      }
     )
     .join('\n\n');
 

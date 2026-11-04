@@ -1,4 +1,4 @@
-import { PB, pm, pako, UPNG } from './codecs';
+import { PB, pm, pako, UPNG, crc32 } from './codecs';
 
 export type SvgaCompressionMode = 'auto_quality' | 'smart_300' | 'png8_only' | 'scale_proportional';
 
@@ -422,9 +422,88 @@ export function quantizeAndEncodePng8Dithered(
     }
   }
 
-  // Fast lossless path if image ALREADY has <= maxColors unique RGBA colors (like img_1646.png at 256 colors!)
+  const encodeStrictPng8 = (
+    indexPixels: Uint8Array,
+    plteEntries: Array<{ r: number; g: number; b: number; a: number }>
+  ): Uint8Array => {
+    const palCount = Math.max(1, Math.min(256, plteEntries.length));
+    const plteData = new Uint8Array(palCount * 3);
+    let trnsLen = 0;
+    for (let i = 0; i < palCount; i++) {
+      plteData[i * 3] = plteEntries[i].r;
+      plteData[i * 3 + 1] = plteEntries[i].g;
+      plteData[i * 3 + 2] = plteEntries[i].b;
+      if (plteEntries[i].a < 255) trnsLen = i + 1;
+    }
+    const trnsData = new Uint8Array(trnsLen);
+    for (let i = 0; i < trnsLen; i++) {
+      trnsData[i] = plteEntries[i].a;
+    }
+
+    const rowStride = W + 1;
+    const rawScanlines = new Uint8Array(rowStride * H);
+    for (let y = 0; y < H; y++) {
+      const rowOff = y * rowStride;
+      rawScanlines[rowOff] = 0; // filter type 0 (None)
+      rawScanlines.set(indexPixels.subarray(y * W, (y + 1) * W), rowOff + 1);
+    }
+    const idatData = pako.deflate(rawScanlines, { level: 9 });
+
+    const makeChunk = (type: string, data: Uint8Array): Uint8Array => {
+      const buf = new Uint8Array(12 + data.length);
+      const dv = new DataView(buf.buffer);
+      dv.setUint32(0, data.length, false);
+      for (let i = 0; i < 4; i++) buf[4 + i] = type.charCodeAt(i);
+      buf.set(data, 8);
+      dv.setUint32(8 + data.length, crc32(buf.subarray(4, 8 + data.length)), false);
+      return buf;
+    };
+
+    const ihdr = new Uint8Array(13);
+    const ihdrDv = new DataView(ihdr.buffer);
+    ihdrDv.setUint32(0, W, false);
+    ihdrDv.setUint32(4, H, false);
+    ihdr[8] = 8; // strictly 8-bit depth
+    ihdr[9] = 3; // indexed-color (PLTE)
+    ihdr[10] = 0;
+    ihdr[11] = 0;
+    ihdr[12] = 0;
+
+    const chunks: Uint8Array[] = [
+      new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+      makeChunk('IHDR', ihdr),
+      makeChunk('PLTE', plteData),
+    ];
+    if (trnsLen > 0) {
+      chunks.push(makeChunk('tRNS', trnsData));
+    }
+    chunks.push(makeChunk('IDAT', idatData));
+    chunks.push(makeChunk('IEND', new Uint8Array(0)));
+
+    return catBytes(chunks);
+  };
+
+  // Fast lossless path if image ALREADY has <= maxColors unique RGBA colors (including 100% transparent frames like img_1640)
   if (uniqueColors.size <= maxColors) {
-    return new Uint8Array(UPNG.encode([cleanRgba.buffer], W, H, 0));
+    const sortedColors = Array.from(uniqueColors).sort((cA, cB) => ((cA >>> 24) & 255) - ((cB >>> 24) & 255));
+    if (sortedColors.length === 0) sortedColors.push(0);
+    const colorToIndex = new Map<number, number>();
+    const exactPlte: Array<{ r: number; g: number; b: number; a: number }> = [];
+    for (let i = 0; i < sortedColors.length; i++) {
+      const c = sortedColors[i];
+      colorToIndex.set(c, i);
+      exactPlte.push({
+        r: c & 255,
+        g: (c >>> 8) & 255,
+        b: (c >>> 16) & 255,
+        a: (c >>> 24) & 255,
+      });
+    }
+    const exactIdx = new Uint8Array(W * H);
+    for (let p = 0; p < W * H; p++) {
+      exactIdx[p] = colorToIndex.get(clean32[p]) ?? 0;
+    }
+    return encodeStrictPng8(exactIdx, exactPlte);
   }
 
   // Premultiplied-alpha covariance tree quantization via UPNG.quantize
@@ -474,13 +553,10 @@ export function quantizeAndEncodePng8Dithered(
     });
   }
 
+  // Sort palette entries so transparent / semi-transparent entries come first (keeps tRNS compact)
+  rawPlte.sort((a, b) => a.a - b.a);
   if (rawPlte.length === 0) {
     rawPlte.push({ c: 0, r: 0, g: 0, b: 0, a: 0, pr: 0, pg: 0, pb: 0 });
-  }
-
-  // If dithering is disabled, qres.bufs[0] already contains the quantized pixels
-  if (ditherStrength <= 0.01) {
-    return new Uint8Array(UPNG.encode([qres.bufs[0]], W, H, 0));
   }
 
   // Serpentine Floyd-Steinberg error-diffusion dithering in premultiplied RGBA space
@@ -509,9 +585,10 @@ export function quantizeAndEncodePng8Dithered(
     return best;
   };
 
-  const out32 = new Uint32Array(W * H);
+  const indexPixels = new Uint8Array(W * H);
   const errCur = new Float32Array((W + 2) * 4);
   const errNxt = new Float32Array((W + 2) * 4);
+  const effectiveDither = ditherStrength <= 0.01 ? 0 : ditherStrength;
 
   for (let y = 0; y < H; y++) {
     errNxt.fill(0);
@@ -522,7 +599,7 @@ export function quantizeAndEncodePng8Dithered(
       const i4 = pIdx * 4;
       const oa = cleanRgba[i4 + 3];
       if (oa === 0) {
-        out32[pIdx] = 0;
+        indexPixels[pIdx] = 0;
         continue;
       }
 
@@ -536,42 +613,44 @@ export function quantizeAndEncodePng8Dithered(
 
       const bi = findNearest(pr, pg, pb, pa);
       const chosen = rawPlte[bi];
-      out32[pIdx] = chosen.c;
+      indexPixels[pIdx] = bi;
 
-      const er = Math.max(-22, Math.min(22, (pr - chosen.pr) * ditherStrength));
-      const eg = Math.max(-22, Math.min(22, (pg - chosen.pg) * ditherStrength));
-      const eb = Math.max(-22, Math.min(22, (pb - chosen.pb) * ditherStrength));
-      const ea = oa === 255 ? 0 : Math.max(-14, Math.min(14, (pa - chosen.a) * ditherStrength));
+      if (effectiveDither > 0) {
+        const er = Math.max(-22, Math.min(22, (pr - chosen.pr) * effectiveDither));
+        const eg = Math.max(-22, Math.min(22, (pg - chosen.pg) * effectiveDither));
+        const eb = Math.max(-22, Math.min(22, (pb - chosen.pb) * effectiveDither));
+        const ea = oa === 255 ? 0 : Math.max(-14, Math.min(14, (pa - chosen.a) * effectiveDither));
 
-      const dir = rev ? -1 : 1;
-      const n1 = (x + 1 + dir) * 4;
-      errCur[n1] += er * 0.4375;
-      errCur[n1 + 1] += eg * 0.4375;
-      errCur[n1 + 2] += eb * 0.4375;
-      errCur[n1 + 3] += ea * 0.4375;
+        const dir = rev ? -1 : 1;
+        const n1 = (x + 1 + dir) * 4;
+        errCur[n1] += er * 0.4375;
+        errCur[n1 + 1] += eg * 0.4375;
+        errCur[n1 + 2] += eb * 0.4375;
+        errCur[n1 + 3] += ea * 0.4375;
 
-      const n2 = (x + 1 - dir) * 4;
-      errNxt[n2] += er * 0.1875;
-      errNxt[n2 + 1] += eg * 0.1875;
-      errNxt[n2 + 2] += eb * 0.1875;
-      errNxt[n2 + 3] += ea * 0.1875;
+        const n2 = (x + 1 - dir) * 4;
+        errNxt[n2] += er * 0.1875;
+        errNxt[n2 + 1] += eg * 0.1875;
+        errNxt[n2 + 2] += eb * 0.1875;
+        errNxt[n2 + 3] += ea * 0.1875;
 
-      const n3 = (x + 1) * 4;
-      errNxt[n3] += er * 0.3125;
-      errNxt[n3 + 1] += eg * 0.3125;
-      errNxt[n3 + 2] += eb * 0.3125;
-      errNxt[n3 + 3] += ea * 0.3125;
+        const n3 = (x + 1) * 4;
+        errNxt[n3] += er * 0.3125;
+        errNxt[n3 + 1] += eg * 0.3125;
+        errNxt[n3 + 2] += eb * 0.3125;
+        errNxt[n3 + 3] += ea * 0.3125;
 
-      const n4 = (x + 1 + dir) * 4;
-      errNxt[n4] += er * 0.0625;
-      errNxt[n4 + 1] += eg * 0.0625;
-      errNxt[n4 + 2] += eb * 0.0625;
-      errNxt[n4 + 3] += ea * 0.0625;
+        const n4 = (x + 1 + dir) * 4;
+        errNxt[n4] += er * 0.0625;
+        errNxt[n4 + 1] += eg * 0.0625;
+        errNxt[n4 + 2] += eb * 0.0625;
+        errNxt[n4 + 3] += ea * 0.0625;
+      }
     }
     errCur.set(errNxt);
   }
 
-  return new Uint8Array(UPNG.encode([out32.buffer], W, H, 0));
+  return encodeStrictPng8(indexPixels, rawPlte);
 }
 
 /**
@@ -856,9 +935,39 @@ export function compressSvga2Binary(
   }
   const inflated = pako.inflate(svgaBytes);
 
-  // First pass: collect audio keys so we never touch audio entries stored in field 3
+  // First pass: collect audio keys (field 5) and sprite keys that use clipPath or vector shapes (field 4)
   const audioKeys = new Set<string>();
+  const unscalableKeys = new Set<string>();
   pm(inflated, (f, r) => {
+    if (f === 4) {
+      let sKey = '';
+      let hasClipOrShapes = false;
+      pm(r.by(), (sf, sr) => {
+        if (sf === 1) {
+          sKey = TD.decode(sr.by());
+          return 1;
+        }
+        if (sf === 2) {
+          pm(sr.by(), (ff, fr) => {
+            if (ff === 4) {
+              const cp = fr.by();
+              if (cp && cp.length > 0) hasClipOrShapes = true;
+              return 1;
+            }
+            if (ff === 5) {
+              fr.by();
+              hasClipOrShapes = true;
+              return 1;
+            }
+            return 0;
+          });
+          return 1;
+        }
+        return 0;
+      });
+      if (sKey && hasClipOrShapes) unscalableKeys.add(sKey);
+      return 1;
+    }
     if (f === 5) {
       pm(r.by(), (af, ar) => {
         if (af === 1) {
@@ -902,16 +1011,20 @@ export function compressSvga2Binary(
         const keyStr = TD.decode(keyBytes);
         if (!audioKeys.has(keyStr) && valBytes.length > 8 && valBytes[0] === 0x89 && valBytes[1] === 0x50) {
           try {
-            const res = compressPngBufferLikeReference(valBytes, qualityPercent, mode);
+            const canDownscale = !unscalableKeys.has(keyStr);
+            const effMode = canDownscale ? mode : 'png8_only';
+            const res = compressPngBufferLikeReference(valBytes, qualityPercent, effMode);
             compressedImages.set(keyStr, res.bytes);
-            scaleMap[keyStr] = {
-              origW: res.origW,
-              origH: res.origH,
-              targetW: res.targetW,
-              targetH: res.targetH,
-              sx: res.sx,
-              sy: res.sy,
-            };
+            if (canDownscale) {
+              scaleMap[keyStr] = {
+                origW: res.origW,
+                origH: res.origH,
+                targetW: res.targetW,
+                targetH: res.targetH,
+                sx: res.sx,
+                sy: res.sy,
+              };
+            }
             compressedImageCount++;
           } catch (_) {
             compressedImages.set(keyStr, valBytes);
@@ -925,7 +1038,10 @@ export function compressSvga2Binary(
 
   // Third pass: rebuild MovieEntity with compressed images (field 3) and matrix-compensated sprites (field 4)
   const r2 = new PB(inflated);
-  const outChunks: Uint8Array[] = [];
+  const f12: Uint8Array[] = [];
+  const f3: Uint8Array[] = [];
+  const f4: Uint8Array[] = [];
+  const f5: Uint8Array[] = [];
 
   while (!r2.end) {
     const st = r2.p;
@@ -952,21 +1068,24 @@ export function compressSvga2Binary(
         const keyStr = TD.decode(keyBytes);
         const newVal = compressedImages.get(keyStr) || valBytes;
         const entryMsg = catBytes([pbBytes(1, keyBytes), pbBytes(2, newVal)]);
-        outChunks.push(pbBytes(3, entryMsg));
+        f3.push(pbBytes(3, entryMsg));
       } else {
-        outChunks.push(inflated.subarray(st, r2.p));
+        f3.push(inflated.subarray(st, r2.p));
       }
     } else if (field === 4 && wire === 2) {
       const spriteRaw = r2.by();
       const updatedSprite = rescaleSvgaSpriteEntityProtobuf(spriteRaw, scaleMap);
-      outChunks.push(pbBytes(4, updatedSprite));
+      f4.push(pbBytes(4, updatedSprite));
+    } else if (field === 5 && wire === 2) {
+      r2.skip(wire);
+      f5.push(inflated.subarray(st, r2.p));
     } else {
       r2.skip(wire);
-      outChunks.push(inflated.subarray(st, r2.p));
+      f12.push(inflated.subarray(st, r2.p));
     }
   }
 
-  const deflated = pako.deflate(catBytes(outChunks), { level: 9 });
+  const deflated = pako.deflate(catBytes([...f12, ...f3, ...f4, ...f5]), { level: 9 });
   return {
     bytes: deflated,
     compressedImageCount,

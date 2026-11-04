@@ -11,6 +11,8 @@ import {
   mirrorLayerTransformHorizontally,
   duplicateSvgaSprite,
   serializeDecomposedSvga,
+  computeUnstretchedZoomPatch,
+  interpolateLayerTransform,
 } from './svgaEditorLogic';
 import { parseMovie, SvgaMovie, SvgaSprite } from './codecs';
 
@@ -274,3 +276,116 @@ test('duplicateSvgaSprite and serializeDecomposedSvga preserve copiedFrames and 
   assert.ok(Math.abs(exportedAdded.fr[1].t[0] - 0.55) < 1e-3);
 });
 
+test('computeUnstretchedZoomPatch normalizes uneven sx/sy and applies uniform non-stretching zoom', () => {
+  // When sx and sy are uneven (stretched), computeUnstretchedZoomPatch resets sx/sy to 100% (preserving flip sign)
+  const stretched = {
+    x: 10,
+    y: -5,
+    sx: -140,
+    sy: 85,
+    rotation: 0,
+    opacity: 100,
+  };
+  const patch = computeUnstretchedZoomPatch(stretched, 150);
+  assert.deepEqual(patch, {
+    sx: -100,
+    sy: 100,
+    zoom: 150,
+  });
+
+  // When sx and sy are already equal, only zoom is updated
+  const uniform = {
+    x: 0,
+    y: 0,
+    sx: 100,
+    sy: 100,
+    rotation: 0,
+    opacity: 100,
+  };
+  assert.deepEqual(computeUnstretchedZoomPatch(uniform, 75), { zoom: 75 });
+});
+
+test('interpolateLayerTransform and matrix builders apply uniform zoom keyframes without stretching or shifting center', () => {
+  const base = {
+    x: 20,
+    y: -10,
+    sx: 100,
+    sy: 100,
+    zoom: 50,
+    rotation: 0,
+    opacity: 100,
+  };
+  const pkf = {
+    zoom: {
+      0: 50,
+      10: 150,
+    },
+  };
+
+  const t0 = interpolateLayerTransform(base, pkf, 0);
+  const t5 = interpolateLayerTransform(base, pkf, 5);
+  const t10 = interpolateLayerTransform(base, pkf, 10);
+
+  assert.equal(t0.zoom, 50);
+  assert.equal(t5.zoom, 100);
+  assert.equal(t10.zoom, 150);
+
+  // Verify matrix at frame 0 (50% zoom) and frame 10 (150% zoom) keeps exact same center and 1:1 aspect ratio
+  const mat0 = computeAddedLayerFrameMatrix(120, 80, 500, 500, t0, DEFAULT_TRANSFORM);
+  const mat10 = computeAddedLayerFrameMatrix(120, 80, 500, 500, t10, DEFAULT_TRANSFORM);
+
+  assert.equal(mat0[0], 0.5);
+  assert.equal(mat0[3], 0.5);
+  assert.equal(mat10[0], 1.5);
+  assert.equal(mat10[3], 1.5);
+
+  const cx0 = mat0[0] * 60 + mat0[2] * 40 + mat0[4];
+  const cy0 = mat0[1] * 60 + mat0[3] * 40 + mat0[5];
+  const cx10 = mat10[0] * 60 + mat10[2] * 40 + mat10[4];
+  const cy10 = mat10[1] * 60 + mat10[3] * 40 + mat10[5];
+
+  assert.equal(cx0, 270);
+  assert.equal(cy0, 240);
+  assert.equal(cx10, 270);
+  assert.equal(cy10, 240);
+});test('serializeDecomposedSvga: serializes extra layers and sprites in exact sequence defined by layerOrder', () => {
+  const dummyMovie: SvgaMovie = {
+    w: 400,
+    h: 400,
+    fps: 20,
+    n: 5,
+    im: {
+      img_a: new Uint8Array([1, 2, 3]),
+      img_b: new Uint8Array([4, 5, 6]),
+    },
+    sp: [
+      { key: 'img_a', fr: [{ a: 1, x: 0, y: 0, w: 100, h: 100, t: [1, 0, 0, 1, 0, 0] }] },
+      { key: 'img_b', fr: [{ a: 1, x: 0, y: 0, w: 100, h: 100, t: [1, 0, 0, 1, 0, 0] }] },
+    ],
+  };
+
+  const extraShineLayer = {
+    id: 'layer_shine_1',
+    assetKey: 'shine_asset_1',
+    name: 'Shine Layer',
+    pngBytes: new Uint8Array([7, 8, 9]),
+    width: 100,
+    height: 100,
+    transform: DEFAULT_TRANSFORM,
+    inFrame: 0,
+    outFrame: 4,
+  };
+
+  // Place shine layer directly above sprite_0 (so order is: sprite_0, layer_shine_1, sprite_1)
+  const layerOrder = ['sprite_0', 'layer_shine_1', 'sprite_1'];
+  const serialized = serializeDecomposedSvga(dummyMovie, {
+    extraLayers: [extraShineLayer],
+    layerOrder,
+  });
+
+  const parsed = parseMovie(serialized);
+  assert.equal(parsed.sp.length, 3);
+  assert.equal(parsed.sp[0].key, 'img_a'); // sprite_0
+  assert.equal(parsed.sp[1].key, 'shine_asset_1'); // extraShineLayer directly above sprite_0!
+  assert.equal(parsed.sp[2].key, 'img_b'); // sprite_1
+});

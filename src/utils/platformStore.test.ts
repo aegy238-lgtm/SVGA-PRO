@@ -29,12 +29,9 @@ import {
   sanitizeSiteName,
   mergeBrandingSettingsSafely,
   resolveAuthenticatedUserOnLogin,
-  normalizeProFeatureRules,
   getFeatureFreeAttemptsStatus,
   consumeFeatureFreeAttempt,
   resetFeatureFreeAttempts,
-  PRO_TOOLS_DEFINITIONS,
-  DEFAULT_PRO_FEATURE_RULES,
   type UserAccount,
 } from './platformStore.ts';
 

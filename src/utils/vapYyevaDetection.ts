@@ -1,10 +1,43 @@
+export interface VapDynamicMaskSlot {
+  srcId: string;
+  srcType: 'img' | 'txt' | string;
+  srcTag: string;
+  isTextSlot: boolean;
+  w: number;
+  h: number;
+  fitType: string;
+  loadType?: string;
+  color?: string;
+  style?: string;
+  z: number;
+  defaultFrame: [number, number, number, number];
+  defaultMFrame: [number, number, number, number];
+  mt: number;
+  assetKey: string;
+  labelAr: string;
+  labelEn: string;
+}
+
+export interface VapFrameObjPlacement {
+  srcId: string;
+  z: number;
+  frame: [number, number, number, number];
+  mFrame: [number, number, number, number];
+  mt: number;
+}
+
 export interface VapYyevaMeta {
   kind: 'VAP' | 'YYEVA';
   a: number[];
   c: number[];
   fps?: number;
   frames?: number;
+  videoW?: number;
+  videoH?: number;
+  isVapx?: boolean;
   alphaLayout?: 'r' | 'l';
+  dynamicSlots?: VapDynamicMaskSlot[];
+  dynamicFrames?: Record<number, VapFrameObjPlacement[]>;
   data?: unknown;
 }
 
@@ -87,6 +120,327 @@ function normalizeRect(r: any): number[] | null {
   return null;
 }
 
+export function isTextMaskSlot(srcType?: string, srcTag?: string): boolean {
+  const t = String(srcType || '').toLowerCase();
+  const tag = String(srcTag || '').toLowerCase();
+  if (t === 'txt' || t === 'text' || t === 'font') return true;
+  if (t === 'img' || t === 'image') return false;
+  return /^(txt|text|id|name|nick|nickname|username|user_name|title|label|word|tag_name)/i.test(tag);
+}
+
+/**
+ * Extracts dynamic mask slots (`src` / `effect`) and per-frame mask coordinates (`frame` / `datas`)
+ * from Tencent VAP (`vapc`) or YYEVA (`yyev` / `yyeffectmp4json`) JSON objects.
+ */
+export function extractDynamicMaskData(
+  data: any,
+  kind: 'VAP' | 'YYEVA'
+): {
+  dynamicSlots: VapDynamicMaskSlot[];
+  dynamicFrames: Record<number, VapFrameObjPlacement[]>;
+} {
+  const dynamicFrames: Record<number, VapFrameObjPlacement[]> = {};
+  const firstSeenBySrcId: Record<string, VapFrameObjPlacement> = {};
+
+  if (!data || typeof data !== 'object') {
+    return { dynamicSlots: [], dynamicFrames };
+  }
+
+  // 1. Parse per-frame placements in VAP (`data.frame`)
+  if (Array.isArray(data.frame)) {
+    // Sort frame entries by frame index `i` ascending so firstSeenBySrcId is deterministic
+    const sortedEntries = [...data.frame].sort((a, b) => Number(a?.i ?? 0) - Number(b?.i ?? 0));
+    for (const entry of sortedEntries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const frameIdx = Number(entry.i);
+      if (!Number.isFinite(frameIdx) || frameIdx < 0) continue;
+      const rawObjs = Array.isArray(entry.obj) ? entry.obj : [];
+      const placements: VapFrameObjPlacement[] = [];
+      for (const o of rawObjs) {
+        if (!o || typeof o !== 'object' || o.srcId === undefined) continue;
+        const srcId = String(o.srcId);
+        const fRect = normalizeRect(o.frame);
+        if (!fRect) continue;
+        const mRect = normalizeRect(o.mFrame) || [0, 0, fRect[2], fRect[3]];
+        const placement: VapFrameObjPlacement = {
+          srcId,
+          z: Number.isFinite(Number(o.z)) ? Number(o.z) : 0,
+          frame: [fRect[0], fRect[1], fRect[2], fRect[3]],
+          mFrame: [mRect[0], mRect[1], mRect[2], mRect[3]],
+          mt: Number.isFinite(Number(o.mt)) ? Number(o.mt) : 0,
+        };
+        placements.push(placement);
+        if (!firstSeenBySrcId[srcId]) {
+          firstSeenBySrcId[srcId] = placement;
+        }
+      }
+      if (placements.length > 0) {
+        placements.sort((a, b) => a.z - b.z);
+        dynamicFrames[frameIdx] = placements;
+      }
+    }
+  }
+
+  // 2. Parse per-frame placements in YYEVA (`data.datas`)
+  if (Array.isArray(data.datas)) {
+    const sortedDatas = [...data.datas].sort(
+      (a, b) => Number(a?.frameIndex ?? a?.i ?? 0) - Number(b?.frameIndex ?? b?.i ?? 0)
+    );
+    for (const entry of sortedDatas) {
+      if (!entry || typeof entry !== 'object') continue;
+      const frameIdx = Number(entry.frameIndex ?? entry.i);
+      if (!Number.isFinite(frameIdx) || frameIdx < 0) continue;
+      const rawList = Array.isArray(entry.data) ? entry.data : Array.isArray(entry.obj) ? entry.obj : [];
+      const placements: VapFrameObjPlacement[] = [];
+      for (let idx = 0; idx < rawList.length; idx++) {
+        const o = rawList[idx];
+        if (!o || typeof o !== 'object') continue;
+        const rawId = o.effectId ?? o.srcId;
+        if (rawId === undefined) continue;
+        const srcId = String(rawId);
+        const fRect = normalizeRect(o.renderFrame ?? o.frame);
+        if (!fRect) continue;
+        const mRect = normalizeRect(o.outputFrame ?? o.mFrame) || [0, 0, fRect[2], fRect[3]];
+        const placement: VapFrameObjPlacement = {
+          srcId,
+          z: Number.isFinite(Number(o.z)) ? Number(o.z) : idx,
+          frame: [fRect[0], fRect[1], fRect[2], fRect[3]],
+          mFrame: [mRect[0], mRect[1], mRect[2], mRect[3]],
+          mt: Number.isFinite(Number(o.mt)) ? Number(o.mt) : 0,
+        };
+        placements.push(placement);
+        if (!firstSeenBySrcId[srcId]) {
+          firstSeenBySrcId[srcId] = placement;
+        }
+      }
+      if (placements.length > 0) {
+        placements.sort((a, b) => a.z - b.z);
+        dynamicFrames[frameIdx] = placements;
+      }
+    }
+  }
+
+  // 3. Build dynamicSlots from VAP `data.src` or YYEVA `data.effect`
+  const dynamicSlots: VapDynamicMaskSlot[] = [];
+  const seenSrcIds = new Set<string>();
+
+  const rawSources = Array.isArray(data.src)
+    ? data.src
+    : Array.isArray(data.effect)
+      ? data.effect
+      : [];
+
+  for (let idx = 0; idx < rawSources.length; idx++) {
+    const s = rawSources[idx];
+    if (!s || typeof s !== 'object') continue;
+    const rawId = s.srcId ?? s.effectId ?? idx;
+    const srcId = String(rawId);
+    if (seenSrcIds.has(srcId)) continue;
+    seenSrcIds.add(srcId);
+
+    const firstPlacement = firstSeenBySrcId[srcId];
+    const srcTag = String(s.srcTag ?? s.effectTag ?? `slot_${srcId}`).trim() || `slot_${srcId}`;
+    const rawType = String(s.srcType ?? s.effectType ?? 'img').trim().toLowerCase();
+    const isTxt = isTextMaskSlot(rawType, srcTag);
+    const srcType = isTxt ? 'txt' : 'img';
+
+    const w = Math.max(
+      2,
+      Number(s.w ?? s.effectWidth ?? firstPlacement?.frame?.[2] ?? 100) || 100
+    );
+    const h = Math.max(
+      2,
+      Number(s.h ?? s.effectHeight ?? firstPlacement?.frame?.[3] ?? 100) || 100
+    );
+    const defaultFrame: [number, number, number, number] = firstPlacement
+      ? firstPlacement.frame
+      : [0, 0, w, h];
+    const defaultMFrame: [number, number, number, number] = firstPlacement
+      ? firstPlacement.mFrame
+      : [0, 0, w, h];
+    const safeTagSlug = srcTag.replace(/[^a-zA-Z0-9_\u0600-\u06FF-]/g, '_') || srcId;
+    const assetKey = `mask_${srcId}_${safeTagSlug}`;
+
+    dynamicSlots.push({
+      srcId,
+      srcType,
+      srcTag,
+      isTextSlot: isTxt,
+      w,
+      h,
+      fitType: String(s.fitType ?? s.scaleMode ?? 'fitXY'),
+      loadType: s.loadType ? String(s.loadType) : undefined,
+      color: s.color ?? s.fontColor ? String(s.color ?? s.fontColor) : isTxt ? '#ffffff' : undefined,
+      style: s.style ? String(s.style) : undefined,
+      z: firstPlacement ? firstPlacement.z : idx,
+      defaultFrame,
+      defaultMFrame,
+      mt: firstPlacement ? firstPlacement.mt : 0,
+      assetKey,
+      labelAr: isTxt ? `قناع الاسم (${srcTag})` : `قناع الصورة (${srcTag})`,
+      labelEn: isTxt ? `Name Mask (${srcTag})` : `Image Mask (${srcTag})`,
+    });
+  }
+
+  // 4. Add any orphan srcIds found in `dynamicFrames` that were not declared in `src` / `effect`
+  for (const [srcId, firstPlacement] of Object.entries(firstSeenBySrcId)) {
+    if (seenSrcIds.has(srcId)) continue;
+    seenSrcIds.add(srcId);
+    const w = firstPlacement.frame[2];
+    const h = firstPlacement.frame[3];
+    const srcTag = `layer_${srcId}`;
+    const assetKey = `mask_${srcId}_${srcTag}`;
+    dynamicSlots.push({
+      srcId,
+      srcType: 'img',
+      srcTag,
+      isTextSlot: false,
+      w,
+      h,
+      fitType: 'fitXY',
+      z: firstPlacement.z,
+      defaultFrame: firstPlacement.frame,
+      defaultMFrame: firstPlacement.mFrame,
+      mt: firstPlacement.mt,
+      assetKey,
+      labelAr: `قناع الطبقة (${srcTag})`,
+      labelEn: `Layer Mask (${srcTag})`,
+    });
+  }
+
+  dynamicSlots.sort((a, b) => a.z - b.z);
+  return { dynamicSlots, dynamicFrames };
+}
+
+/**
+ * Resolves the active dynamic mask placements for a given 0-based frame index.
+ */
+export function resolveDynamicFramePlacements(
+  meta: VapYyevaMeta | null | undefined,
+  frameIndex: number
+): VapFrameObjPlacement[] {
+  if (!meta || !meta.dynamicSlots || meta.dynamicSlots.length === 0) return [];
+  const framesMap = meta.dynamicFrames;
+  if (framesMap && Object.keys(framesMap).length > 0) {
+    const safeIdx = Math.max(0, Math.floor(frameIndex));
+    if (framesMap[safeIdx]) return framesMap[safeIdx];
+    const total = meta.frames || 0;
+    if (total > 0 && safeIdx >= total && framesMap[total - 1]) {
+      return framesMap[total - 1];
+    }
+    return [];
+  }
+  // Fallback when slots are defined without per-frame table
+  return meta.dynamicSlots.map((slot) => ({
+    srcId: slot.srcId,
+    z: slot.z,
+    frame: slot.defaultFrame,
+    mFrame: slot.defaultMFrame,
+    mt: slot.mt,
+  }));
+}
+
+/**
+ * Applies a grayscale video luminance mask (`mFrame`) to an RGBA layer buffer in-place.
+ * White mask pixels (luma = 255) preserve layer alpha; black mask pixels (luma = 0) mask out to 0.
+ */
+export function applyLuminanceMaskToRgba(
+  layerRgba: Uint8ClampedArray | Uint8Array,
+  maskRgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number
+): void {
+  const totalBytes = Math.min(layerRgba.length, maskRgba.length, width * height * 4);
+  for (let i = 0; i < totalBytes; i += 4) {
+    const r = maskRgba[i];
+    const g = maskRgba[i + 1];
+    const b = maskRgba[i + 2];
+    const maskLuma = (r * 77 + g * 150 + b * 29) >> 8;
+    const cleanLuma = maskLuma <= 8 ? 0 : maskLuma >= 248 ? 255 : maskLuma;
+    layerRgba[i + 3] = ((layerRgba[i + 3] * cleanLuma + 127) / 255) | 0;
+  }
+}
+
+/**
+ * Converts a raw grayscale `mFrame` region from a VAP/YYEVA video into a clear RGBA preview
+ * where white mask areas become a visible tinted shape on a transparent background.
+ */
+export function extractMaskPreviewRgba(
+  maskRgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  tintRgb: [number, number, number] = [255, 255, 255]
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(width * height * 4);
+  const totalBytes = Math.min(maskRgba.length, out.length);
+  for (let i = 0; i < totalBytes; i += 4) {
+    const r = maskRgba[i];
+    const g = maskRgba[i + 1];
+    const b = maskRgba[i + 2];
+    const luma = (r * 77 + g * 150 + b * 29) >> 8;
+    if (luma > 10) {
+      out[i] = Math.round((tintRgb[0] * luma) / 255);
+      out[i + 1] = Math.round((tintRgb[1] * luma) / 255);
+      out[i + 2] = Math.round((tintRgb[2] * luma) / 255);
+      out[i + 3] = luma;
+    }
+  }
+  return out;
+}
+
+/**
+ * Computes the destination draw rectangle for fitting a replacement asset (`srcW x srcH`)
+ * inside a dynamic mask slot (`dstW x dstH`).
+ */
+export function computeSlotFitDrawRect(
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+  fitMode: 'fitXY' | 'contain' | 'cover' | string = 'fitXY',
+  scale = 1,
+  offsetX = 0,
+  offsetY = 0
+): { x: number; y: number; w: number; h: number; dx: number; dy: number; dw: number; dh: number } {
+  const safeSrcW = Math.max(1, srcW);
+  const safeSrcH = Math.max(1, srcH);
+  const safeDstW = Math.max(1, dstW);
+  const safeDstH = Math.max(1, dstH);
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+  let baseW = safeDstW;
+  let baseH = safeDstH;
+
+  const normMode = String(fitMode || 'fitXY').toLowerCase();
+  if (normMode === 'contain' || normMode === 'aspectfit') {
+    const ratio = Math.min(safeDstW / safeSrcW, safeDstH / safeSrcH);
+    baseW = safeSrcW * ratio;
+    baseH = safeSrcH * ratio;
+  } else if (normMode === 'cover' || normMode === 'centerfull' || normMode === 'centercrop') {
+    const ratio = Math.max(safeDstW / safeSrcW, safeDstH / safeSrcH);
+    baseW = safeSrcW * ratio;
+    baseH = safeSrcH * ratio;
+  }
+
+  const finalW = baseW * safeScale;
+  const finalH = baseH * safeScale;
+  const centerX = safeDstW / 2 + offsetX * safeDstW;
+  const centerY = safeDstH / 2 + offsetY * safeDstH;
+
+  const x = centerX - finalW / 2;
+  const y = centerY - finalH / 2;
+  return {
+    x,
+    y,
+    w: finalW,
+    h: finalH,
+    dx: x,
+    dy: y,
+    dw: finalW,
+    dh: finalH,
+  };
+}
+
 export function inferAlphaSideFromRects(a: number[], c: number[]): 'r' | 'l' {
   const alphaCenterX = a[0] + a[2] / 2;
   const rgbCenterX = c[0] + c[2] / 2;
@@ -135,13 +489,20 @@ export function metaFromAnyObject(
     preferredKind ||
     (vapInfo || candidate.aFrame || candidate.isVapx !== undefined ? 'VAP' : 'YYEVA');
 
+  const { dynamicSlots, dynamicFrames } = extractDynamicMaskData(data, kind);
+
   return {
     kind,
     a,
     c,
     fps: Number(candidate.fps || candidate.frameRate) || undefined,
     frames: Number(candidate.f || candidate.totalFrame || candidate.frames) || undefined,
+    videoW: Number(candidate.videoW || candidate.width) || undefined,
+    videoH: Number(candidate.videoH || candidate.height) || undefined,
+    isVapx: Boolean(candidate.isVapx || candidate.isEffect || dynamicSlots.length > 0),
     alphaLayout: inferAlphaSideFromRects(a, c),
+    dynamicSlots: dynamicSlots.length > 0 ? dynamicSlots : undefined,
+    dynamicFrames: Object.keys(dynamicFrames).length > 0 ? dynamicFrames : undefined,
     data,
   };
 }
@@ -225,7 +586,7 @@ export function detectVapYyevaSequentialSync(u: Uint8Array): VapYyevaMeta | null
   // 2. Fallback: raw byte signature search for `vapc`
   let idx = bidx(u, 'vapc', 0);
   while (idx >= 0) {
-    let sliceEnd = Math.min(u.length, idx + 65536);
+    let sliceEnd = Math.min(u.length, idx + 524288);
     if (idx >= 4) {
       const sz = new DataView(u.buffer, u.byteOffset, u.byteLength).getUint32(idx - 4);
       if (sz > 8 && idx - 4 + sz <= u.length) {
@@ -241,7 +602,7 @@ export function detectVapYyevaSequentialSync(u: Uint8Array): VapYyevaMeta | null
   // 3. Fallback: raw byte signature search for `yyev`
   idx = bidx(u, 'yyev', 0);
   while (idx >= 0) {
-    let sliceEnd = Math.min(u.length, idx + 65536);
+    let sliceEnd = Math.min(u.length, idx + 524288);
     if (idx >= 4) {
       const sz = new DataView(u.buffer, u.byteOffset, u.byteLength).getUint32(idx - 4);
       if (sz > 8 && idx - 4 + sz <= u.length) {
@@ -272,7 +633,7 @@ export function detectVapYyevaSequentialSync(u: Uint8Array): VapYyevaMeta | null
     const kIdx = bidx(u, key, 0);
     if (kIdx >= 0) {
       const searchStart = Math.max(0, kIdx - 2048);
-      const searchEnd = Math.min(u.length, kIdx + 16384);
+      const searchEnd = Math.min(u.length, kIdx + 524288);
       const parsed = parseJsonSlice(u.subarray(searchStart, searchEnd));
       const meta = metaFromAnyObject(parsed, key === '"aFrame"' ? 'VAP' : 'YYEVA');
       if (meta) return meta;

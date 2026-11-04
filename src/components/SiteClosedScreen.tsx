@@ -1,4 +1,3 @@
-import React from 'react';
 import { PlatformSettings, buildWhatsAppUrl, sanitizeSiteLogoUrl, sanitizeSiteName } from '../utils/platformStore';
 
 interface SiteClosedScreenProps {
@@ -36,7 +35,7 @@ export default function SiteClosedScreen({
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 999999,
+        zIndex: 9990,
         background: 'linear-gradient(135deg, #07080e 0%, #0c0e18 50%, #05060b 100%)',
         display: 'flex',
         flexDirection: 'column',

@@ -21,6 +21,7 @@ import {
   LayerPropertyKeyframes,
   LayerTransform,
   SpriteFrameRange,
+  computeUnstretchedZoomPatch,
 } from '../utils/svgaEditorLogic';
 
 export interface TimelineSpriteLayerItem {
@@ -286,14 +287,16 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
     const hasPosKf = pkf.position?.[currentFrame] !== undefined;
     const hasScaleKf = pkf.scale?.[currentFrame] !== undefined;
     const hasRotKf = pkf.rotation?.[currentFrame] !== undefined;
+    const hasZoomKf = pkf.zoom?.[currentFrame] !== undefined;
     const hasOpaKf = pkf.opacity?.[currentFrame] !== undefined;
-    const hasAnyKfAtCurrent = hasPosKf || hasScaleKf || hasRotKf || hasOpaKf;
+    const hasAnyKfAtCurrent = hasPosKf || hasScaleKf || hasRotKf || hasZoomKf || hasOpaKf;
 
     const allKfFrames = Array.from(
       new Set([
         ...Object.keys(pkf.position || {}).map(Number),
         ...Object.keys(pkf.scale || {}).map(Number),
         ...Object.keys(pkf.rotation || {}).map(Number),
+        ...Object.keys(pkf.zoom || {}).map(Number),
         ...Object.keys(pkf.opacity || {}).map(Number),
       ])
     ).sort((a, b) => a - b);
@@ -753,6 +756,122 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
             </div>
           </div>
           {renderPropertyKeyframeTrack(layerId, 'rotation', pkf.rotation, '#34d399')}
+        </div>
+
+        {/* 3b. Zoom (Uniform Non-Stretching Scale · تكبير بدون مط) row with dedicated keyframe button & track */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            height: '26px',
+            minHeight: '26px',
+            borderBottom: '1px solid #14141d',
+            background: '#0b0b12',
+          }}
+        >
+          <div
+            style={{
+              width: '280px',
+              minWidth: '280px',
+              padding: '0 8px 0 28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderRight: '1px solid #1b1b26',
+              height: '100%',
+              fontSize: '11px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <button
+                type="button"
+                aria-label={`Add Zoom keyframe for ${layerId}`}
+                onClick={() => onTogglePropertyKeyframe(layerId, 'zoom', currentFrame)}
+                title="إضافة/حذف نقطة تحريك تكبير وتصغير بدون مط (Zoom) عند الفريم الحالي"
+                style={{
+                  background: hasZoomKf ? 'rgba(192,132,252,0.22)' : '#151522',
+                  border: `1px solid ${hasZoomKf ? '#c084fc' : '#2b2b3d'}`,
+                  color: hasZoomKf ? '#c084fc' : '#8e8ea0',
+                  borderRadius: '4px',
+                  width: '18px',
+                  height: '18px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                <Diamond size={10} />
+              </button>
+              <span
+                onClick={() => onTogglePropertyKeyframe(layerId, 'zoom', currentFrame)}
+                title="تكبير وتصغير الطبقة بدون مط مع نقاط التحريك (Keyframes)"
+                style={{
+                  color: hasZoomKf ? '#c084fc' : '#b0b0c4',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontWeight: hasZoomKf ? 600 : 400,
+                }}
+              >
+                <Clock size={10} /> Zoom (بدون مط)
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <input
+                type="range"
+                min="10"
+                max="300"
+                step="1"
+                aria-label={`Uniform zoom slider for ${layerId}`}
+                value={Math.min(300, Math.max(10, Math.round(t.zoom ?? 100)))}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onUpdateLayerTransform(
+                    layerId,
+                    assetKey,
+                    computeUnstretchedZoomPatch(t, v),
+                    `تكبير/تصغير بدون مط (${v}%)`
+                  );
+                }}
+                style={{
+                  width: '50px',
+                  accentColor: '#c084fc',
+                  cursor: 'pointer',
+                }}
+              />
+              <span style={{ color: '#c084fc', fontSize: '10px', fontWeight: 600 }}>Z</span>
+              <input
+                type="number"
+                min="1"
+                max="1000"
+                step="1"
+                aria-label={`Uniform zoom percentage for ${layerId}`}
+                value={t.zoom ?? 100}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onUpdateLayerTransform(
+                    layerId,
+                    assetKey,
+                    computeUnstretchedZoomPatch(t, v),
+                    `تكبير/تصغير بدون مط (${v}%)`
+                  );
+                }}
+                style={{
+                  width: '44px',
+                  background: '#14141e',
+                  border: '1px solid #232334',
+                  borderRadius: '4px',
+                  padding: '1px 4px',
+                  textAlign: 'right',
+                  fontSize: '11px',
+                }}
+              />
+              <span style={{ color: '#6e6e80', fontSize: '10px' }}>%</span>
+            </div>
+          </div>
+          {renderPropertyKeyframeTrack(layerId, 'zoom', pkf.zoom, '#c084fc')}
         </div>
 
         {/* 4. Opacity O row with dedicated keyframe button & track */}

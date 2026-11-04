@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   DEFAULT_GOLD_STYLE,
-  DEFAULT_REFERENCE_IMAGE_URL,
   DEFAULT_REFERENCE_PALETTE,
   DimensionPresetId,
   ExportImageFormat,

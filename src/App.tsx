@@ -56,8 +56,6 @@ import {
   mergeBrandingSettingsSafely,
   getFeatureFreeAttemptsStatus,
   consumeFeatureFreeAttempt,
-  normalizeProFeatureRules,
-  PRO_TOOLS_DEFINITIONS,
   evaluatePlatformAccessBlock,
   getClientNetworkId,
 } from './utils/platformStore';
@@ -112,7 +110,7 @@ export default function App() {
   const [blockedFormatKey, setBlockedFormatKey] = useState('svga');
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [screenShieldActive, setScreenShieldActive] = useState(false);
-  const [guestAttemptTrigger, setGuestAttemptTrigger] = useState(0);
+  const [, setGuestAttemptTrigger] = useState(0);
   const [activeView, setActiveView] = useState<string>('convert');
   const [leftClickExportEnabled] = useState<boolean>(true);
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
@@ -1274,7 +1272,12 @@ export default function App() {
   return (
     <>
       <nav style={{ position: 'relative', zIndex: 200 }}>
-        <div className="logo" style={{ cursor: 'pointer' }} data-v="convert">
+        <div
+          className="logo"
+          style={{ cursor: 'pointer' }}
+          data-v="home"
+          title={isAr ? 'الصفحة الرئيسية' : 'Home'}
+        >
           {safeNavbarLogoUrl ? (
             <img
               id="siteBrandLogoImg"
@@ -1295,6 +1298,22 @@ export default function App() {
         </div>
 
         <div className="links">
+          <a
+            data-v="home"
+            id="homeNavTab"
+            style={{
+              padding: '3px 9px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontWeight: 700,
+            }}
+          >
+            <span>🏠</span>
+            <span>{isAr ? 'الرئيسية' : 'Home'}</span>
+          </a>
           <a data-v="convert" className="on">
             {t.navMotionProcessing}
           </a>
@@ -2179,6 +2198,7 @@ export default function App() {
                   ↕️ عرض كامل
                 </button>
               </div>
+              <div id="vapDynamicMasksPanel" style={{ display: 'none', marginBottom: '10px' }}></div>
               <div className="grid cols-2" id="assets"></div>
             </aside>
 
@@ -2195,16 +2215,43 @@ export default function App() {
                     : undefined
                 }
               ></div>
-              <div className="bar">
+              <div className="bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <button className="pill" id="pp" style={{ padding: '3px 10px' }}>
                   {t.pause}
                 </button>
                 <button className="pill" id="snd" style={{ padding: '3px 10px' }}>
                   {t.sound}
                 </button>
-                <input type="range" id="seek" min="0" max="100" defaultValue="0" />
+                <input
+                  type="range"
+                  id="seek"
+                  min="0"
+                  max="100"
+                  defaultValue="0"
+                  style={{ flex: 1, minWidth: '80px', accentColor: 'var(--ac, #9a7cff)' }}
+                />
+                <button
+                  type="button"
+                  className="pill"
+                  id="snapGiftBtn"
+                  title={isAr ? 'التقاط وحفظ لقطة شاشة شفافة أو بالخلفية للهدية في هذا الفريم فوراً' : 'Capture and save a snapshot of the gift at this current frame'}
+                  style={{
+                    padding: '3px 10px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    borderColor: 'rgba(154, 124, 255, 0.45)',
+                    background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.16), #161625)',
+                    color: '#e2e8f0',
+                  }}
+                >
+                  <span>📸</span>
+                  <span>{t.snapshotGift || (isAr ? 'لقطة شاشة للهدية' : 'Gift Snapshot')}</span>
+                </button>
               </div>
-              <div className="pill" style={{ cursor: 'default' }} id="again">
+              <div className="pill" style={{ cursor: 'pointer' }} id="again">
                 {t.dropAgain}
               </div>
             </div>
@@ -2685,7 +2732,7 @@ export default function App() {
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 999990,
+            zIndex: 9995,
             background:
               'radial-gradient(circle at 50% 25%, rgba(153, 27, 27, 0.35) 0%, rgba(8, 8, 14, 0.98) 65%, #050508 100%)',
             backdropFilter: 'blur(32px)',

@@ -4,7 +4,6 @@ import {
   GIFT_SHAPES,
   GiftShapeId,
   GiftExportFormat,
-  GiftSizeMode,
   GiftImageFitMode,
   GiftApplyScope,
   GiftOverlayConfig,

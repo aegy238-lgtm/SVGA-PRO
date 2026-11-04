@@ -109,6 +109,9 @@ export class PB {
     this.p += 4;
     return x;
   }
+  fl(): number {
+    return this.f32();
+  }
   by(): Uint8Array {
     const n = this.vi();
     const s = this.b.subarray(this.p, this.p + n);

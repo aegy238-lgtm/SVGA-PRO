@@ -32,6 +32,10 @@ import {
   inferAlphaSideFromRects,
   metaFromAnyObject,
   parseJsonSlice,
+  resolveDynamicFramePlacements,
+  applyLuminanceMaskToRgba,
+  extractMaskPreviewRgba,
+  computeSlotFitDrawRect,
 } from '../utils/vapYyevaDetection';
 import { removeImageBackgroundData } from '../utils/batchImageOps';
 import { computeAffineMatrix2D, AppliedWatermarkLayer } from '../utils/watermark';
@@ -165,7 +169,7 @@ export function initMotionToolsFixed() {
     ) {
       show(rawHash);
     } else {
-      show('convert');
+      show(cur ? 'convert' : 'home');
     }
   };
   window.addEventListener('hashchange', syncViewFromHash);
@@ -1370,7 +1374,9 @@ export function initMotionToolsFixed() {
     c.width = W;
     c.height = H;
     x.clearRect(0, 0, W, H);
-    if (M.show && !M.del) x.drawImage(M.cur, 0, 0, W, H);
+    if (M.show && !M.del && M.cur && (!M.isVapMask || M.hasCustomImg)) {
+      x.drawImage(M.cur, 0, 0, W, H);
+    }
     if (M.on) {
       x.font = 'bold ' + M.size + 'px ' + FX[M.font];
       x.fillStyle = M.col;
@@ -1388,30 +1394,44 @@ export function initMotionToolsFixed() {
   async function openEdit(k) {
     const im = await imgOf(A[k]);
     if (!im) return toast('Cannot open this image');
+    const vapSlot = S?.meta?.dynamicSlots?.find((sl: any) => sl.assetKey === k);
+    const vapRep = vapSlot && S?._vapSlotReplacements?.[vapSlot.srcId];
+    const hasCustomImg = vapSlot ? Boolean(vapRep && vapRep.active && vapRep.customImg) : true;
+    const isTxtSlot = Boolean(vapSlot && vapSlot.isTextSlot);
     M = {
       k,
       cur: im,
-      W: im.naturalWidth,
-      H: im.naturalHeight,
+      W: vapSlot ? vapSlot.w : im.naturalWidth,
+      H: vapSlot ? vapSlot.h : im.naturalHeight,
       show: 1,
       del: 0,
-      on: 0,
-      txt: 'Sample text',
+      on: isTxtSlot ? 1 : 0,
+      txt: vapRep?.text || (isTxtSlot ? vapSlot.srcTag || 'User Name' : 'Sample text'),
       font: 0,
-      col: '#ffe0a4',
-      size: 24,
+      col: vapRep?.textColor || vapSlot?.color || '#ffe0a4',
+      size: isTxtSlot ? Math.max(14, Math.round((vapSlot?.h || 48) * 0.48)) : 24,
       x: 0.5,
       y: 0.5,
-      dirty: 0,
+      dirty: isTxtSlot ? 1 : 0,
+      isVapMask: Boolean(vapSlot),
+      hasCustomImg,
+      vapSlot,
     };
     $('#mo').hidden = false;
     $('#mth').src = A[k];
-    $('#mname').textContent = 'Current Image: ' + k;
+    $('#mname').textContent = vapSlot
+      ? `قناع ديناميكي: ${vapSlot.srcTag} (${vapSlot.srcType === 'txt' ? 'نص / اسم' : 'صورة / طبقة'})`
+      : 'Current Image: ' + k;
     $('#msz').textContent = M.W + ' × ' + M.H;
     $('#mshow').checked = true;
-    $('#mton').checked = false;
-    $('#mtb').hidden = true;
-    $('#mtb').style.display = 'none';
+    $('#mton').checked = Boolean(M.on);
+    $('#mtb').hidden = !M.on;
+    $('#mtb').style.display = M.on ? 'flex' : 'none';
+    if ($('#mtxt')) $('#mtxt').value = M.txt;
+    if ($('#mcol')) $('#mcol').value = M.col;
+    if ($('#mhex')) $('#mhex').value = M.col;
+    if ($('#msize')) $('#msize').value = String(M.size);
+    if ($('#mszv')) $('#mszv').textContent = M.size + 'px';
     mdraw();
   }
   const mclose = () => {
@@ -1436,6 +1456,7 @@ export function initMotionToolsFixed() {
       const im = i.files[0] && (await imgOf(URL.createObjectURL(i.files[0])));
       if (!im) return toast('Cannot read this image');
       M.cur = im;
+      M.hasCustomImg = true;
       M.del = 0;
       M.show = 1;
       $('#mshow').checked = true;
@@ -1794,13 +1815,24 @@ export function initMotionToolsFixed() {
 
   (window as any).__downloadAudioAsset = async () => {
     const a = window.finalAudio && window.finalAudio();
-    if (!a || !a.bytes) {
+    if (!a || (!a.bytes && !a.buf)) {
+      toast('No audio asset in this file');
+      return;
+    }
+    let dataBytes = a.bytes;
+    if (!dataBytes && a.buf && typeof (window as any).mp3For === 'function') {
+      try {
+        dataBytes = await (window as any).mp3For(a);
+      } catch (_) {}
+    }
+    if (!dataBytes) {
       toast('No audio asset in this file');
       return;
     }
     const base = cur ? cur.name.replace(/\.[^.]+$/, '') : 'audio';
-    const ext = a.isMp3 ? 'mp3' : 'wav';
-    await dl(new Blob([a.bytes], { type: a.isMp3 ? 'audio/mpeg' : 'audio/wav' }), `${base}.${ext}`);
+    const isMpeg = a.isMp3 || (dataBytes[0] === 0x49 && dataBytes[1] === 0x44 && dataBytes[2] === 0x33) || (dataBytes[0] === 0xff && (dataBytes[1] & 0xe0) === 0xe0);
+    const ext = isMpeg ? 'mp3' : 'wav';
+    await dl(new Blob([dataBytes], { type: isMpeg ? 'audio/mpeg' : 'audio/wav' }), `${base}.${ext}`);
   };
 
   (window as any).__executeBatchImageOps = async (batchState: any) => {
@@ -2230,6 +2262,12 @@ export function initMotionToolsFixed() {
     window.VI = null;
     (window as any).__lottieData = null;
     (window as any).__WATERMARK_LAYERS = [];
+    window.EDIT = {};
+    const vapMasksEl = document.getElementById('vapDynamicMasksPanel');
+    if (vapMasksEl) {
+      vapMasksEl.style.display = 'none';
+      vapMasksEl.innerHTML = '';
+    }
     show('convert');
     const v = $('#view');
     v.innerHTML = '';
@@ -2492,10 +2530,30 @@ export function initMotionToolsFixed() {
 
   /* Block 5: Native Engines (SVGA 2.x, ZIP, APNG) */
   const TD = new TextDecoder(),
-    inf = async (d, t) =>
-      new Uint8Array(await new Response(new Blob([d]).stream().pipeThrough(new DecompressionStream(t))).arrayBuffer()),
-    inf2 = async (d) =>
-      new Uint8Array(await new Response(new Blob([d]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+    inf = async (d, t) => {
+      if (pako?.inflate) {
+        try {
+          return t === 'deflate-raw' && pako.inflateRaw ? pako.inflateRaw(d) : pako.inflate(d);
+        } catch (_) {
+          try {
+            if (pako.inflateRaw) return pako.inflateRaw(d);
+          } catch (_) {}
+        }
+      }
+      return new Uint8Array(
+        await new Response(new Blob([d]).stream().pipeThrough(new DecompressionStream(t))).arrayBuffer()
+      );
+    },
+    inf2 = async (d) => {
+      if (pako?.deflate) {
+        try {
+          return pako.deflate(d, { level: 9 });
+        } catch (_) {}
+      }
+      return new Uint8Array(
+        await new Response(new Blob([d]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer()
+      );
+    };
   class ZS {
     constructor() {
       this.files = {};
@@ -2658,13 +2716,13 @@ export function initMotionToolsFixed() {
       for (const k in m.im) {
         const d = m.im[k],
           mt =
-            d[0] === 0x89
+            d[0] === 0x89 && d[1] === 0x50
               ? 'image/png'
-              : d[0] === 0xff
+              : d[0] === 0xff && d[1] === 0xd8
                 ? 'image/jpeg'
-                : d[0] === 0x52
+                : d[0] === 0x52 && d.length >= 12 && d[8] === 0x57 && d[9] === 0x45 && d[10] === 0x42 && d[11] === 0x50
                   ? 'image/webp'
-                  : d[0] === 0x47
+                  : d[0] === 0x47 && d[1] === 0x49 && d[2] === 0x46
                     ? 'image/gif'
                     : '';
         if (!mt) continue;
@@ -2692,7 +2750,9 @@ export function initMotionToolsFixed() {
       const tk = setInterval(() => {
         if (!document.body.contains(cv)) return clearInterval(tk);
         if (!run) return;
+        (window as any).__svgaCurrentFrame = i;
         svPaint(cx, cv.width, cv.height, i);
+        if (window.PA) window.PA.sync(i / m.fps);
         i = (i + 1) % m.n;
       }, 1000 / m.fps);
       S = {
@@ -2742,6 +2802,11 @@ export function initMotionToolsFixed() {
   let readMeta = baseReadMeta;
   let _vapScratchCanvas: HTMLCanvasElement | null = null;
   let _vapScratchCtx: CanvasRenderingContext2D | null = null;
+  let _vapSlotLayerCanvas: HTMLCanvasElement | null = null;
+  let _vapSlotLayerCtx: CanvasRenderingContext2D | null = null;
+  let _vapSlotMaskCanvas: HTMLCanvasElement | null = null;
+  let _vapSlotMaskCtx: CanvasRenderingContext2D | null = null;
+
   function vapDraw(c, W, H, m, M) {
     const [cx, cy, cw, ch] = M.c,
       [ax, ay, aw, ah] = M.a;
@@ -2756,10 +2821,10 @@ export function initMotionToolsFixed() {
     const C = x.getImageData(0, 0, cw, ch);
     x.clearRect(0, 0, cw, ch);
     x.drawImage(m, ax, ay, aw, ah, 0, 0, cw, ch);
-    const A = x.getImageData(0, 0, cw, ch),
+    const A_alpha = x.getImageData(0, 0, cw, ch),
       d = C.data;
     for (let i = 0; i < d.length; i += 4) {
-      const a = A.data[i];
+      const a = A_alpha.data[i];
       d[i + 3] = a;
       if (a > 0 && a < 255) {
         const k = 255 / a;
@@ -2772,6 +2837,109 @@ export function initMotionToolsFixed() {
       applyChromaKeyToRgbaBuffer(d, cw, ch, (window as any).__chromaKey);
     }
     x.putImageData(C, 0, 0);
+
+    // Render VAP / YYEVA Dynamic Mask Slots (Image & Text/Name masks)
+    const slots = M.dynamicSlots;
+    if (Array.isArray(slots) && slots.length > 0) {
+      const fps = Math.max(1, M.fps || S?.fps || 30);
+      const totalFrames = Math.max(1, M.frames || S?.n || 1);
+      const curTime = Number(m?.currentTime) || 0;
+      const curFrameIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor((curTime + 0.0005) * fps)));
+      const placements = resolveDynamicFramePlacements(M, curFrameIdx);
+      const replacements = S?._vapSlotReplacements || {};
+      const showGuides = Boolean((window as any).__vapShowMaskGuides);
+
+      if (placements.length > 0) {
+        for (const pl of placements) {
+          const slot = slots.find((s: any) => s.srcId === pl.srcId);
+          if (!slot) continue;
+          const [dx, dy, dw, dh] = pl.frame;
+          const [mx, my, mw, mh] = pl.mFrame;
+          if (dw <= 0 || dh <= 0) continue;
+
+          const rep = replacements[slot.srcId];
+          if (rep && rep.active && !rep.hidden && rep.source) {
+            if (!_vapSlotLayerCanvas || _vapSlotLayerCanvas.width !== dw || _vapSlotLayerCanvas.height !== dh) {
+              _vapSlotLayerCanvas = mk(dw, dh);
+              _vapSlotLayerCtx = _vapSlotLayerCanvas.getContext('2d', { willReadFrequently: true });
+            }
+            const lx = _vapSlotLayerCtx!;
+            lx.clearRect(0, 0, dw, dh);
+
+            const srcEl = rep.source;
+            const srcW = Number(srcEl.naturalWidth || srcEl.width || dw) || dw;
+            const srcH = Number(srcEl.naturalHeight || srcEl.height || dh) || dh;
+            const fitMode = rep.fitMode || slot.fitType || 'fitXY';
+            const scale = Number(rep.scale) > 0 ? Number(rep.scale) : 1;
+            const offX = Number(rep.offsetX) || 0;
+            const offY = Number(rep.offsetY) || 0;
+            const rect = computeSlotFitDrawRect(srcW, srcH, dw, dh, fitMode, scale, offX, offY);
+            lx.imageSmoothingEnabled = true;
+            lx.imageSmoothingQuality = 'high';
+            lx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
+
+            const useMask = rep.useMask !== false;
+            if (useMask && mw > 0 && mh > 0) {
+              if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
+                _vapSlotMaskCanvas = mk(dw, dh);
+                _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
+              }
+              const mxCtx = _vapSlotMaskCtx!;
+              mxCtx.clearRect(0, 0, dw, dh);
+              mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+              const layerData = lx.getImageData(0, 0, dw, dh);
+              const maskData = mxCtx.getImageData(0, 0, dw, dh);
+              applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
+              lx.putImageData(layerData, 0, 0);
+            }
+
+            x.drawImage(_vapSlotLayerCanvas, dx, dy, dw, dh);
+          } else if (showGuides) {
+            // Render visual mask guide overlay when mask guides are toggled on
+            if (mw > 0 && mh > 0) {
+              if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
+                _vapSlotMaskCanvas = mk(dw, dh);
+                _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
+              }
+              const mxCtx = _vapSlotMaskCtx!;
+              mxCtx.clearRect(0, 0, dw, dh);
+              mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+              const maskData = mxCtx.getImageData(0, 0, dw, dh);
+              const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [168, 85, 247];
+              const previewRgba = extractMaskPreviewRgba(maskData.data, dw, dh, tint);
+              for (let p = 3; p < previewRgba.length; p += 4) {
+                previewRgba[p] = Math.round(previewRgba[p] * 0.45);
+              }
+              mxCtx.putImageData(new ImageData(previewRgba, dw, dh), 0, 0);
+              x.drawImage(_vapSlotMaskCanvas, dx, dy, dw, dh);
+            }
+          }
+
+          if (showGuides) {
+            x.save();
+            x.strokeStyle = slot.isTextSlot ? '#38bdf8' : '#c084fc';
+            x.lineWidth = Math.max(2, Math.round(cw / 280));
+            x.setLineDash([6, 4]);
+            x.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
+            x.setLineDash([]);
+            const label = `${slot.srcTag} (${slot.srcType})`;
+            const fontSize = Math.max(11, Math.min(18, Math.round(cw / 42)));
+            x.font = `bold ${fontSize}px system-ui, sans-serif`;
+            const tw = x.measureText(label).width + 10;
+            const th = fontSize + 6;
+            const bx = Math.max(0, Math.min(cw - tw, dx));
+            const by = Math.max(0, dy - th - 2);
+            x.fillStyle = slot.isTextSlot ? 'rgba(2, 132, 199, 0.9)' : 'rgba(126, 34, 206, 0.9)';
+            x.fillRect(bx, by, tw, th);
+            x.fillStyle = '#fff';
+            x.textBaseline = 'middle';
+            x.fillText(label, bx + 5, by + th / 2);
+            x.restore();
+          }
+        }
+      }
+    }
+
     c.drawImage(t, 0, 0, W, H);
   }
   const _dv = drawVid;
@@ -2972,12 +3140,15 @@ export function initMotionToolsFixed() {
       pi = (f, v) => cat([pv(f << 3), pv(v)]),
       pb = (f, d) => cat([pv((f << 3) | 2), pv(d.length), d]),
       ps2 = (f, s) => pb(f, new TextEncoder().encode(s));
-    async function svgaEnc(pngs, W, H, fps) {
+    async function svgaEnc(pngs, W, H, fps, audioPayload = null) {
       const n = pngs.length,
         parts = [ps2(1, '2.0.0'), pb(2, cat([pf(1, W), pf(2, H), pi(3, fps), pi(4, n)]))];
       for (let i = 0; i < n; i++) {
         const keyName = 'img_' + (1640 + i);
         parts.push(pb(3, cat([ps2(1, keyName), pb(2, new Uint8Array(await pngs[i].arrayBuffer()))])));
+      }
+      if (audioPayload && audioPayload.bytes && audioPayload.bytes.length > 0) {
+        parts.push(pb(3, cat([ps2(1, 'audio_0'), pb(2, audioPayload.bytes)])));
       }
       for (let i = 0; i < n; i++) {
         const keyName = 'img_' + (1640 + i);
@@ -2992,9 +3163,19 @@ export function initMotionToolsFixed() {
         for (let k = 0; k < n; k++) fs.push(pb(2, cat([pf(1, k === i ? 1 : 0), lay, tr])));
         parts.push(pb(4, cat([ps2(1, keyName), ...fs])));
       }
+      if (audioPayload && audioPayload.bytes && audioPayload.bytes.length > 0) {
+        const durMs = Math.max(1, Math.round((audioPayload.dur || n / Math.max(1, fps)) * 1000));
+        const endFr = Math.max(1, n);
+        const ae = cat([ps2(1, 'audio_0'), pi(2, 0), pi(3, endFr), pi(4, 0), pi(5, durMs)]);
+        parts.push(pb(5, ae));
+      }
       const rawMovie = cat(parts);
       const deflated = pako?.deflate ? pako.deflate(rawMovie, { level: 9 }) : await inf2(rawMovie);
-      return new Blob([deflated], { type: 'application/octet-stream' });
+      const outBlob: any = new Blob([deflated], { type: 'application/octet-stream' });
+      if (audioPayload && audioPayload.bytes && audioPayload.bytes.length > 0) {
+        outBlob.__hasEmbeddedAudio = true;
+      }
+      return outBlob;
     }
     window.__svgaEnc = svgaEnc;
     const prev = $('#start').onclick;
@@ -3067,7 +3248,11 @@ export function initMotionToolsFixed() {
             fr.push(await window.pngQ(c, isSvgaOut ? true : window.__cmp, isSvgaOut));
           });
           if (F === 'svga') {
-            const sv = await svgaEnc(fr, W, H, fps);
+            const audioPayload =
+              typeof (window as any).svgaPrepareAudioPayload === 'function'
+                ? await (window as any).svgaPrepareAudioPayload(fps, fr.length)
+                : null;
+            const sv = await svgaEnc(fr, W, H, fps, audioPayload);
             await dl(await window.svgaAddAudio(sv, fps, fr.length), base + '.svga');
           } else if (F === 'lottie')
             await dl(
@@ -3260,6 +3445,8 @@ export function initMotionToolsFixed() {
       syncPreviewSize(baseW, baseH);
       pl.onFrame((fr) => {
         if (!S || window.SVP !== pl) return;
+        (window as any).__svgaCurrentFrame = fr;
+        (pl as any).currentFrame = fr;
         const activeFps = (S && S.fps) || baseFps || 20;
         if (window.PA) window.PA.sync(fr / activeFps);
       });
@@ -3287,6 +3474,41 @@ export function initMotionToolsFixed() {
       try {
         window.SVP.setImage(u, k);
       } catch (e) {}
+    if (S?.meta?.dynamicSlots) {
+      const slot = S.meta.dynamicSlots.find((s: any) => s.assetKey === k);
+      if (slot) {
+        S._vapSlotReplacements = S._vapSlotReplacements || {};
+        const im = await imgOf(u);
+        if (im) {
+          const prev = S._vapSlotReplacements[slot.srcId] || {};
+          S._vapSlotReplacements[slot.srcId] = {
+            ...prev,
+            active: true,
+            hidden: false,
+            source: im,
+            customImg: true,
+            dataUrl: u,
+            fitMode: prev.fitMode || slot.fitType || 'fitXY',
+            useMask: prev.useMask !== false,
+          };
+          const thumbEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-thumb="${slot.srcId}"]`) as HTMLImageElement | null;
+          if (thumbEl) thumbEl.src = u;
+          const badgeEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-status="${slot.srcId}"]`) as HTMLElement | null;
+          if (badgeEl) {
+            badgeEl.textContent = '✓ تم الاستبدال';
+            badgeEl.style.background = 'rgba(16, 185, 129, 0.2)';
+            badgeEl.style.color = '#34d399';
+          }
+          if (S.vid && S._alphaCanvas) {
+            const x = S._alphaCanvas.getContext('2d');
+            if (x) {
+              x.clearRect(0, 0, S._alphaCanvas.width, S._alphaCanvas.height);
+              vapDraw(x, S._alphaCanvas.width, S._alphaCanvas.height, S.vid, S.meta);
+            }
+          }
+        }
+      }
+    }
     return _ae(u, k);
   };
 
@@ -3322,18 +3544,67 @@ export function initMotionToolsFixed() {
       !!b &&
       b.length > 3 &&
       ((b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0));
+    const isAudioBin = (b) => {
+      if (!b || b.length < 4) return false;
+      if (isMp3(b)) return true;
+      if (
+        b.length >= 12 &&
+        b[0] === 0x52 &&
+        b[1] === 0x49 &&
+        b[2] === 0x46 &&
+        b[3] === 0x46 &&
+        b[8] === 0x57 &&
+        b[9] === 0x41 &&
+        b[10] === 0x56 &&
+        b[11] === 0x45
+      )
+        return true;
+      if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return true;
+      if (b[0] === 0xff && (b[1] & 0xf6) === 0xf0) return true;
+      if (b.length >= 8 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return true;
+      return false;
+    };
+    const ensureMp3Id3Header = (b: Uint8Array | null | undefined): Uint8Array => {
+      if (!b || b.length === 0) return new Uint8Array(0);
+      // Official SVGA 2.0 players (svgaplayerweb, SVGAPlayer-iOS/Android/Web) check
+      // bytes[0..2] === "ID3" (0x49, 0x44, 0x33 -> Base64 "SUQz") to recognize MP3 audio in MovieEntity.images.
+      if (b.length >= 3 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) {
+        return b;
+      }
+      const id3v2Header = new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+      return cat([id3v2Header, b]);
+    };
     async function svgaParts(f) {
       const raw = new Uint8Array(await f.arrayBuffer());
       if (raw[0] === 0x50) return null;
       const u = await inf(raw, 'deflate'),
         r = new PB(u),
         ents = [],
-        imgs = {};
+        imgs = {},
+        unscalableKeys = new Set<string>();
+      let movieFps = 20,
+        movieFrames = 0;
       while (!r.end) {
         const t = r.vi(),
           fl = t >>> 3,
           w = t & 7;
-        if (fl === 5 && w === 2) {
+        if (fl === 2 && w === 2) {
+          pm(r.by(), (g, q) => {
+            if (g === 1 || g === 2) {
+              q.f32();
+              return 1;
+            }
+            if (g === 3) {
+              movieFps = q.vi() || 20;
+              return 1;
+            }
+            if (g === 4) {
+              movieFrames = q.vi() || 0;
+              return 1;
+            }
+            return 0;
+          });
+        } else if (fl === 5 && w === 2) {
           const e = {};
           pm(r.by(), (g, q) => {
             if (g === 1) e.key = TD.decode(q.by());
@@ -3347,14 +3618,41 @@ export function initMotionToolsFixed() {
             v = null;
           pm(r.by(), (g, q) => {
             if (g === 1) k = TD.decode(q.by());
-            else if (g === 2) v = q.by();
+            else if (g === 2) v = q.by().slice();
             else return 0;
             return 1;
           });
           imgs[k] = v;
+        } else if (fl === 4 && w === 2) {
+          let sKey = '';
+          let hasClipOrShapes = false;
+          pm(r.by(), (g, q) => {
+            if (g === 1) {
+              sKey = TD.decode(q.by());
+              return 1;
+            }
+            if (g === 2) {
+              pm(q.by(), (fg, fq) => {
+                if (fg === 4) {
+                  const cp = fq.by();
+                  if (cp && cp.length > 0) hasClipOrShapes = true;
+                  return 1;
+                }
+                if (fg === 5) {
+                  fq.by();
+                  hasClipOrShapes = true;
+                  return 1;
+                }
+                return 0;
+              });
+              return 1;
+            }
+            return 0;
+          });
+          if (sKey && hasClipOrShapes) unscalableKeys.add(sKey);
         } else r.skip(w);
       }
-      return { u, ents, imgs };
+      return { u, ents, imgs, unscalableKeys, movieFps, movieFrames };
     }
     async function toCv(b) {
       const bm = await createImageBitmap(b),
@@ -3376,54 +3674,61 @@ export function initMotionToolsFixed() {
 
       // Pass 1: Compress and/or apply edits to all image entries in P.imgs so scaleMap is ready for SpriteEntity (field 4)
       for (const [ks, val] of Object.entries(P.imgs)) {
-        if (ak.has(ks)) continue;
+        if (ak.has(ks) || isAudioBin(val)) continue;
+        const canDownscale = !P.unscalableKeys?.has(ks);
+        const effMode = canDownscale ? mode : 'png8_only';
         const ed = o.edits && o.edits[ks];
         if (ed) {
           const cv = await toCv(ed);
-          const pngBlob: any = await window.pngQ(cv, true, !!o.comp);
+          const pngBlob: any = await window.pngQ(cv, true, !!o.comp && canDownscale);
           compressedImages[ks] = new Uint8Array(await pngBlob.arrayBuffer());
-          if (pngBlob.__spriteScale) {
+          if (canDownscale && pngBlob.__spriteScale) {
             scaleMap[ks] = pngBlob.__spriteScale;
           }
         } else if (o.comp && val && val.length > 8) {
           if (val[0] === 0x89 && val[1] === 0x50) {
             try {
-              const res = compressPngBufferLikeReference(val, qualityPercent, mode);
+              const res = compressPngBufferLikeReference(val, qualityPercent, effMode);
               compressedImages[ks] = res.bytes;
-              scaleMap[ks] = {
-                origW: res.origW,
-                origH: res.origH,
-                targetW: res.targetW,
-                targetH: res.targetH,
-                sx: res.sx,
-                sy: res.sy,
-              };
+              if (canDownscale) {
+                scaleMap[ks] = {
+                  origW: res.origW,
+                  origH: res.origH,
+                  targetW: res.targetW,
+                  targetH: res.targetH,
+                  sx: res.sx,
+                  sy: res.sy,
+                };
+              }
             } catch (_) {
               const cv = await toCv(new Blob([val]));
-              const pngBlob: any = await window.pngQ(cv, true, true);
+              const pngBlob: any = await window.pngQ(cv, true, canDownscale);
               const nb = new Uint8Array(await pngBlob.arrayBuffer());
-              if (nb.length < val.length || (pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
+              if (nb.length < val.length || (canDownscale && pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
                 compressedImages[ks] = nb;
-                if (pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
+                if (canDownscale && pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
               }
             }
           } else if (val[0] === 0xff || val[0] === 0x52) {
             try {
               const cv = await toCv(new Blob([val]));
-              const pngBlob: any = await window.pngQ(cv, true, true);
+              const pngBlob: any = await window.pngQ(cv, true, canDownscale);
               const nb = new Uint8Array(await pngBlob.arrayBuffer());
-              if (nb.length < val.length || (pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
+              if (nb.length < val.length || (canDownscale && pngBlob.__spriteScale && pngBlob.__spriteScale.sx > 1)) {
                 compressedImages[ks] = nb;
-                if (pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
+                if (canDownscale && pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
               }
             } catch (_) {}
           }
         }
       }
 
-      // Pass 2: Rebuild MovieEntity with compressed images (field 3) and matrix-compensated sprites (field 4)
+      // Pass 2: Rebuild MovieEntity in strict ascending Protobuf field order (1 -> 2 -> 3 -> 4 -> 5)
       const r = new PB(u),
-        out = [];
+        f12 = [],
+        f3 = [],
+        f4 = [],
+        f5 = [];
       while (!r.end) {
         const st = r.p,
           t = r.vi(),
@@ -3445,30 +3750,37 @@ export function initMotionToolsFixed() {
             return 0;
           });
           const ks = TD.decode(key);
-          if (drop && ak.has(ks)) continue;
-          const nv = compressedImages[ks] || val;
+          if (drop && (ak.has(ks) || ks === 'audio_0' || isAudioBin(val))) continue;
+          let nv = compressedImages[ks] || val;
+          if ((ak.has(ks) || isMp3(nv)) && nv) {
+            nv = ensureMp3Id3Header(nv);
+          }
           const e = cat([pv((1 << 3) | 2), pv(key.length), key, pv((2 << 3) | 2), pv(nv.length), nv]);
-          out.push(cat([pv((3 << 3) | 2), pv(e.length), e]));
+          f3.push(cat([pv((3 << 3) | 2), pv(e.length), e]));
         } else if (fl === 4 && w === 2) {
           const spriteRaw = r.by();
           const updatedSprite = rescaleSvgaSpriteEntityProtobuf(spriteRaw, scaleMap);
-          out.push(pb(4, updatedSprite));
+          f4.push(pb(4, updatedSprite));
         } else if (fl === 5 && w === 2) {
           r.by();
-          if (!drop) out.push(u.subarray(st, r.p));
+          if (!drop) f5.push(u.subarray(st, r.p));
         } else {
           r.skip(w);
-          out.push(u.subarray(st, r.p));
+          f12.push(u.subarray(st, r.p));
         }
       }
       if (au && au.set) {
-        const n = Math.max(1, Math.min(o.n || 1, Math.ceil(au.dur * (o.fps || 20)))),
-          ae = cat([ps2(1, 'audio_0'), pi(2, 0), pi(3, n), pi(4, 0), pi(5, Math.round(au.dur * 1000))]);
-        out.push(pb(5, ae), pb(3, cat([ps2(1, 'audio_0'), pb(2, au.set)])));
+        const mp3WithId3 = ensureMp3Id3Header(au.set);
+        const effFps = Math.max(1, o.fps || P.movieFps || (S && S.fps) || 20);
+        const totalFrames = Math.max(1, o.n || P.movieFrames || (S && S.n) || Math.ceil(au.dur * effFps));
+        const durMs = Math.max(1, Math.round((au.dur || totalFrames / effFps) * 1000));
+        const ae = cat([ps2(1, 'audio_0'), pi(2, 0), pi(3, totalFrames), pi(4, 0), pi(5, durMs)]);
+        f3.push(pb(3, cat([ps2(1, 'audio_0'), pb(2, mp3WithId3)])));
+        f5.push(pb(5, ae));
       }
       const wmLayers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
       if (wmLayers.length > 0) {
-        const totalFrames = Math.max(1, o.n || (S && S.n) || 1);
+        const totalFrames = Math.max(1, o.n || P.movieFrames || (S && S.n) || 1);
         for (const wm of wmLayers) {
           const url = A[wm.imageKey] || wm.dataUrl;
           if (!url) continue;
@@ -3479,7 +3791,7 @@ export function initMotionToolsFixed() {
               pngBytes = compressPngBufferLikeReference(rawWmBytes, qualityPercent, 'png8_only').bytes;
             }
           } catch (_) {}
-          out.push(pb(3, cat([ps2(1, wm.imageKey), pb(2, pngBytes)])));
+          f3.push(pb(3, cat([ps2(1, wm.imageKey), pb(2, pngBytes)])));
           const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
             wm.x,
             wm.y,
@@ -3493,37 +3805,47 @@ export function initMotionToolsFixed() {
           const frameBytes = pb(2, cat([pf(1, Math.max(0, Math.min(1, wm.opacity / 100))), lay, tr]));
           const allFrames = [];
           for (let fi = 0; fi < totalFrames; fi++) allFrames.push(frameBytes);
-          out.push(pb(4, cat([ps2(1, wm.imageKey), ...allFrames])));
+          f4.push(pb(4, cat([ps2(1, wm.imageKey), ...allFrames])));
         }
       }
-      const rawMovieOut = cat(out);
+      const rawMovieOut = cat([...f12, ...f3, ...f4, ...f5]);
       const deflated = pako?.deflate ? pako.deflate(rawMovieOut, { level: 9 }) : await inf2(rawMovieOut);
       return new Blob([deflated], { type: 'application/octet-stream' });
     }
     window.svgaPatch = svgaPatch;
     LIBS.defs.Howl = ['https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.core.min.js'];
-    LIBS.defs.lamejs = ['https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js'];
+    LIBS.defs.lamejs = [
+      'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.all.min.js',
+      'https://unpkg.com/lamejs@1.2.1/lame.min.js',
+    ];
     async function encodeMp3(buf, vol, startSec = 0, endSec = 0) {
       await getLib('lamejs');
       if (!window.lamejs) throw Error('MP3 encoder (lamejs) could not load');
-      const sr = buf.sampleRate || 48000,
-        ch = Math.min(2, buf.numberOfChannels),
+      const srcSr = buf.sampleRate || 48000,
+        sr = srcSr === 44100 || srcSr === 48000 || srcSr === 32000 ? srcSr : 44100,
+        ch = Math.min(2, Math.max(1, buf.numberOfChannels || 1)),
         enc = new lamejs.Mp3Encoder(ch, sr, 128),
-        sIdx = Math.max(0, Math.min(buf.length, Math.round((startSec || 0) * sr))),
+        sIdx = Math.max(0, Math.min(buf.length, Math.round((startSec || 0) * srcSr))),
         eIdx =
           endSec && endSec > startSec
-            ? Math.max(sIdx, Math.min(buf.length, Math.round(endSec * sr)))
+            ? Math.max(sIdx, Math.min(buf.length, Math.round(endSec * srcSr)))
             : buf.length,
-        sliceLen = Math.max(0, eIdx - sIdx),
-        fadeLen = Math.min(128, Math.floor(sliceLen / 8)),
+        srcSliceLen = Math.max(0, eIdx - sIdx),
+        dstSliceLen = Math.max(0, Math.round((srcSliceLen * sr) / srcSr)),
+        fadeLen = Math.min(128, Math.floor(dstSliceLen / 8)),
         cv = (x) => {
-          const sub = x.subarray(sIdx, eIdx);
-          const o = new Int16Array(sub.length);
-          for (let i = 0; i < sub.length; i++) {
+          const floatSlice =
+            sr === srcSr
+              ? x.subarray(sIdx, eIdx)
+              : resampleChannelFloat32(x, srcSr, sr, dstSliceLen, 1, sIdx, false);
+          const o = new Int16Array(floatSlice.length);
+          for (let i = 0; i < floatSlice.length; i++) {
             let env = 1;
             if (sIdx > 0 && fadeLen > 4 && i < fadeLen) env = i / fadeLen;
-            else if (fadeLen > 4 && i > sub.length - 1 - fadeLen) env = (sub.length - 1 - i) / fadeLen;
-            const v = Math.max(-1, Math.min(1, sub[i] * vol * env));
+            else if (fadeLen > 4 && i > floatSlice.length - 1 - fadeLen)
+              env = (floatSlice.length - 1 - i) / fadeLen;
+            const v = Math.max(-1, Math.min(1, floatSlice[i] * vol * env));
             o[i] = v < 0 ? v * 32768 : v * 32767;
           }
           return o;
@@ -3540,7 +3862,7 @@ export function initMotionToolsFixed() {
       }
       const e = enc.flush();
       if (e.length) parts.push(new Uint8Array(e.buffer, e.byteOffset, e.byteLength).slice());
-      return cat(parts);
+      return ensureMp3Id3Header(cat(parts));
     }
     const finalAudio = (window.finalAudio = () => {
       if (AU.del) return null;
@@ -3549,41 +3871,55 @@ export function initMotionToolsFixed() {
     });
     const mp3For = async (a, startSec = 0, endSec = 0) => {
       const isTrimmed = startSec > 0.005 || (endSec > 0 && endSec < a.buf.duration - 0.01);
-      return a.isMp3 && a.vol === 1 && a.bytes && !isTrimmed
-        ? a.bytes
-        : encodeMp3(a.buf, a.vol, startSec, endSec);
+      if (a.isMp3 && a.vol === 1 && a.bytes && !isTrimmed) {
+        return ensureMp3Id3Header(a.bytes);
+      }
+      return encodeMp3(a.buf, a.vol, startSec, endSec);
     };
-    window.svgaAddAudio = async (b, fps, n) => {
+    const prepareSvgaAudioPayload = async (fps, n) => {
       if (AU.detectPromise) {
         try {
           await AU.detectPromise;
         } catch (_) {}
       }
+      if (!finalAudio() && !AU.del && cur && (cur.__rawBytes || (S && S.vid))) {
+        try {
+          await detect(cur);
+        } catch (_) {}
+      }
       const a = finalAudio();
-      if (!a) return b;
+      if (!a || !a.buf) return null;
+      const featherCfg = (window as any).__edgeFeather;
+      const trimCheck = $('#trim') as HTMLInputElement | null;
+      const isTrimOn = Boolean((trimCheck && trimCheck.checked) || (featherCfg && featherCfg.trimEnabled));
+      let sSec = 0,
+        eSec = 0;
+      if (isTrimOn) {
+        sSec = Number(
+          trimCheck && trimCheck.checked
+            ? ($('#trimStart') as HTMLInputElement)?.value || 0
+            : featherCfg?.trimStartTime || 0
+        );
+        eSec = Number(
+          trimCheck && trimCheck.checked
+            ? ($('#trimEnd') as HTMLInputElement)?.value || 0
+            : featherCfg?.trimEndTime || 0
+        );
+      }
+      const mp3Bytes = await mp3For(a, sSec, eSec);
+      const effDur = eSec > sSec ? eSec - sSec : a.buf.duration;
+      return { bytes: ensureMp3Id3Header(mp3Bytes), dur: effDur, fps, n };
+    };
+    (window as any).svgaPrepareAudioPayload = prepareSvgaAudioPayload;
+    window.svgaAddAudio = async (b, fps, n) => {
+      if (b && (b as any).__hasEmbeddedAudio) return b;
       try {
-        const featherCfg = (window as any).__edgeFeather;
-        const trimCheck = $('#trim') as HTMLInputElement | null;
-        const isTrimOn = Boolean((trimCheck && trimCheck.checked) || (featherCfg && featherCfg.trimEnabled));
-        let sSec = 0,
-          eSec = 0;
-        if (isTrimOn) {
-          sSec = Number(
-            trimCheck && trimCheck.checked
-              ? ($('#trimStart') as HTMLInputElement)?.value || 0
-              : featherCfg?.trimStartTime || 0
-          );
-          eSec = Number(
-            trimCheck && trimCheck.checked
-              ? ($('#trimEnd') as HTMLInputElement)?.value || 0
-              : featherCfg?.trimEndTime || 0
-          );
-        }
-        const mp3Bytes = await mp3For(a, sSec, eSec);
-        const effDur = eSec > sSec ? eSec - sSec : a.buf.duration;
-        return await svgaPatch(b, { audio: { set: mp3Bytes, dur: effDur }, fps, n });
+        const payload = await prepareSvgaAudioPayload(fps, n);
+        if (!payload || !payload.bytes || payload.bytes.length === 0) return b;
+        return await svgaPatch(b, { audio: { set: payload.bytes, dur: payload.dur }, fps, n });
       } catch (e) {
-        toast(e.message + ' - saved without audio');
+        console.warn('svgaAddAudio error:', e);
+        toast((e?.message || 'Audio error') + ' - saved without audio');
         return b;
       }
     };
@@ -3865,12 +4201,43 @@ export function initMotionToolsFixed() {
       g('ao').hidden = false;
       ui();
     };
-    const isAudioBin = (b) =>
-      isMp3(b) ||
-      (!!b &&
-        b.length > 4 &&
-        ((b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) ||
-          (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53)));
+    const sanitizeMp4ContainerForAudioDecode = (rawU8: Uint8Array): Uint8Array => {
+      if (!rawU8 || rawU8.byteLength < 16) return rawU8;
+      let u8 = rawU8;
+      const fp = bidx(u8, 'ftyp');
+      if (fp >= 4 && fp < 65536) {
+        u8 = u8.subarray(fp - 4);
+      }
+      try {
+        const top = boxes(u8);
+        if (top && top.length > 0 && top.some((b) => b.type === 'moov' || b.type === 'mdat')) {
+          const lastBoxEnd = top[top.length - 1].end;
+          const copy = u8.slice(0, Math.min(u8.byteLength, lastBoxEnd));
+          for (const b of top) {
+            if (b.type === 'vapc' || b.type === 'yyev' || b.type === 'yyeva') {
+              if (b.start + 8 <= copy.byteLength) {
+                // Replace custom VAP/YYEVA box tag with standard ISO-BMFF 'free' box tag
+                // so chunk offsets (stco/co64) stay 100% identical while strict MP4 demuxers never reject custom boxes
+                copy[b.start + 4] = 0x66; // 'f'
+                copy[b.start + 5] = 0x72; // 'r'
+                copy[b.start + 6] = 0x65; // 'e'
+                copy[b.start + 7] = 0x65; // 'e'
+              }
+            }
+          }
+          return copy;
+        }
+      } catch (_) {}
+      const yyTrail = bidx(u8, 'yyeffectmp4json[[');
+      if (yyTrail > 8) {
+        const prevTag = TD.decode(u8.subarray(yyTrail - 4, yyTrail));
+        if (prevTag === 'free' || prevTag === 'skip' || prevTag === 'yyev') {
+          return u8.subarray(0, yyTrail - 8);
+        }
+        return u8.subarray(0, yyTrail);
+      }
+      return u8;
+    };
     async function detect(f) {
       const ext = f.name.split('.').pop().toLowerCase();
       let by = null,
@@ -3878,24 +4245,71 @@ export function initMotionToolsFixed() {
         keep = null;
       try {
         const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-        const decodeBytes = async (u8) => {
+        const tryDecodeBuffer = async (u8) => {
           if (!u8 || u8.byteLength < 16) return null;
           const ctx = OAC ? new OAC(2, 48000, 48000) : actx();
           const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-          return await ctx.decodeAudioData(ab).catch(() => null);
+          let decoded = await ctx.decodeAudioData(ab).catch(() => null);
+          if (!decoded && OAC) {
+            const fallbackAb = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+            decoded = await actx().decodeAudioData(fallbackAb).catch(() => null);
+          }
+          if (!decoded && (isMp3(u8) || (u8[0] === 0xff && (u8[1] & 0xe0) === 0xe0))) {
+            const withId3 = ensureMp3Id3Header(u8);
+            const ab2 = withId3.buffer.slice(withId3.byteOffset, withId3.byteOffset + withId3.byteLength);
+            const ctx2 = OAC ? new OAC(2, 48000, 48000) : actx();
+            decoded = await ctx2.decodeAudioData(ab2).catch(() => null);
+          }
+          return decoded;
+        };
+        const decodeBytes = async (u8, isVideoContainer = false) => {
+          if (!u8 || u8.byteLength < 16) return null;
+          if (isVideoContainer) {
+            const sanitized = sanitizeMp4ContainerForAudioDecode(u8);
+            const fromSanitized = await tryDecodeBuffer(sanitized);
+            if (fromSanitized && fromSanitized.length > 0) return fromSanitized;
+          }
+          return await tryDecodeBuffer(u8);
         };
         if (ext === 'svga') {
           const P = await svgaParts(f);
           if (!P) return;
-          const validEnts = (P.ents || []).filter((e) => e && e.key && P.imgs && P.imgs[e.key]);
-          if (validEnts.length > 1 || (validEnts.length === 1 && ((validEnts[0].n2 || 0) > 0 || (validEnts[0].n4 || 0) > 0))) {
-            const svgaFps = Math.max(1, (S && S.fps) || 20);
-            const animDur = S && S.n ? S.n / svgaFps : 3;
+
+          const findImgKey = (key: string, imgs: Record<string, Uint8Array>) => {
+            if (!key || !imgs) return null;
+            if (imgs[key]) return key;
+            const lower = key.toLowerCase();
+            for (const k in imgs) {
+              if (k.toLowerCase() === lower) return k;
+            }
+            const noExt = key.replace(/\.[^.]+$/, '').toLowerCase();
+            for (const k in imgs) {
+              if (k.replace(/\.[^.]+$/, '').toLowerCase() === noExt) return k;
+            }
+            return null;
+          };
+
+          const validEnts = (P.ents || []).filter((e) => {
+            if (!e || !e.key || !P.imgs) return false;
+            const matched = findImgKey(e.key, P.imgs);
+            if (matched) {
+              e.matchedKey = matched;
+              return true;
+            }
+            return false;
+          });
+
+          if (
+            validEnts.length > 1 ||
+            (validEnts.length === 1 && ((validEnts[0].n2 || 0) > 0 || (validEnts[0].n4 || 0) > 0))
+          ) {
+            const svgaFps = Math.max(1, (S && S.fps) || P.movieFps || 20);
+            const animDur = S && S.n ? S.n / svgaFps : P.movieFrames ? P.movieFrames / svgaFps : 3;
             const decodedClips = [];
             let maxEndSec = animDur;
             for (const ent of validEnts) {
-              const rawClip = P.imgs[ent.key];
-              const clipBuf = await decodeBytes(rawClip);
+              const rawClip = P.imgs[ent.matchedKey || ent.key];
+              const clipBuf = await decodeBytes(rawClip, false);
               if (!clipBuf || !clipBuf.length) continue;
               const startSec = Math.max(0, (ent.n2 || 0) / svgaFps);
               const offsetSec = Math.max(0, (ent.n4 || 0) / 1000);
@@ -3907,12 +4321,22 @@ export function initMotionToolsFixed() {
               decodedClips.push({ clipBuf, startSec, offsetSec, endSec, key: ent.key, rawClip });
             }
             if (decodedClips.length > 0) {
-              if (decodedClips.length === 1 && decodedClips[0].startSec === 0 && decodedClips[0].offsetSec === 0) {
+              if (
+                decodedClips.length === 1 &&
+                decodedClips[0].startSec === 0 &&
+                decodedClips[0].offsetSec === 0
+              ) {
                 const only = decodedClips[0];
                 if (cur !== f) return;
                 keep = only.rawClip.slice();
                 AU.cur = { name: only.key, buf: only.clipBuf, bytes: keep, mp3: isMp3(keep) };
                 setBox();
+                if (window.PA) {
+                  window.PA.dur = only.clipBuf.duration;
+                  window.PA.t = 0;
+                }
+                const sndEl = $('#snd');
+                if (sndEl && sndEl.textContent === 'Muted') sndEl.style.opacity = '1';
                 window.PA && window.PA.restart();
                 return;
               }
@@ -3954,16 +4378,30 @@ export function initMotionToolsFixed() {
                 mp3: false,
               };
               setBox();
+              if (window.PA) {
+                window.PA.dur = mixedBuf.duration;
+                window.PA.t = 0;
+              }
+              const sndEl = $('#snd');
+              if (sndEl && sndEl.textContent === 'Muted') sndEl.style.opacity = '1';
               window.PA && window.PA.restart();
               return;
             }
           }
-          if (P.ents && P.ents.length && P.imgs[P.ents[0].key]) {
+          if (validEnts.length > 0 && P.imgs[validEnts[0].matchedKey || validEnts[0].key]) {
+            const ent = validEnts[0];
+            by = P.imgs[ent.matchedKey || ent.key];
+            nm = ent.key;
+          } else if (P.ents && P.ents.length && P.imgs[P.ents[0].key]) {
             by = P.imgs[P.ents[0].key];
             nm = P.ents[0].key;
           } else if (P.imgs) {
             for (const [k, v] of Object.entries(P.imgs)) {
-              if (isAudioBin(v)) {
+              if (
+                isAudioBin(v) ||
+                (/audio|sound|bgm|voice|music|\.(mp3|wav|ogg|m4a|aac)$/i.test(k) &&
+                  !(v && v[0] === 0x89 && v[1] === 0x50))
+              ) {
                 by = v;
                 nm = k;
                 break;
@@ -3971,24 +4409,45 @@ export function initMotionToolsFixed() {
             }
           }
           keep = by && by.slice();
-        } else if (/^(mp4|mov|webm|vap|yyeva)$/.test(ext)) {
-          by = f.__rawBytes ? f.__rawBytes.slice() : new Uint8Array(await f.arrayBuffer());
-          const fp = bidx(by, 'ftyp');
-          if (fp > 4 && fp < 65536) by = by.subarray(fp - 4);
-          const yyTrail = bidx(by, 'yyeffectmp4json[[');
-          if (yyTrail > 8) {
-            const prevTag = TD.decode(by.subarray(yyTrail - 4, yyTrail));
-            if (prevTag !== 'free' && prevTag !== 'skip' && prevTag !== 'yyev') {
-              by = by.subarray(0, yyTrail);
-            }
+          if (!by || by.byteLength < 16) return;
+          const buf = await decodeBytes(by, false);
+          if (cur !== f || !buf || !buf.length) return;
+          AU.cur = { name: nm, buf, bytes: keep, mp3: isMp3(keep) };
+          setBox();
+          if (window.PA) {
+            window.PA.dur = buf.duration;
+            window.PA.t = 0;
           }
+          const sndEl = $('#snd');
+          if (sndEl && sndEl.textContent === 'Muted') sndEl.style.opacity = '1';
+          window.PA && window.PA.restart();
+          return;
+        } else if (/^(mp4|mov|webm|vap|yyeva)$/.test(ext) || f.__rawBytes || (S && S.vid)) {
+          by = f.__rawBytes ? f.__rawBytes.slice() : new Uint8Array(await f.arrayBuffer());
+          let buf = null;
+          if (by && by.byteLength >= 16) {
+            buf = await decodeBytes(by, true);
+          }
+          // If OfflineAudioContext/AudioContext decode failed directly on customized MP4 container (e.g. vapc/yyev boxes),
+          // fallback to extracting audio buffer via the already decoded media/video element or Audio element
+          if (!buf && S && S.vid && S.vid.src) {
+            try {
+              const resp = await fetch(S.vid.src);
+              const blob = await resp.blob();
+              const ab = await blob.arrayBuffer();
+              buf = await tryDecodeBuffer(new Uint8Array(ab));
+            } catch (_) {}
+          }
+          if (cur !== f || !buf || !buf.length) return;
+          AU.cur = { name: nm, buf, bytes: null, mp3: false };
+          setBox();
+          const sndEl = $('#snd');
+          if (sndEl && sndEl.textContent === 'Muted') {
+            sndEl.style.opacity = '1';
+          }
+          window.PA && window.PA.restart();
+          return;
         }
-        if (!by || by.byteLength < 16) return;
-        const buf = await decodeBytes(by);
-        if (cur !== f || !buf || !buf.length) return;
-        AU.cur = { name: nm, buf, bytes: keep, mp3: isMp3(keep) };
-        setBox();
-        window.PA && window.PA.restart();
       } catch (e) {}
     }
     const _lz = load;
@@ -4042,7 +4501,13 @@ export function initMotionToolsFixed() {
         this.dur = a.buf.duration;
         const safeOff = Math.max(0, (off || 0) % a.buf.duration);
         s.buffer = a.buf;
-        s.loop = false;
+        const animDur = S && S.n && S.fps ? S.n / S.fps : a.buf.duration;
+        const isMatchingLoop = Math.abs(a.buf.duration - animDur) < 0.45;
+        s.loop = isMatchingLoop;
+        if (s.loop) {
+          s.loopStart = 0;
+          s.loopEnd = a.buf.duration;
+        }
         g.gain.value = this.muted ? 0 : a.vol;
         s.connect(g);
         g.connect(c.destination);
@@ -4064,24 +4529,29 @@ export function initMotionToolsFixed() {
         if (!(window.finalAudio && window.finalAudio()) || !S || S.paused) return this.stop();
         this.start(this.t || 0);
       },
-      sync(t) {
+      sync(t, isManualSeek = false) {
         const prevT = this._lastT || 0;
         this.t = t;
         this._lastT = t;
-        if (!this.dur || C().state !== 'running') return;
-        // When visual animation loops back to 0, restart audio cleanly from 0
-        if (t < prevT - 0.35) {
+        if (!this.dur || C().state !== 'running' || this.muted) return;
+
+        // If user explicitly scrubbed the timeline slider
+        if (isManualSeek) {
           this.start(t);
           return;
         }
+
+        // If audio is not currently playing, start it smoothly
         if (!this.on) {
           if (t < this.dur - 0.05) this.start(t);
           return;
         }
-        // Only resync mid-loop on large manual user scrub (> 0.9s drift), never on minor frame render jitter
-        const d = Math.abs(this.pos() - t);
-        if (d > 0.9 && t < this.dur - 0.05) {
-          this.start(t);
+
+        // Only on actual animation loop back to frame 0 (large backwards jump)
+        if (t < prevT - 1.2 && t < 0.6) {
+          if (!this.src || !this.src.loop) {
+            this.start(t);
+          }
         }
       },
     });
@@ -4105,18 +4575,54 @@ export function initMotionToolsFixed() {
     document.getElementById('aoe').addEventListener('click', () => setTimeout(() => PA.restart(), 0));
     const sndBtn = $('#snd');
     if (sndBtn) sndBtn.textContent = 'Muted';
-    $('#snd').onclick = function () {
-      if (!(window.finalAudio && window.finalAudio())) return toast('No audio in this file');
+    $('#snd').onclick = async function () {
+      const c = C();
+      if (c && c.state !== 'running') {
+        try {
+          await c.resume();
+        } catch (_) {}
+      }
+      if (AU.detectPromise) {
+        try {
+          await AU.detectPromise;
+        } catch (_) {}
+      }
+      const a = window.finalAudio && window.finalAudio();
+      if (!a || !a.buf) {
+        return toast('No audio track detected in this file');
+      }
       PA.muted = !PA.muted;
-      if (PA.g) PA.g.gain.value = PA.muted ? 0 : window.finalAudio().vol;
+      if (PA.g) {
+        PA.g.gain.value = PA.muted ? 0 : a.vol;
+      }
       this.textContent = PA.muted ? 'Muted' : 'Sound';
-      if (!PA.muted && (!PA.on || !PA.src)) PA.restart();
+      if (!PA.muted) {
+        let curTime = 0;
+        if (S && S.vid) {
+          curTime = S.vid.currentTime || 0;
+        } else if (window.SVP && typeof window.SVP.currentFrame === 'number') {
+          const fps = (S && S.fps) || 20;
+          curTime = (window.SVP.currentFrame || 0) / fps;
+        } else {
+          curTime = PA.t || 0;
+        }
+        PA.start(curTime);
+      } else {
+        PA.stop();
+      }
     };
     const _pp = $('#pp').onclick;
     $('#pp').onclick = function () {
       _pp.call(this);
       if (S && S.paused) PA.stop();
-      else if (!PA.muted) PA.restart();
+      else if (!PA.muted) {
+        let curTime = 0;
+        if (S && S.vid) curTime = S.vid.currentTime || 0;
+        else if (window.SVP && typeof window.SVP.currentFrame === 'number') {
+          curTime = (window.SVP.currentFrame || 0) / ((S && S.fps) || 20);
+        } else curTime = PA.t || 0;
+        PA.start(curTime);
+      }
     };
     const _lp = load;
     load = async function (f) {
@@ -4337,6 +4843,451 @@ export function initMotionToolsFixed() {
       m.style.cssText =
         'position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
     }
+    function buildVapMaskSilhouetteDataUrl(m: HTMLVideoElement, slot: any): string {
+      const w = Math.max(1, Number(slot.w) || 100);
+      const h = Math.max(1, Number(slot.h) || 100);
+      const c = mk(w, h);
+      const x = c.getContext('2d', { willReadFrequently: true })!;
+      const mf = slot.defaultMFrame;
+      if (mf && mf[2] > 0 && mf[3] > 0 && m.readyState >= 2) {
+        try {
+          x.drawImage(m, mf[0], mf[1], mf[2], mf[3], 0, 0, w, h);
+          const raw = x.getImageData(0, 0, w, h);
+          const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [192, 132, 252];
+          const rgba = extractMaskPreviewRgba(raw.data, w, h, tint);
+          x.putImageData(new ImageData(rgba, w, h), 0, 0);
+        } catch (_) {}
+      } else {
+        x.fillStyle = slot.isTextSlot ? 'rgba(56, 189, 248, 0.35)' : 'rgba(192, 132, 252, 0.35)';
+        if (slot.isTextSlot) {
+          x.fillRect(2, 2, Math.max(2, w - 4), Math.max(2, h - 4));
+        } else {
+          x.beginPath();
+          x.arc(w / 2, h / 2, Math.min(w, h) / 2 - 2, 0, Math.PI * 2);
+          x.fill();
+        }
+      }
+      // Draw subtle label inside silhouette preview so user recognizes the mask slot in #assets
+      x.save();
+      x.strokeStyle = slot.isTextSlot ? 'rgba(56, 189, 248, 0.85)' : 'rgba(192, 132, 252, 0.85)';
+      x.lineWidth = 2;
+      x.strokeRect(1, 1, Math.max(1, w - 2), Math.max(1, h - 2));
+      const fsz = Math.max(10, Math.min(18, Math.round(Math.min(w, h) * 0.24)));
+      x.font = `bold ${fsz}px system-ui, sans-serif`;
+      x.fillStyle = '#ffffff';
+      x.textAlign = 'center';
+      x.textBaseline = 'middle';
+      x.shadowColor = 'rgba(0,0,0,0.85)';
+      x.shadowBlur = 4;
+      x.fillText(slot.isTextSlot ? `نص: ${slot.srcTag}` : `صورة: ${slot.srcTag}`, w / 2, h / 2);
+      x.restore();
+      return c.toDataURL('image/png');
+    }
+
+    function renderTextSlotCanvas(slot: any, text: string, color: string, fontSize?: number, bgColor?: string): HTMLCanvasElement {
+      const w = Math.max(1, Number(slot.w) || 234);
+      const h = Math.max(1, Number(slot.h) || 54);
+      const c = mk(w, h);
+      const x = c.getContext('2d')!;
+      x.clearRect(0, 0, w, h);
+      if (bgColor && bgColor !== 'transparent') {
+        x.fillStyle = bgColor;
+        x.fillRect(0, 0, w, h);
+      }
+      const fsz = fontSize || Math.max(14, Math.round(h * 0.5));
+      x.font = `bold ${fsz}px "Cairo", "Tajawal", system-ui, -apple-system, sans-serif`;
+      x.fillStyle = color || slot.color || '#ffffff';
+      x.textAlign = 'center';
+      x.textBaseline = 'middle';
+      x.fillText(text, w / 2, h / 2);
+      return c;
+    }
+
+    function repaintVapStageNow(source: any) {
+      if (source?.vid && source?._alphaCanvas && source?.meta) {
+        const x = source._alphaCanvas.getContext('2d');
+        if (x) {
+          x.clearRect(0, 0, source._alphaCanvas.width, source._alphaCanvas.height);
+          vapDraw(x, source._alphaCanvas.width, source._alphaCanvas.height, source.vid, source.meta);
+        }
+      }
+    }
+
+    function setupVapDynamicMasksUI(source: any, m: HTMLVideoElement, clamped: any) {
+      const panel = document.getElementById('vapDynamicMasksPanel');
+      for (const k in A) delete A[k];
+      source._vapSlotReplacements = source._vapSlotReplacements || {};
+      source._vapOrigSilhouettes = source._vapOrigSilhouettes || {};
+
+      const slots = clamped?.dynamicSlots || [];
+      if (!slots.length) {
+        if (panel) {
+          panel.style.display = 'none';
+          panel.innerHTML = '';
+        }
+        renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+        return;
+      }
+
+      for (const slot of slots) {
+        const silUrl = buildVapMaskSilhouetteDataUrl(m, slot);
+        source._vapOrigSilhouettes[slot.srcId] = silUrl;
+        const rep = source._vapSlotReplacements[slot.srcId];
+        A[slot.assetKey] = rep && rep.active && rep.dataUrl ? rep.dataUrl : silUrl;
+      }
+      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+
+      if (m && m.readyState < 2 && !source._vapSilhouetteWaitHooked) {
+        source._vapSilhouetteWaitHooked = true;
+        const refreshSilhouettes = () => {
+          m.removeEventListener('loadeddata', refreshSilhouettes);
+          m.removeEventListener('canplay', refreshSilhouettes);
+          if (source !== S || m.readyState < 2) return;
+          for (const slot of slots) {
+            const silUrl = buildVapMaskSilhouetteDataUrl(m, slot);
+            source._vapOrigSilhouettes[slot.srcId] = silUrl;
+            const rep = source._vapSlotReplacements[slot.srcId];
+            if (!rep || !rep.active) {
+              A[slot.assetKey] = silUrl;
+              const thumbEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-thumb="${slot.srcId}"]`) as HTMLImageElement | null;
+              if (thumbEl) thumbEl.src = silUrl;
+            }
+          }
+          renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+        };
+        m.addEventListener('loadeddata', refreshSilhouettes);
+        m.addEventListener('canplay', refreshSilhouettes);
+      }
+
+      if (!panel) return;
+      panel.style.display = 'block';
+      const guidesOn = Boolean((window as any).__vapShowMaskGuides);
+
+      panel.innerHTML = `
+        <div style="
+          background: linear-gradient(145deg, rgba(26, 22, 43, 0.96), rgba(16, 16, 26, 0.98));
+          border: 1px solid rgba(168, 85, 247, 0.45);
+          border-radius: 12px;
+          padding: 10px;
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        ">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
+            <div>
+              <div style="font-size:12px;font-weight:800;color:#e9d5ff;display:flex;align-items:center;gap:5px;">
+                <span>🎭 أقنعة وطبقات الملف القابلة للاستبدال</span>
+                <span style="background:rgba(168,85,247,0.25);color:#d8b4fe;padding:1px 6px;border-radius:6px;font-size:10px;">${slots.length}</span>
+              </div>
+              <div style="font-size:10px;color:#9ca3af;margin-top:2px;">
+                تم التعرف تلقائياً على قناع الصورة وقناع الاسم داخل ملف ${clamped.kind}
+              </div>
+            </div>
+            <button type="button" id="vapToggleMaskGuidesBtn" style="
+              padding: 4px 8px;
+              font-size: 10px;
+              font-weight: 700;
+              border-radius: 7px;
+              cursor: pointer;
+              border: 1px solid ${guidesOn ? '#38bdf8' : '#3b3b54'};
+              background: ${guidesOn ? 'rgba(56, 189, 248, 0.2)' : '#1e1e2e'};
+              color: ${guidesOn ? '#7dd3fc' : '#cbd5e1'};
+              white-space: nowrap;
+            " title="إظهار أو إخفاء حدود ومكان الأقنعة على شاشة العرض">
+              ${guidesOn ? '👁️ إخفاء الحدود' : '👁️ إظهار مكان الأقنعة'}
+            </button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${slots
+              .map((slot: any) => {
+                const rep = source._vapSlotReplacements[slot.srcId] || {};
+                const isActive = Boolean(rep.active);
+                const thumbSrc = A[slot.assetKey] || '';
+                const isTxt = Boolean(slot.isTextSlot);
+                const typeBadgeLabel = isTxt ? 'قناع نص / اسم (Text Mask)' : 'قناع صورة / طبقة (Image Mask)';
+                const typeBadgeColor = isTxt ? '#38bdf8' : '#c084fc';
+                const fitMode = rep.fitMode || slot.fitType || 'fitXY';
+                const useMask = rep.useMask !== false;
+                return `
+                  <div data-vap-slot-card="${slot.srcId}" style="
+                    background: rgba(15, 15, 23, 0.9);
+                    border: 1px solid ${isTxt ? 'rgba(56, 189, 248, 0.35)' : 'rgba(192, 132, 252, 0.35)'};
+                    border-radius: 10px;
+                    padding: 8px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 7px;
+                  ">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <div style="
+                        width: 46px;
+                        height: 46px;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        flex-shrink: 0;
+                        border: 1px solid rgba(255,255,255,0.12);
+                        background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 10px 10px;
+                        display: grid;
+                        place-items: center;
+                      ">
+                        <img data-vap-thumb="${slot.srcId}" src="${thumbSrc}" alt="${slot.srcTag}" style="max-width:100%;max-height:100%;object-fit:contain;" />
+                      </div>
+                      <div style="flex:1;min-width:0;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+                          <span style="font-size:12px;font-weight:800;color:#f3f4f6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                            ${isTxt ? '🏷️ قناع الاسم:' : '🖼️ قناع الصورة:'} <code style="color:${typeBadgeColor};">${slot.srcTag}</code>
+                          </span>
+                          <span data-vap-status="${slot.srcId}" style="
+                            font-size:9px;
+                            padding:1px 6px;
+                            border-radius:5px;
+                            font-weight:700;
+                            background:${isActive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.08)'};
+                            color:${isActive ? '#34d399' : '#9ca3af'};
+                          ">${isActive ? '✓ تم الاستبدال' : 'بدون طبقة'}</span>
+                        </div>
+                        <div style="font-size:10px;color:${typeBadgeColor};margin-top:1px;font-weight:600;">
+                          ${typeBadgeLabel} · ${slot.w}×${slot.h}px
+                        </div>
+                      </div>
+                    </div>
+
+                    ${
+                      isTxt
+                        ? `
+                      <div style="display:flex;gap:4px;align-items:center;">
+                        <input
+                          type="text"
+                          data-vap-txt-input="${slot.srcId}"
+                          placeholder="اكتب الاسم أو النص هنا..."
+                          value="${rep.text ? String(rep.text).replace(/"/g, '&quot;') : ''}"
+                          style="
+                            flex:1;
+                            min-width:0;
+                            padding:5px 7px;
+                            font-size:11px;
+                            border-radius:6px;
+                            border:1px solid #2e2e42;
+                            background:#141420;
+                            color:#fff;
+                          "
+                        />
+                        <input
+                          type="color"
+                          data-vap-txt-color="${slot.srcId}"
+                          value="${rep.textColor || slot.color || '#ffffff'}"
+                          title="لون النص"
+                          style="width:26px;height:26px;padding:0;border:1px solid #2e2e42;border-radius:6px;background:transparent;cursor:pointer;flex-shrink:0;"
+                        />
+                        <button
+                          type="button"
+                          data-vap-txt-apply="${slot.srcId}"
+                          style="
+                            padding:5px 9px;
+                            font-size:11px;
+                            font-weight:700;
+                            border-radius:6px;
+                            border:1px solid rgba(56, 189, 248, 0.5);
+                            background:rgba(14, 165, 233, 0.25);
+                            color:#bae6fd;
+                            cursor:pointer;
+                            white-space:nowrap;
+                          "
+                        >تطبيق الاسم</button>
+                      </div>
+                    `
+                        : ''
+                    }
+
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                      <button
+                        type="button"
+                        data-vap-upload-btn="${slot.srcId}"
+                        style="
+                          flex:1;
+                          padding:5px 8px;
+                          font-size:10.5px;
+                          font-weight:700;
+                          border-radius:6px;
+                          border:1px solid rgba(168, 85, 247, 0.5);
+                          background:rgba(139, 92, 246, 0.22);
+                          color:#e9d5ff;
+                          cursor:pointer;
+                          white-space:nowrap;
+                        "
+                      >📁 استبدال بطبقة / صورة</button>
+                      <button
+                        type="button"
+                        data-vap-edit-btn="${slot.srcId}"
+                        style="
+                          padding:5px 8px;
+                          font-size:10.5px;
+                          font-weight:700;
+                          border-radius:6px;
+                          border:1px solid #323248;
+                          background:#1c1c2b;
+                          color:#d1d5db;
+                          cursor:pointer;
+                          white-space:nowrap;
+                        "
+                        title="فتح محرر الصور والنصوص المتقدم"
+                      >✎ محرر</button>
+                      <button
+                        type="button"
+                        data-vap-reset-btn="${slot.srcId}"
+                        style="
+                          padding:5px 7px;
+                          font-size:10.5px;
+                          font-weight:700;
+                          border-radius:6px;
+                          border:1px solid rgba(239, 68, 68, 0.35);
+                          background:rgba(239, 68, 68, 0.12);
+                          color:#fca5a5;
+                          cursor:pointer;
+                        "
+                        title="إفراغ القناع واستعادة حالته الأصلية"
+                      >↺</button>
+                    </div>
+
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:3px;border-top:1px solid rgba(255,255,255,0.06);font-size:10px;color:#9ca3af;">
+                      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="تطبيق قناع الشفافية المتحرك (mFrame) الخاص بالملف على الطبقة المستبدلة">
+                        <input type="checkbox" data-vap-mask-toggle="${slot.srcId}" ${useMask ? 'checked' : ''} />
+                        <span>قص القناع (mFrame)</span>
+                      </label>
+                      <select
+                        data-vap-fit-select="${slot.srcId}"
+                        style="padding:2px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2d2d42;color:#e5e7eb;"
+                        title="طريقة ملاءمة الطبقة داخل القناع"
+                      >
+                        <option value="cover" ${fitMode === 'cover' ? 'selected' : ''}>تغطية (Cover)</option>
+                        <option value="contain" ${fitMode === 'contain' ? 'selected' : ''}>احتواء (Contain)</option>
+                        <option value="fitXY" ${fitMode === 'fitXY' || fitMode === 'stretch' ? 'selected' : ''}>تمدد كامل (FitXY)</option>
+                      </select>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </div>
+      `;
+
+      const guideBtn = document.getElementById('vapToggleMaskGuidesBtn');
+      if (guideBtn) {
+        guideBtn.onclick = () => {
+          (window as any).__vapShowMaskGuides = !(window as any).__vapShowMaskGuides;
+          setupVapDynamicMasksUI(source, m, clamped);
+          repaintVapStageNow(source);
+        };
+      }
+
+      slots.forEach((slot: any) => {
+        const uploadBtn = panel.querySelector(`[data-vap-upload-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (uploadBtn) {
+          uploadBtn.onclick = () => {
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = 'image/*';
+            inp.onchange = async () => {
+              const file = inp.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = async () => {
+                const dataUrl = String(reader.result || '');
+                if (!dataUrl) return;
+                A[slot.assetKey] = dataUrl;
+                const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
+                if (thImg) thImg.src = dataUrl;
+                const prev = source._vapSlotReplacements[slot.srcId] || {};
+                // Default image uploads to 'cover' for circular/avatar masks unless user explicitly set it
+                if (!prev.fitMode && !slot.isTextSlot) {
+                  prev.fitMode = 'cover';
+                }
+                source._vapSlotReplacements[slot.srcId] = prev;
+                await applyEdit(dataUrl, slot.assetKey);
+                toast(`تم استبدال القناع "${slot.srcTag}" بالطبقة الجديدة`);
+              };
+              reader.readAsDataURL(file);
+            };
+            inp.click();
+          };
+        }
+
+        const editBtn = panel.querySelector(`[data-vap-edit-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (editBtn) {
+          editBtn.onclick = () => openEdit(slot.assetKey);
+        }
+
+        const resetBtn = panel.querySelector(`[data-vap-reset-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (resetBtn) {
+          resetBtn.onclick = () => {
+            delete source._vapSlotReplacements[slot.srcId];
+            if (window.EDIT) delete window.EDIT[slot.assetKey];
+            const silUrl = source._vapOrigSilhouettes?.[slot.srcId] || buildVapMaskSilhouetteDataUrl(m, slot);
+            A[slot.assetKey] = silUrl;
+            renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(`تمت استعادة القناع "${slot.srcTag}" لحالته الأصلية`);
+          };
+        }
+
+        const txtApplyBtn = panel.querySelector(`[data-vap-txt-apply="${slot.srcId}"]`) as HTMLButtonElement | null;
+        const txtInput = panel.querySelector(`[data-vap-txt-input="${slot.srcId}"]`) as HTMLInputElement | null;
+        const txtColor = panel.querySelector(`[data-vap-txt-color="${slot.srcId}"]`) as HTMLInputElement | null;
+        const applyQuickText = async () => {
+          const val = (txtInput?.value || '').trim();
+          if (!val) {
+            toast('اكتب الاسم أو النص أولاً');
+            return;
+          }
+          const col = txtColor?.value || slot.color || '#ffffff';
+          const c = renderTextSlotCanvas(slot, val, col);
+          const dataUrl = c.toDataURL('image/png');
+          const prev = source._vapSlotReplacements[slot.srcId] || {};
+          source._vapSlotReplacements[slot.srcId] = {
+            ...prev,
+            text: val,
+            textColor: col,
+            fitMode: prev.fitMode || 'contain',
+            useMask: prev.useMask !== false,
+          };
+          A[slot.assetKey] = dataUrl;
+          const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
+          if (thImg) thImg.src = dataUrl;
+          await applyEdit(dataUrl, slot.assetKey);
+          toast(`تم وضع الاسم "${val}" داخل قناع ${slot.srcTag}`);
+        };
+        if (txtApplyBtn) txtApplyBtn.onclick = applyQuickText;
+        if (txtInput) {
+          txtInput.onkeydown = (ev) => {
+            if (ev.key === 'Enter') {
+              ev.preventDefault();
+              applyQuickText();
+            }
+          };
+        }
+
+        const maskToggle = panel.querySelector(`[data-vap-mask-toggle="${slot.srcId}"]`) as HTMLInputElement | null;
+        if (maskToggle) {
+          maskToggle.onchange = () => {
+            const prev = source._vapSlotReplacements[slot.srcId] || {};
+            prev.useMask = maskToggle.checked;
+            source._vapSlotReplacements[slot.srcId] = prev;
+            repaintVapStageNow(source);
+          };
+        }
+
+        const fitSelect = panel.querySelector(`[data-vap-fit-select="${slot.srcId}"]`) as HTMLSelectElement | null;
+        if (fitSelect) {
+          fitSelect.onchange = () => {
+            const prev = source._vapSlotReplacements[slot.srcId] || {};
+            prev.fitMode = fitSelect.value;
+            source._vapSlotReplacements[slot.srcId] = prev;
+            repaintVapStageNow(source);
+          };
+        }
+      });
+    }
+
     function applyVideoMetaAndLayout(source, m, f, meta) {
       if (!meta) {
         source.meta = null;
@@ -4344,6 +5295,11 @@ export function initMotionToolsFixed() {
         source.h = m.videoHeight;
         if (source._alphaCanvas) source._alphaCanvas.style.display = 'none';
         m.style.cssText = '';
+        const panel = document.getElementById('vapDynamicMasksPanel');
+        if (panel) {
+          panel.style.display = 'none';
+          panel.innerHTML = '';
+        }
         info({
           Format: f.name.split('.').pop().toUpperCase(),
           Resolution: source.w + ' × ' + source.h,
@@ -4366,7 +5322,8 @@ export function initMotionToolsFixed() {
       source.n = clamped.frames || Math.max(1, Math.round(m.duration * source.fps));
       source.set = (i) => seekVideo(m, (i + 0.5) / source.fps);
       ensureAlphaPreviewCanvas(source, m);
-      info({
+      setupVapDynamicMasksUI(source, m, clamped);
+      const infoObj: Record<string, any> = {
         Format: clamped.kind,
         'Alpha Layout': side === 'r' ? 'Alpha on right (Auto)' : 'Alpha on left (Auto)',
         Resolution: source.w + ' × ' + source.h,
@@ -4375,7 +5332,13 @@ export function initMotionToolsFixed() {
         Duration: m.duration.toFixed(2) + ' S',
         'File Size': kb(f.size),
         'File Name': f.name,
-      });
+      };
+      if (clamped.dynamicSlots && clamped.dynamicSlots.length > 0) {
+        infoObj['Dynamic Masks'] = clamped.dynamicSlots
+          .map((s: any) => `${s.srcTag} (${s.srcType === 'txt' ? 'Text' : 'Image'} ${s.w}×${s.h})`)
+          .join(' + ');
+      }
+      info(infoObj);
       fin();
     }
     $('#lay').onchange = () => {
@@ -4918,6 +5881,14 @@ export function initMotionToolsFixed() {
         rx = rgba.getContext('2d', { willReadFrequently: true }),
         alpha = mk(W, H),
         ax = alpha.getContext('2d'),
+        hasVapMaskEdits = !!(
+          S?._vapSlotReplacements &&
+          Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)
+        ),
+        hasWatermarkLayers = !!(
+          Array.isArray((window as any).__WATERMARK_LAYERS) &&
+          (window as any).__WATERMARK_LAYERS.length > 0
+        ),
         direct = !!(
           M &&
           m &&
@@ -4925,7 +5896,9 @@ export function initMotionToolsFixed() {
           +$('#scale').value === 100 &&
           $('#mirror').value === 'none' &&
           !(window as any).__edgeFeather?.enabled &&
-          !(window as any).__chromaKey?.enabled
+          !(window as any).__chromaKey?.enabled &&
+          !hasVapMaskEdits &&
+          !hasWatermarkLayers
         );
       const out = await encodeMP4({
         ...o,
@@ -5222,6 +6195,14 @@ export function initMotionToolsFixed() {
           else if (F === 'vap' || F === 'yyeva') await exportVY(F);
           else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
           else if (F === 'orig' && source.meta) {
+            const hasVapMaskEdits = !!(
+              S?._vapSlotReplacements &&
+              Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)
+            );
+            const hasWatermarkLayers = !!(
+              Array.isArray((window as any).__WATERMARK_LAYERS) &&
+              (window as any).__WATERMARK_LAYERS.length > 0
+            );
             const unchanged =
               o.W === S.w &&
               o.H === S.h &&
@@ -5234,7 +6215,9 @@ export function initMotionToolsFixed() {
               +$('#scale').value === 100 &&
               $('#fit').value === 'stretch' &&
               !featherOn &&
-              !chromaOn;
+              !chromaOn &&
+              !hasVapMaskEdits &&
+              !hasWatermarkLayers;
             if (unchanged) await dl(cur, cur.name);
             else await exportVY(source.meta.kind.toLowerCase());
           } else {
@@ -5489,6 +6472,159 @@ export function initMotionToolsFixed() {
         $('#view').textContent = 'Could not open file: ' + e.message;
       }
     };
+
+    // =========================================================================
+    // Interactive Scrubber (#seek), Play/Pause (#pp), and Gift Snapshot (#snapGiftBtn)
+    // =========================================================================
+    (() => {
+      const seekEl = document.getElementById('seek') as HTMLInputElement | null;
+      let isUserScrubbing = false;
+
+      if (seekEl) {
+        const updateSeekPosition = async (ratio: number) => {
+          if (!S) return;
+          const totalFrames = Math.max(1, S.n || 1);
+          const fps = Math.max(1, S.fps || 15);
+          const totalDur = S.vid && S.vid.duration > 0 ? S.vid.duration : totalFrames / fps;
+          const targetTime = Math.max(0, Math.min(totalDur, ratio * totalDur));
+          const targetFrame = Math.max(0, Math.min(totalFrames - 1, Math.round(ratio * (totalFrames - 1))));
+
+          if (S.vid) {
+            try {
+              S.vid.currentTime = targetTime;
+            } catch (_) {}
+          }
+          (window as any).__svgaCurrentFrame = targetFrame;
+          if (window.SVP && typeof window.SVP.stepToFrame === 'function') {
+            try {
+              (window.SVP as any).currentFrame = targetFrame;
+              window.SVP.stepToFrame(targetFrame, false);
+              window.SVP._renderer?.drawFrame?.(targetFrame);
+            } catch (_) {}
+          } else if (typeof S.set === 'function') {
+            try {
+              await S.set(targetFrame);
+            } catch (_) {}
+          }
+          if (window.PA) {
+            window.PA.t = targetTime;
+            if (window.PA.on) window.PA.sync(targetTime, true);
+          }
+        };
+
+        seekEl.addEventListener('mousedown', () => { isUserScrubbing = true; });
+        seekEl.addEventListener('touchstart', () => { isUserScrubbing = true; }, { passive: true });
+
+        seekEl.addEventListener('input', (e: any) => {
+          isUserScrubbing = true;
+          const pct = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+          updateSeekPosition(pct / 100);
+        });
+
+        seekEl.addEventListener('change', (e: any) => {
+          const pct = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+          updateSeekPosition(pct / 100);
+          setTimeout(() => { isUserScrubbing = false; }, 80);
+        });
+
+        window.addEventListener('mouseup', () => {
+          if (isUserScrubbing) setTimeout(() => { isUserScrubbing = false; }, 80);
+        });
+        window.addEventListener('touchend', () => {
+          if (isUserScrubbing) setTimeout(() => { isUserScrubbing = false; }, 80);
+        });
+
+        // Continuous progress loop updating #seek bar while animation plays
+        (function loopSeekProgress() {
+          if (!isUserScrubbing && S && !S.paused) {
+            let progress = 0;
+            if (S.vid && S.vid.duration > 0) {
+              progress = S.vid.currentTime / S.vid.duration;
+            } else if (typeof (window as any).__svgaCurrentFrame === 'number' && S.n > 1) {
+              progress = (window as any).__svgaCurrentFrame / Math.max(1, S.n - 1);
+            } else if (window.SVP && S.n > 1) {
+              const curF = window.SVP.currentFrame ?? (window.SVP as any)._currentFrame ?? (window.SVP._renderer?.currentFrame || 0);
+              progress = curF / Math.max(1, S.n - 1);
+            } else if (anim && S.n > 1) {
+              const curF = anim.currentFrame || 0;
+              progress = curF / Math.max(1, S.n - 1);
+            } else if (typeof (window as any).__currentAnimationStepIdx === 'number' && S.n > 1) {
+              progress = (window as any).__currentAnimationStepIdx / Math.max(1, S.n - 1);
+            }
+            if (Number.isFinite(progress)) {
+              seekEl.value = String(Math.max(0, Math.min(100, Math.round(progress * 100))));
+            }
+          }
+          requestAnimationFrame(loopSeekProgress);
+        })();
+      }
+
+      // Snapshot capture function: captures exact gift render on canvas (full resolution, transparent PNG)
+      const captureGiftSnapshot = async () => {
+        if (!S) {
+          return toast('يرجى رفع ملف هدية للمعاينة أولاً');
+        }
+        try {
+          const W = Math.max(1, S.w || 400);
+          const H = Math.max(1, S.h || 400);
+          const snapCanvas = mk(W, H);
+          const snapCtx = snapCanvas.getContext('2d', { willReadFrequently: true });
+          if (!snapCtx) throw new Error('Could not create canvas context');
+
+          snapCtx.clearRect(0, 0, W, H);
+          if (typeof S.draw === 'function') {
+            S.draw(snapCtx, W, H);
+          } else {
+            const liveCanvas = document.querySelector('#view canvas') as HTMLCanvasElement | null;
+            const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
+            if (liveCanvas) {
+              snapCtx.drawImage(liveCanvas, 0, 0, W, H);
+            } else if (liveVid) {
+              snapCtx.drawImage(liveVid, 0, 0, W, H);
+            }
+          }
+
+          // Apply any active watermark layers if present
+          const wmList = (window as any).__WATERMARK_LAYERS || [];
+          if (Array.isArray(wmList) && wmList.length > 0) {
+            for (const ly of wmList) {
+              const img = ly._img || (ly.dataUrl ? await imgOf(ly.dataUrl) : null);
+              if (!img) continue;
+              const w = ly.width * (ly.scale / 100);
+              const h = ly.height * (ly.scale / 100);
+              const [a, b, c, d, e, f] = computeAffineMatrix2D(ly.x, ly.y, w, h, ly.rotation);
+              snapCtx.save();
+              snapCtx.transform(a, b, c, d, e, f);
+              snapCtx.globalAlpha = Math.max(0, Math.min(1, ly.opacity / 100));
+              snapCtx.drawImage(img, -w / 2, -h / 2, w, h);
+              snapCtx.restore();
+            }
+          }
+
+          const blob: Blob | null = await new Promise((res) => snapCanvas.toBlob(res, 'image/png'));
+          if (!blob) throw new Error('Canvas snapshot failed');
+
+          const curName = (cur?.name || 'gift').replace(/\.\w+$/, '');
+          const snapName = `${curName}_snapshot_${Date.now()}.png`;
+          await dl(blob, snapName);
+          toast(`✨ تم التقاط وحفظ لقطة شاشة للهدية بنجاح (${W}×${H}px)`);
+        } catch (err: any) {
+          toast('تعذر التقاط لقطة الشاشة: ' + (err?.message || err));
+        }
+      };
+
+      (window as any).__captureGiftSnapshot = captureGiftSnapshot;
+
+      // Bind snap button click
+      const snapBtn = document.getElementById('snapGiftBtn');
+      if (snapBtn) {
+        snapBtn.onclick = (e) => {
+          e.stopPropagation();
+          captureGiftSnapshot();
+        };
+      }
+    })();
+
     window.MotionTools = {
       readMediaMeta,
       packageVideo,

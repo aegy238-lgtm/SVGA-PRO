@@ -37,11 +37,14 @@ import {
   Scissors,
   MoveUp,
   MoveDown,
+  ArrowUpDown,
+  ArrowUpToLine,
+  ArrowDownToLine,
   CopyPlus,
   FlipHorizontal2,
   Clapperboard,
 } from 'lucide-react';
-import { parseMovie, SvgaFrame, SvgaMovie } from '../utils/codecs';
+import { parseMovie, pako, SvgaFrame, SvgaMovie } from '../utils/codecs';
 import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
 import {
   LayerTransform,
@@ -71,7 +74,27 @@ import {
   mirrorSvgaFramesHorizontally,
   mirrorLayerTransformHorizontally,
   duplicateSvgaSprite,
+  computeUnstretchedZoomPatch,
+  AffineMatrix,
 } from '../utils/svgaEditorLogic';
+import {
+  ShineLayerConfig,
+  ShineCanvasEditSubmode,
+  Point2D,
+  Point2D as ShinePoint,
+  SHINE_PRESETS,
+  generateRectMaskContours,
+  generateRingFrameMaskContours,
+  traceAlphaContourFromRgba,
+  projectWorldContoursToLocalClipPath,
+  computeTargetDeltaMatrix,
+  buildShineKeyframesFromMotionPoints,
+  buildClippedShineSvgaFrames,
+  renderProceduralShineBitmapAndBytes,
+  featherCustomShineBitmap,
+  extractShineConfigFromExistingSprite,
+} from '../utils/svgaShineEngine';
+import { SvgaShineStudioPanel, ShineTargetOption } from './SvgaShineStudioPanel';
 import { SvgaTimelinePanel } from './SvgaTimelinePanel';
 import {
   SvgaCropAndContextMenu,
@@ -84,6 +107,9 @@ interface AddedLayer {
   assetKey: string;
   name: string;
   bitmap: ImageBitmap;
+  originalBitmap?: ImageBitmap;
+  originalWidth?: number;
+  originalHeight?: number;
   pngBytes: Uint8Array;
   dataUrl: string;
   width: number;
@@ -95,6 +121,7 @@ interface AddedLayer {
   copiedFrames?: SvgaFrame[];
   copiedFromKey?: string;
   copiedFromDisplayNum?: number;
+  shineConfig?: ShineLayerConfig;
 }
 
 interface ShapeObject {
@@ -135,6 +162,7 @@ interface HistorySnapshot {
   addedLayers: AddedLayer[];
   shapes: ShapeObject[];
   mergedGroups?: MergedGroup[];
+  layerOrder?: string[];
 }
 
 interface SvgaAeEditorProps {
@@ -146,6 +174,15 @@ interface SvgaAeEditorProps {
 }
 
 async function decompressDeflate(raw: Uint8Array): Promise<Uint8Array> {
+  if (pako?.inflate) {
+    try {
+      return pako.inflate(raw);
+    } catch (_) {
+      try {
+        if (pako.inflateRaw) return pako.inflateRaw(raw);
+      } catch (_) {}
+    }
+  }
   const ds = new DecompressionStream('deflate');
   return new Uint8Array(
     await new Response(new Blob([raw as any]).stream().pipeThrough(ds)).arrayBuffer()
@@ -153,6 +190,11 @@ async function decompressDeflate(raw: Uint8Array): Promise<Uint8Array> {
 }
 
 async function compressDeflate(raw: Uint8Array): Promise<Uint8Array> {
+  if (pako?.deflate) {
+    try {
+      return pako.deflate(raw, { level: 9 });
+    } catch (_) {}
+  }
   const cs = new CompressionStream('deflate');
   return new Uint8Array(
     await new Response(new Blob([raw as any]).stream().pipeThrough(cs)).arrayBuffer()
@@ -264,7 +306,7 @@ export default function SvgaAeEditor({
     'layers'
   );
   const [activeTool, setActiveTool] = useState<
-    'Move' | 'Crop' | 'Frame' | 'Shape' | 'Pen' | 'Text' | 'Hand' | 'Zoom'
+    'Move' | 'Crop' | 'Shine' | 'Frame' | 'Shape' | 'Pen' | 'Text' | 'Hand' | 'Zoom'
   >('Move');
 
   // selectedTarget: 'DOCUMENT' | `sprite_${idx}` | `layer_${id}` | `shape_${id}`
@@ -306,6 +348,10 @@ export default function SvgaAeEditor({
   const [shapes, setShapes] = useState<ShapeObject[]>([]);
   const [penDraftPoints, setPenDraftPoints] = useState<{ x: number; y: number }[]>([]);
   const [signals, setSignals] = useState<{ id: string; frame: number; label: string }[]>([]);
+  const [shineEditSubmode, setShineEditSubmode] = useState<ShineCanvasEditSubmode>('mask_points');
+  const [layerOrder, setLayerOrder] = useState<string[]>([]);
+  const [moveMenuLayerId, setMoveMenuLayerId] = useState<string | null>(null);
+  const [moveTargetSelectId, setMoveTargetSelectId] = useState<string>('');
 
   // Crop selection box in canvas coordinates
   const [cropRect, setCropRect] = useState<CropSelectionRect | null>(null);
@@ -332,12 +378,23 @@ export default function SvgaAeEditor({
   const [copyMotionSearch, setCopyMotionSearch] = useState<string>('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const shineCompCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const shineMaskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const activeHandlesRef = useRef<
     Array<{
       handle: 'tl' | 'tr' | 'br' | 'bl' | 'tm' | 'mr' | 'bm' | 'ml';
       x: number;
       y: number;
       cursor: string;
+    }>
+  >([]);
+  const shineHandlesRef = useRef<
+    Array<{
+      kind: 'mask' | 'motion';
+      contourIdx: number;
+      pointIdx: number;
+      x: number;
+      y: number;
     }>
   >([]);
   const activeCenterRef = useRef<{ x: number; y: number } | null>(null);
@@ -359,6 +416,7 @@ export default function SvgaAeEditor({
         addedLayers?: AddedLayer[];
         shapes?: ShapeObject[];
         mergedGroups?: MergedGroup[];
+        layerOrder?: string[];
       }
     ) => {
       const snap: HistorySnapshot = {
@@ -371,11 +429,12 @@ export default function SvgaAeEditor({
         addedLayers: overrides?.addedLayers ?? [...addedLayers],
         shapes: overrides?.shapes ?? [...shapes],
         mergedGroups: overrides?.mergedGroups ?? [...mergedGroups],
+        layerOrder: overrides?.layerOrder ?? [...layerOrder],
       };
       setHistory((prev) => [...prev.slice(0, historyIdx + 1), snap]);
       setHistoryIdx((idx) => idx + 1);
     },
-    [historyIdx, layerKeyframes, spriteFrameRanges, addedLayers, shapes, mergedGroups]
+    [historyIdx, layerKeyframes, spriteFrameRanges, addedLayers, shapes, mergedGroups, layerOrder]
   );
 
   const handleUndo = useCallback(() => {
@@ -391,6 +450,7 @@ export default function SvgaAeEditor({
       setAddedLayers(prev.addedLayers || []);
       setShapes(prev.shapes || []);
       setMergedGroups(prev.mergedGroups || []);
+      if (prev.layerOrder) setLayerOrder(prev.layerOrder);
       setLastAction('رجوع للخلف / تراجع (Undo)');
     }
   }, [history, historyIdx]);
@@ -408,6 +468,7 @@ export default function SvgaAeEditor({
       setAddedLayers(next.addedLayers || []);
       setShapes(next.shapes || []);
       setMergedGroups(next.mergedGroups || []);
+      if (next.layerOrder) setLayerOrder(next.layerOrder);
       setLastAction('تقدم للأمام / إعادة (Redo)');
     }
   }, [history, historyIdx]);
@@ -487,6 +548,8 @@ export default function SvgaAeEditor({
         setShapes([]);
         setPenDraftPoints([]);
         setCropRect(null);
+        const initialLayerOrder = m.sp.map((_, i) => `sprite_${i}`);
+        setLayerOrder(initialLayerOrder);
         setHistory([
           {
             docTransform: { ...DEFAULT_TRANSFORM },
@@ -498,6 +561,7 @@ export default function SvgaAeEditor({
             addedLayers: [],
             shapes: [],
             mergedGroups: [initialGroup],
+            layerOrder: initialLayerOrder,
           },
         ]);
         setHistoryIdx(0);
@@ -539,6 +603,52 @@ export default function SvgaAeEditor({
       return true;
     });
   }, [assetStats.assets, assetFilter, assetSearch]);
+
+  // Unified visual stacking order from bottom (0, background) to top (N-1, foreground)
+  const effectiveLayerOrder = useMemo(() => {
+    const validIds = new Set<string>();
+    const defaultOrder: string[] = [];
+    const total = movie.sp.length;
+
+    for (let idx = 0; idx < total; idx++) {
+      if (!deletedSpriteIndices.has(idx)) {
+        const id = `sprite_${idx}`;
+        validIds.add(id);
+        defaultOrder.push(id);
+      }
+    }
+    for (const al of addedLayers) {
+      validIds.add(al.id);
+      defaultOrder.push(al.id);
+    }
+    for (const sh of shapes) {
+      validIds.add(sh.id);
+      defaultOrder.push(sh.id);
+    }
+
+    if (!layerOrder || layerOrder.length === 0) {
+      return defaultOrder;
+    }
+
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    for (const id of layerOrder) {
+      if (validIds.has(id) && !seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    }
+
+    for (const id of defaultOrder) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    }
+
+    return result;
+  }, [movie.sp, deletedSpriteIndices, addedLayers, shapes, layerOrder]);
 
   // Decomposed Sprite Layers list in top-to-bottom visual stacking order (#N down to #1)
   const spriteLayers = useMemo(() => {
@@ -588,6 +698,71 @@ export default function SvgaAeEditor({
         (s.text && s.text.toLowerCase().includes(q))
     );
   }, [shapes, shapeSearch]);
+
+  const filteredUnifiedLayers = useMemo(() => {
+    const q = layerSearch.trim().toLowerCase();
+    const reversed = [...effectiveLayerOrder].reverse();
+    const items: Array<{
+      id: string;
+      type: 'sprite' | 'added' | 'shape';
+      spriteIdx?: number;
+      displayNum?: number;
+      key?: string;
+      matteKey?: string;
+      name: string;
+      span?: ReturnType<typeof computeSpriteFrameSpan>;
+      addedLayer?: AddedLayer;
+      shape?: ShapeObject;
+    }> = [];
+
+    for (const lid of reversed) {
+      if (lid.startsWith('sprite_')) {
+        const sIdx = Number(lid.replace('sprite_', ''));
+        const sp = movie.sp[sIdx];
+        if (!sp || deletedSpriteIndices.has(sIdx)) continue;
+        const displayNum = movie.sp.length - sIdx;
+        const key = sp.key || `vector_${displayNum}`;
+        items.push({
+          id: lid,
+          type: 'sprite',
+          spriteIdx: sIdx,
+          displayNum,
+          key,
+          matteKey: sp.mk,
+          name: `#${displayNum} ${key}`,
+          span: computeSpriteFrameSpan(sp, movie.n || 40),
+        });
+      } else if (lid.startsWith('layer_')) {
+        const al = addedLayers.find((l) => l.id === lid);
+        if (!al) continue;
+        items.push({
+          id: lid,
+          type: 'added',
+          key: al.assetKey,
+          name: al.name,
+          addedLayer: al,
+        });
+      } else if (lid.startsWith('shape_')) {
+        const sh = shapes.find((s) => s.id === lid);
+        if (!sh) continue;
+        items.push({
+          id: lid,
+          type: 'shape',
+          key: sh.assetKey,
+          name: sh.name,
+          shape: sh,
+        });
+      }
+    }
+
+    if (!q) return items;
+    return items.filter(
+      (item) =>
+        item.name.toLowerCase().includes(q) ||
+        (item.key && item.key.toLowerCase().includes(q)) ||
+        (item.displayNum && `#${item.displayNum}`.includes(q))
+    );
+  }, [effectiveLayerOrder, movie.sp, movie.n, deletedSpriteIndices, addedLayers, shapes, layerSearch]);
 
   const totalFrames = Math.max(1, movie.n || 40);
   const fps = Math.max(1, movie.fps || 20);
@@ -690,7 +865,7 @@ export default function SvgaAeEditor({
       return a - b;
     });
 
-    orderedSpriteIndices.forEach((idx) => {
+    const drawSingleSprite = (idx: number) => {
       if (deletedSpriteIndices.has(idx)) return;
       const spriteId = `sprite_${idx}`;
       const parentGroup = spriteToGroupMap.get(idx);
@@ -823,22 +998,242 @@ export default function SvgaAeEditor({
           label: `#${movie.sp.length - idx} · ${s.key || 'layer'}`,
         };
       }
-    });
+    };
 
-    // 2. Render added decomposed image layers (supporting both static/keyframed and copied SVGA sprite motion)
-    for (const al of addedLayers) {
-      if (hiddenLayerIds.has(al.id)) continue;
-      if (currentFrame < al.inFrame || currentFrame > al.outFrame) continue;
+    // Helper to compute target layer world matrix at any frame (for followTargetLayerTransform)
+    const resolveLayerWorldMatrixAtFrame = (
+      targetLayerId: string,
+      frameIdx: number
+    ): [number, number, number, number, number, number] | null => {
+      if (!targetLayerId || targetLayerId === 'DOCUMENT') {
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, dt);
+      }
+      if (targetLayerId.startsWith('sprite_')) {
+        const sIdx = Number(targetLayerId.replace('sprite_', ''));
+        const sp = movie.sp[sIdx];
+        if (!sp) return null;
+        const resolved = resolveSpriteFrameAt(sp, frameIdx, totalFrames, spriteFrameRanges[sIdx]);
+        const f = resolved.frameObj || sp.fr.find((fr) => fr && fr.a > 0.001) || sp.fr[0];
+        if (!f) return null;
+        const bm = sp.key ? bitmaps[sp.key] : undefined;
+        const assetW = bm?.width || thumbs[sp.key]?.w || f.w || W;
+        const assetH = bm?.height || thumbs[sp.key]?.h || f.h || H;
+        const lt = getEffectiveTransform(targetLayerId, sp.key, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, dt);
+      }
+      const targetAl = addedLayers.find((x) => x.id === targetLayerId);
+      if (targetAl) {
+        const lt = getEffectiveTransform(targetAl.id, targetAl.assetKey, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeAddedLayerFrameMatrix(targetAl.width, targetAl.height, W, H, lt, dt);
+      }
+      const targetSh = shapes.find((x) => x.id === targetLayerId);
+      if (targetSh) {
+        const lt = getEffectiveTransform(targetSh.id, targetSh.assetKey, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeAddedLayerFrameMatrix(targetSh.w, targetSh.h, W, H, lt, dt);
+      }
+      return null;
+    };
+
+    // Helper to draw the exact rendered alpha silhouette of a target layer at currentFrame
+    // for 100% pixel-perfect destination-in masking of Shine layers (zero cut marks)
+    const drawTargetAlphaMaskAtCurrentFrame = (
+      maskCtx: CanvasRenderingContext2D,
+      targetLayerId: string
+    ): boolean => {
+      maskCtx.clearRect(0, 0, W, H);
+      let drewAny = false;
+
+      const drawSingleSpriteToMask = (sIdx: number) => {
+        if (deletedSpriteIndices.has(sIdx)) return;
+        const spriteId = `sprite_${sIdx}`;
+        const parentGroup = spriteToGroupMap.get(sIdx);
+        if (hiddenLayerIds.has(spriteId) || (parentGroup && hiddenLayerIds.has(parentGroup.id))) return;
+        const s = movie.sp[sIdx];
+        if (!s) return;
+        const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[sIdx]);
+        const f = resolved.frameObj;
+        if (!f || !resolved.visible) return;
+        const bm = s.key ? bitmaps[s.key] : undefined;
+        const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
+        if (f.a <= 0.001 && !hasShapes) return;
+
+        const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
+        const groupT =
+          parentGroup && !parentGroup.isUngrouped
+            ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
+            : DEFAULT_TRANSFORM;
+        const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
+        const groupAlpha = Math.max(0, Math.min(1, groupT.opacity / 100));
+        const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * docAlpha * groupAlpha * layerAlpha));
+        if (finalAlpha <= 0.001) return;
+
+        const assetW = bm?.width || thumbs[s.key]?.w || f.w || W;
+        const assetH = bm?.height || thumbs[s.key]?.h || f.h || H;
+        let mat = computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, DEFAULT_TRANSFORM);
+        if (!isIdentityLayerTransform(groupT)) {
+          const mGroup = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, groupT);
+          mat = multiplyAffine(mGroup, mat);
+        }
+        if (!isIdentityLayerTransform(docT)) {
+          const mDoc = buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, docT);
+          mat = multiplyAffine(mDoc, mat);
+        }
+
+        maskCtx.save();
+        maskCtx.globalAlpha = finalAlpha;
+        maskCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+        if (f.clipPath) {
+          try {
+            maskCtx.clip(new Path2D(f.clipPath));
+          } catch {}
+        }
+        if (bm) {
+          maskCtx.drawImage(bm, f.x || 0, f.y || 0, f.w || bm.width, f.h || bm.height);
+          drewAny = true;
+        }
+        if (hasShapes && f.shapesRaw) {
+          for (const rawSh of f.shapesRaw) {
+            const parsed = parseSvgaShapeEntity(rawSh);
+            maskCtx.save();
+            if (parsed.transform) {
+              const st = parsed.transform;
+              maskCtx.transform(st[0], st[1], st[2], st[3], st[4], st[5]);
+            }
+            if (parsed.pathD) {
+              try {
+                const p2d = new Path2D(parsed.pathD);
+                if (parsed.fill) {
+                  maskCtx.fillStyle = parsed.fill;
+                  maskCtx.fill(p2d);
+                  drewAny = true;
+                }
+                if (parsed.stroke && (parsed.strokeWidth ?? 0) > 0) {
+                  maskCtx.strokeStyle = parsed.stroke;
+                  maskCtx.lineWidth = parsed.strokeWidth || 1;
+                  maskCtx.stroke(p2d);
+                  drewAny = true;
+                }
+              } catch {}
+            }
+            maskCtx.restore();
+          }
+        }
+        maskCtx.restore();
+      };
+
+      const drawSingleAddedLayerToMask = (targetAl: AddedLayer) => {
+        if (hiddenLayerIds.has(targetAl.id) || targetAl.shineConfig?.enabled) return;
+        if (currentFrame < targetAl.inFrame || currentFrame > targetAl.outFrame) return;
+        const tLt = getEffectiveTransform(targetAl.id, targetAl.assetKey, currentFrame);
+        if (targetAl.copiedFrames && targetAl.copiedFrames.length > 0) {
+          const cf = targetAl.copiedFrames[Math.min(currentFrame, targetAl.copiedFrames.length - 1)];
+          if (!cf || (cf.a ?? 0) <= 0.001) return;
+          const fAlpha = Math.max(0, Math.min(1, (cf.a ?? 1) * (tLt.opacity / 100) * docAlpha));
+          if (fAlpha <= 0.001) return;
+          const fw = cf.w > 0 ? cf.w : targetAl.width;
+          const fh = cf.h > 0 ? cf.h : targetAl.height;
+          const fx = cf.x || 0;
+          const fy = cf.y || 0;
+          const mat = computeSpriteFrameMatrix(cf, fw, fh, W, H, tLt, docT);
+          maskCtx.save();
+          maskCtx.globalAlpha = fAlpha;
+          maskCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+          if (cf.clipPath) {
+            try {
+              maskCtx.clip(new Path2D(cf.clipPath), 'evenodd');
+            } catch {}
+          }
+          maskCtx.drawImage(targetAl.originalBitmap || targetAl.bitmap, fx, fy, fw, fh);
+          maskCtx.restore();
+          drewAny = true;
+        } else {
+          const fAlpha = Math.max(0, Math.min(1, (tLt.opacity / 100) * docAlpha));
+          if (fAlpha <= 0.001) return;
+          const mat = computeAddedLayerFrameMatrix(targetAl.width, targetAl.height, W, H, tLt, docT);
+          maskCtx.save();
+          maskCtx.globalAlpha = fAlpha;
+          maskCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+          maskCtx.drawImage(
+            targetAl.originalBitmap || targetAl.bitmap,
+            0,
+            0,
+            targetAl.width,
+            targetAl.height
+          );
+          maskCtx.restore();
+          drewAny = true;
+        }
+      };
+
+      if (!targetLayerId || targetLayerId === 'DOCUMENT') {
+        orderedSpriteIndices.forEach((sIdx) => drawSingleSpriteToMask(sIdx));
+        addedLayers.forEach((l) => drawSingleAddedLayerToMask(l));
+        return drewAny;
+      }
+
+      if (targetLayerId.startsWith('sprite_')) {
+        const sIdx = Number(targetLayerId.replace('sprite_', ''));
+        drawSingleSpriteToMask(sIdx);
+        return drewAny;
+      }
+
+      if (targetLayerId.startsWith('merged_group_')) {
+        const mg = mergedGroups.find((g) => g.id === targetLayerId);
+        if (mg) {
+          mg.spriteIds.forEach((sid) => {
+            const sIdx = Number(sid.replace('sprite_', ''));
+            drawSingleSpriteToMask(sIdx);
+          });
+        }
+        return drewAny;
+      }
+
+      const targetAl = addedLayers.find((x) => x.id === targetLayerId);
+      if (targetAl) {
+        drawSingleAddedLayerToMask(targetAl);
+        return drewAny;
+      }
+
+      return drewAny;
+    };
+
+    // 2. Render added decomposed image layers helper (supporting static/keyframed, copied SVGA sprite motion, and Shine clipPath + destination-in alpha layers)
+    const drawSingleAddedLayer = (al: AddedLayer) => {
+      if (hiddenLayerIds.has(al.id)) return;
+      if (currentFrame < al.inFrame || currentFrame > al.outFrame) return;
       const lt = getEffectiveTransform(al.id, al.assetKey, currentFrame);
 
-      if (al.copiedFrames && al.copiedFrames.length > 0) {
+      // Compute optional targetDeltaMatrix if this is a Shine layer locked to a moving target layer
+      let shineTargetDelta: [number, number, number, number, number, number] | null = null;
+      if (
+        al.shineConfig?.enabled &&
+        al.shineConfig.followTargetLayerTransform &&
+        al.shineConfig.targetLayerId &&
+        al.shineConfig.targetLayerId !== 'DOCUMENT'
+      ) {
+        const refFrame = al.shineConfig.referenceFrame ?? 0;
+        const matRef = resolveLayerWorldMatrixAtFrame(al.shineConfig.targetLayerId, refFrame);
+        const matCur = resolveLayerWorldMatrixAtFrame(al.shineConfig.targetLayerId, currentFrame);
+        if (matRef && matCur) {
+          const invRef = invertAffine(matRef);
+          if (invRef) {
+            shineTargetDelta = multiplyAffine(matCur, invRef);
+          }
+        }
+      }
+
+      if (al.copiedFrames && al.copiedFrames.length > 0 && !al.shineConfig?.enabled) {
         const cf = al.copiedFrames[Math.min(currentFrame, al.copiedFrames.length - 1)];
-        if (!cf || (cf.a ?? 0) <= 0.001) continue;
+        if (!cf || (cf.a ?? 0) <= 0.001) return;
         const finalAlpha = Math.max(
           0,
           Math.min(1, (cf.a ?? 1) * (lt.opacity / 100) * docAlpha)
         );
-        if (finalAlpha <= 0.001) continue;
+        if (finalAlpha <= 0.001) return;
 
         const fw = cf.w > 0 ? cf.w : al.width;
         const fh = cf.h > 0 ? cf.h : al.height;
@@ -866,10 +1261,10 @@ export default function SvgaAeEditor({
         if (cf.clipPath) {
           try {
             const clipP = new Path2D(cf.clipPath);
-            ctx.clip(clipP);
+            ctx.clip(clipP, 'evenodd');
           } catch {}
         }
-        ctx.drawImage(al.bitmap, fx, fy, fw, fh);
+        ctx.drawImage(al.originalBitmap || al.bitmap, fx, fy, fw, fh);
         ctx.restore();
 
         if (selectedTarget === al.id && !isAllLayersGrouped) {
@@ -884,7 +1279,7 @@ export default function SvgaAeEditor({
         }
       } else {
         const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
-        if (finalAlpha <= 0.001) continue;
+        if (finalAlpha <= 0.001) return;
 
         const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
 
@@ -902,32 +1297,102 @@ export default function SvgaAeEditor({
           if (sy > compMaxY) compMaxY = sy;
         }
 
-        ctx.save();
-        ctx.globalAlpha = finalAlpha;
-        ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-        ctx.drawImage(al.bitmap, 0, 0, al.width, al.height);
-        ctx.restore();
+        if (al.shineConfig?.enabled) {
+          if (!shineCompCanvasRef.current) {
+            shineCompCanvasRef.current = document.createElement('canvas');
+          }
+          const compC = shineCompCanvasRef.current;
+          if (compC.width !== W || compC.height !== H) {
+            compC.width = W;
+            compC.height = H;
+          }
+          const compCtx = compC.getContext('2d');
+          if (compCtx) {
+            compCtx.clearRect(0, 0, W, H);
+            compCtx.save();
+            compCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
 
-        if (selectedTarget === al.id && !isAllLayersGrouped) {
-          selectedBounds = {
-            x: 0,
-            y: 0,
-            w: al.width,
-            h: al.height,
-            mat,
-            label: al.name,
-          };
+            const useExactAlpha = al.shineConfig.exactLayerAlphaMask !== false;
+            const applyPolygonClip =
+              al.shineConfig.maskContours.length > 0 &&
+              (!useExactAlpha || al.shineConfig.maskMode !== 'auto_layer_contour');
+
+            if (applyPolygonClip) {
+              const dynamicClipD = projectWorldContoursToLocalClipPath(
+                al.shineConfig.maskContours,
+                mat,
+                shineTargetDelta,
+                { smoothCurve: al.shineConfig.maskMode !== 'rect_box' }
+              );
+              if (dynamicClipD) {
+                try {
+                  const clipP = new Path2D(dynamicClipD);
+                  compCtx.clip(clipP, 'evenodd');
+                } catch {}
+              }
+            }
+
+            compCtx.drawImage(al.originalBitmap || al.bitmap, 0, 0, al.width, al.height);
+            compCtx.restore();
+
+            if (useExactAlpha) {
+              if (!shineMaskCanvasRef.current) {
+                shineMaskCanvasRef.current = document.createElement('canvas');
+              }
+              const maskC = shineMaskCanvasRef.current;
+              if (maskC.width !== W || maskC.height !== H) {
+                maskC.width = W;
+                maskC.height = H;
+              }
+              const maskCtx = maskC.getContext('2d');
+              if (maskCtx) {
+                const hasMaskPixels = drawTargetAlphaMaskAtCurrentFrame(
+                  maskCtx,
+                  al.shineConfig.targetLayerId
+                );
+                if (hasMaskPixels) {
+                  compCtx.save();
+                  compCtx.globalCompositeOperation = 'destination-in';
+                  compCtx.drawImage(maskC, 0, 0);
+                  compCtx.restore();
+                }
+              }
+            }
+
+            ctx.save();
+            ctx.globalAlpha = finalAlpha;
+            ctx.globalCompositeOperation = al.shineConfig.blendMode || 'screen';
+            ctx.drawImage(compC, 0, 0);
+            ctx.restore();
+          }
+        } else {
+          ctx.save();
+          ctx.globalAlpha = finalAlpha;
+          ctx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
+          ctx.drawImage(al.originalBitmap || al.bitmap, 0, 0, al.width, al.height);
+          ctx.restore();
+
+          if (selectedTarget === al.id && !isAllLayersGrouped) {
+            selectedBounds = {
+              x: 0,
+              y: 0,
+              w: al.width,
+              h: al.height,
+              mat,
+              label: al.name,
+            };
+          }
         }
       }
-    }
+    };
 
-    // 3. Render added decomposed shape / path / text layers
-    for (const sh of shapes) {
-      if (hiddenLayerIds.has(sh.id)) continue;
-      if (currentFrame < sh.inFrame || currentFrame > sh.outFrame) continue;
+    // 3. Render added decomposed shape / path / text layers helper
+    const drawSingleShape = (sh: ShapeObject) => {
+      if (hiddenLayerIds.has(sh.id)) return;
+      if (currentFrame < sh.inFrame || currentFrame > sh.outFrame) return;
       const lt = getEffectiveTransform(sh.id, sh.assetKey, currentFrame);
       const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
-      if (finalAlpha <= 0.001) continue;
+      if (finalAlpha <= 0.001) return;
 
       const mat = computeAddedLayerFrameMatrix(sh.w, sh.h, W, H, lt, docT);
 
@@ -1023,6 +1488,26 @@ export default function SvgaAeEditor({
           label: sh.name,
         };
       }
+    };
+
+    // 4. Render all project layers in true visual stacking order
+    for (const lid of effectiveLayerOrder) {
+      if (lid.startsWith('sprite_')) {
+        const sIdx = Number(lid.replace('sprite_', ''));
+        if (!Number.isNaN(sIdx) && movie.sp[sIdx]) {
+          drawSingleSprite(sIdx);
+        }
+      } else if (lid.startsWith('layer_')) {
+        const al = addedLayers.find((l) => l.id === lid);
+        if (al) {
+          drawSingleAddedLayer(al);
+        }
+      } else if (lid.startsWith('shape_')) {
+        const sh = shapes.find((s) => s.id === lid);
+        if (sh) {
+          drawSingleShape(sh);
+        }
+      }
     }
 
     // 4. Render interactive Pen tool draft points on stage
@@ -1051,6 +1536,121 @@ export default function SvgaAeEditor({
         ctx.stroke();
       }
       ctx.restore();
+    }
+
+    // 4b. Render interactive Shine Mask Contour Points & Motion Path Waypoints on stage
+    // Only draw the specific overlay that matches shineEditSubmode (and hide during playback)
+    shineHandlesRef.current = [];
+    const activeShineLayer = addedLayers.find(
+      (l) => l.id === selectedTarget && l.shineConfig?.enabled
+    );
+    if (
+      activeShineLayer &&
+      activeShineLayer.shineConfig &&
+      !isAllLayersGrouped &&
+      !playing &&
+      shineEditSubmode !== 'none'
+    ) {
+      const sc = activeShineLayer.shineConfig;
+      const nextHandles: typeof shineHandlesRef.current = [];
+
+      ctx.save();
+      if (shineEditSubmode === 'mask_points') {
+        // Draw Mask Contours (Cyan for outer mask, Purple dashed for inner cutout hole)
+        sc.maskContours.forEach((contour, cIdx) => {
+          if (!contour || contour.length === 0) return;
+          const isInner = cIdx > 0;
+          ctx.beginPath();
+          contour.forEach((pt, pIdx) => {
+            if (pIdx === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+          });
+          if (contour.length >= 3) ctx.closePath();
+          ctx.strokeStyle = isInner ? '#c084fc' : '#38bdf8';
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash(isInner ? [4, 4] : [6, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          contour.forEach((pt, pIdx) => {
+            nextHandles.push({
+              kind: 'mask',
+              contourIdx: cIdx,
+              pointIdx: pIdx,
+              x: pt.x,
+              y: pt.y,
+            });
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = isInner ? '#a855f7' : '#0284c7';
+            ctx.fill();
+            ctx.lineWidth = 1.6;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+          });
+        });
+      }
+
+      if (shineEditSubmode === 'motion_points' && sc.motionPoints && sc.motionPoints.length > 0) {
+        ctx.beginPath();
+        sc.motionPoints.forEach((pt, idx) => {
+          if (idx === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.strokeStyle = '#fbbf24';
+        ctx.lineWidth = 2.2;
+        ctx.setLineDash([5, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw directional arrow head on each motion segment
+        for (let i = 0; i < sc.motionPoints.length - 1; i++) {
+          const pA = sc.motionPoints[i];
+          const pB = sc.motionPoints[i + 1];
+          const midX = (pA.x + pB.x) / 2;
+          const midY = (pA.y + pB.y) / 2;
+          const ang = Math.atan2(pB.y - pA.y, pB.x - pA.x);
+          ctx.save();
+          ctx.translate(midX, midY);
+          ctx.rotate(ang);
+          ctx.beginPath();
+          ctx.moveTo(6, 0);
+          ctx.lineTo(-5, -4.5);
+          ctx.lineTo(-5, 4.5);
+          ctx.closePath();
+          ctx.fillStyle = '#fde047';
+          ctx.fill();
+          ctx.restore();
+        }
+
+        sc.motionPoints.forEach((pt, idx) => {
+          nextHandles.push({
+            kind: 'motion',
+            contourIdx: 0,
+            pointIdx: idx,
+            x: pt.x,
+            y: pt.y,
+          });
+          const isStart = idx === 0;
+          const isEnd = idx === sc.motionPoints.length - 1 && sc.motionPoints.length > 1;
+          const r = 7;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = isStart ? '#10b981' : isEnd ? '#f43f5e' : '#f59e0b';
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#ffffff';
+          ctx.stroke();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 8.5px Inter, system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`P${idx + 1}`, pt.x, pt.y);
+        });
+      }
+      ctx.restore();
+      shineHandlesRef.current = nextHandles;
     }
 
     // 5. Render editor selection bounding box overlay (not exported into SVGA)
@@ -1272,6 +1872,7 @@ export default function SvgaAeEditor({
     totalFrames,
     mergedGroups,
     isAllLayersGrouped,
+    shineEditSubmode,
   ]);
 
   const activeLayerTransform: LayerTransform = useMemo(() => {
@@ -1317,6 +1918,17 @@ export default function SvgaAeEditor({
           nextPkf.rotation = {
             ...pkf.rotation,
             [currentFrame]: effectiveAfterPatch.rotation,
+          };
+          changed = true;
+        }
+        if (
+          patch.zoom !== undefined &&
+          pkf.zoom &&
+          Object.keys(pkf.zoom).length > 0
+        ) {
+          nextPkf.zoom = {
+            ...pkf.zoom,
+            [currentFrame]: effectiveAfterPatch.zoom ?? 100,
           };
           changed = true;
         }
@@ -1464,6 +2076,7 @@ export default function SvgaAeEditor({
           position: { ...(existing.position || {}) },
           scale: { ...(existing.scale || {}) },
           rotation: { ...(existing.rotation || {}) },
+          zoom: { ...(existing.zoom || {}) },
           opacity: { ...(existing.opacity || {}) },
         };
 
@@ -1472,16 +2085,19 @@ export default function SvgaAeEditor({
             nextForLayer.position?.[frame] !== undefined ||
             nextForLayer.scale?.[frame] !== undefined ||
             nextForLayer.rotation?.[frame] !== undefined ||
+            nextForLayer.zoom?.[frame] !== undefined ||
             nextForLayer.opacity?.[frame] !== undefined;
           if (anyAtF) {
             delete nextForLayer.position![frame];
             delete nextForLayer.scale![frame];
             delete nextForLayer.rotation![frame];
+            delete nextForLayer.zoom![frame];
             delete nextForLayer.opacity![frame];
           } else {
             nextForLayer.position![frame] = { x: currentT.x, y: currentT.y };
             nextForLayer.scale![frame] = { sx: currentT.sx, sy: currentT.sy };
             nextForLayer.rotation![frame] = currentT.rotation;
+            nextForLayer.zoom![frame] = currentT.zoom ?? 100;
             nextForLayer.opacity![frame] = currentT.opacity;
           }
         } else if (prop === 'position') {
@@ -1501,6 +2117,12 @@ export default function SvgaAeEditor({
             delete nextForLayer.rotation![frame];
           } else {
             nextForLayer.rotation![frame] = currentT.rotation;
+          }
+        } else if (prop === 'zoom') {
+          if (nextForLayer.zoom![frame] !== undefined) {
+            delete nextForLayer.zoom![frame];
+          } else {
+            nextForLayer.zoom![frame] = currentT.zoom ?? 100;
           }
         } else if (prop === 'opacity') {
           if (nextForLayer.opacity![frame] !== undefined) {
@@ -2155,127 +2777,113 @@ export default function SvgaAeEditor({
     ]
   );
 
+  const handleMoveLayer = useCallback(
+    (
+      layerId: string,
+      direction: 'top' | 'bottom' | 'up' | 'down' | 'above' | 'below',
+      relativeTargetId?: string
+    ) => {
+      const currentOrder = [...effectiveLayerOrder];
+      const curIdx = currentOrder.indexOf(layerId);
+      if (curIdx === -1) return;
+
+      currentOrder.splice(curIdx, 1);
+
+      if (direction === 'top') {
+        currentOrder.push(layerId);
+      } else if (direction === 'bottom') {
+        currentOrder.unshift(layerId);
+      } else if (direction === 'up') {
+        const newIdx = Math.min(currentOrder.length, curIdx + 1);
+        currentOrder.splice(newIdx, 0, layerId);
+      } else if (direction === 'down') {
+        const newIdx = Math.max(0, curIdx - 1);
+        currentOrder.splice(newIdx, 0, layerId);
+      } else if (direction === 'above' && relativeTargetId) {
+        const targetIdx = currentOrder.indexOf(relativeTargetId);
+        if (targetIdx !== -1) {
+          currentOrder.splice(targetIdx + 1, 0, layerId);
+        } else {
+          currentOrder.push(layerId);
+        }
+      } else if (direction === 'below' && relativeTargetId) {
+        const targetIdx = currentOrder.indexOf(relativeTargetId);
+        if (targetIdx !== -1) {
+          currentOrder.splice(targetIdx, 0, layerId);
+        } else {
+          currentOrder.unshift(layerId);
+        }
+      }
+
+      setLayerOrder(currentOrder);
+      setMoveMenuLayerId(null);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        layerOrder: currentOrder,
+      });
+
+      const label =
+        direction === 'top'
+          ? 'أعلى الكل ⤒'
+          : direction === 'bottom'
+          ? 'أسفل الكل ⤓'
+          : direction === 'up'
+          ? 'خطوة للأعلى ↑'
+          : direction === 'down'
+          ? 'خطوة للأسفل ↓'
+          : direction === 'above'
+          ? `فوق الطبقة المستهدفة 🎯`
+          : `تحت الطبقة 🎯`;
+
+      setLastAction(`🔄 تم نقل الطبقة إلى: ${label}`);
+    },
+    [effectiveLayerOrder, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+  );
+
   const handleMoveSpriteLayerUp = useCallback(
     (spriteIdx: number) => {
-      if (spriteIdx >= movie.sp.length - 1) return;
-      const targetIdx = spriteIdx + 1;
-      setMovie((prev) => {
-        const nextSp = [...prev.sp];
-        const temp = nextSp[spriteIdx];
-        nextSp[spriteIdx] = nextSp[targetIdx];
-        nextSp[targetIdx] = temp;
-        return { ...prev, sp: nextSp };
-      });
-      setLayerTransforms((prev) => {
-        const k1 = `sprite_${spriteIdx}`;
-        const k2 = `sprite_${targetIdx}`;
-        const next = { ...prev };
-        const t1 = next[k1];
-        const t2 = next[k2];
-        if (t2) next[k1] = t2; else delete next[k1];
-        if (t1) next[k2] = t1; else delete next[k2];
-        return next;
-      });
-      setMergedGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          spriteIds: g.spriteIds.map((id) => {
-            if (id === `sprite_${spriteIdx}`) return `sprite_${targetIdx}`;
-            if (id === `sprite_${targetIdx}`) return `sprite_${spriteIdx}`;
-            return id;
-          }),
-        }))
-      );
-      setSelectedTarget(`sprite_${targetIdx}`);
-      setLastAction(`رفع الطبقة #${movie.sp.length - targetIdx} للأعلى (Move Up)`);
+      handleMoveLayer(`sprite_${spriteIdx}`, 'up');
     },
-    [movie.sp.length]
+    [handleMoveLayer]
   );
 
   const handleMoveSpriteLayerDown = useCallback(
     (spriteIdx: number) => {
-      if (spriteIdx <= 0) return;
-      const targetIdx = spriteIdx - 1;
-      setMovie((prev) => {
-        const nextSp = [...prev.sp];
-        const temp = nextSp[spriteIdx];
-        nextSp[spriteIdx] = nextSp[targetIdx];
-        nextSp[targetIdx] = temp;
-        return { ...prev, sp: nextSp };
-      });
-      setLayerTransforms((prev) => {
-        const k1 = `sprite_${spriteIdx}`;
-        const k2 = `sprite_${targetIdx}`;
-        const next = { ...prev };
-        const t1 = next[k1];
-        const t2 = next[k2];
-        if (t2) next[k1] = t2; else delete next[k1];
-        if (t1) next[k2] = t1; else delete next[k2];
-        return next;
-      });
-      setMergedGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          spriteIds: g.spriteIds.map((id) => {
-            if (id === `sprite_${spriteIdx}`) return `sprite_${targetIdx}`;
-            if (id === `sprite_${targetIdx}`) return `sprite_${spriteIdx}`;
-            return id;
-          }),
-        }))
-      );
-      setSelectedTarget(`sprite_${targetIdx}`);
-      setLastAction(`خفض الطبقة #${movie.sp.length - targetIdx} للأسفل (Move Down)`);
+      handleMoveLayer(`sprite_${spriteIdx}`, 'down');
     },
-    [movie.sp.length]
+    [handleMoveLayer]
   );
 
-  const handleMoveAddedLayerUp = useCallback((idx: number) => {
-    if (idx <= 0) return;
-    setAddedLayers((prev) => {
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx - 1];
-      next[idx - 1] = temp;
-      return next;
-    });
-    setLastAction('رفع طبقة الصورة للأعلى (Move Up)');
-  }, []);
+  const handleMoveAddedLayerUp = useCallback(
+    (idx: number) => {
+      const al = addedLayers[idx];
+      if (al) handleMoveLayer(al.id, 'up');
+    },
+    [addedLayers, handleMoveLayer]
+  );
 
-  const handleMoveAddedLayerDown = useCallback((idx: number) => {
-    setAddedLayers((prev) => {
-      if (idx >= prev.length - 1) return prev;
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx + 1];
-      next[idx + 1] = temp;
-      return next;
-    });
-    setLastAction('خفض طبقة الصورة للأسفل (Move Down)');
-  }, []);
+  const handleMoveAddedLayerDown = useCallback(
+    (idx: number) => {
+      const al = addedLayers[idx];
+      if (al) handleMoveLayer(al.id, 'down');
+    },
+    [addedLayers, handleMoveLayer]
+  );
 
-  const handleMoveShapeUp = useCallback((idx: number) => {
-    if (idx <= 0) return;
-    setShapes((prev) => {
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx - 1];
-      next[idx - 1] = temp;
-      return next;
-    });
-    setLastAction('رفع الشكل/النص للأعلى (Move Up)');
-  }, []);
+  const handleMoveShapeUp = useCallback(
+    (idx: number) => {
+      const sh = shapes[idx];
+      if (sh) handleMoveLayer(sh.id, 'up');
+    },
+    [shapes, handleMoveLayer]
+  );
 
-  const handleMoveShapeDown = useCallback((idx: number) => {
-    setShapes((prev) => {
-      if (idx >= prev.length - 1) return prev;
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx + 1];
-      next[idx + 1] = temp;
-      return next;
-    });
-    setLastAction('خفض الشكل/النص للأسفل (Move Down)');
-  }, []);
+  const handleMoveShapeDown = useCallback(
+    (idx: number) => {
+      const sh = shapes[idx];
+      if (sh) handleMoveLayer(sh.id, 'down');
+    },
+    [shapes, handleMoveLayer]
+  );
 
   const handleMoveMergedGroupUp = useCallback((groupId: string) => {
     setMergedGroups((prev) => {
@@ -2507,15 +3115,17 @@ export default function SvgaAeEditor({
       const effT = getEffectiveTransform(al.id, al.assetKey, currentFrame);
       const signX = effT.sx < 0 ? -1 : 1;
       const signY = effT.sy < 0 ? -1 : 1;
-      const bakedW = Math.max(2, Math.round((al.width * Math.abs(effT.sx)) / 100));
-      const bakedH = Math.max(2, Math.round((al.height * Math.abs(effT.sy)) / 100));
+      const zoomFactor = (effT.zoom ?? 100) / 100;
+      const bakedW = Math.max(2, Math.round((al.width * Math.abs(effT.sx) * zoomFactor) / 100));
+      const bakedH = Math.max(2, Math.round((al.height * Math.abs(effT.sy) * zoomFactor) / 100));
+      const sourceBm = al.originalBitmap || al.bitmap;
 
       const c = document.createElement('canvas');
       c.width = bakedW;
       c.height = bakedH;
       const ctx = c.getContext('2d');
       if (!ctx) return;
-      ctx.drawImage(al.bitmap, 0, 0, bakedW, bakedH);
+      ctx.drawImage(sourceBm, 0, 0, bakedW, bakedH);
       const blob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
       if (!blob) return;
       const pngBytes = new Uint8Array(await blob.arrayBuffer());
@@ -2526,6 +3136,7 @@ export default function SvgaAeEditor({
         ...effT,
         sx: signX * 100,
         sy: signY * 100,
+        zoom: 100,
       };
       const updatedCopiedFrames =
         al.copiedFrames && al.copiedFrames.length > 0
@@ -2535,6 +3146,9 @@ export default function SvgaAeEditor({
       const updatedLayer: AddedLayer = {
         ...al,
         bitmap: newBm,
+        originalBitmap: sourceBm,
+        originalWidth: al.originalWidth || al.width,
+        originalHeight: al.originalHeight || al.height,
         pngBytes,
         dataUrl,
         width: bakedW,
@@ -2615,7 +3229,7 @@ export default function SvgaAeEditor({
         }
 
         const suffix = mirrorMode !== 'none' ? ' (معكوس ↔)' : ' (نسخة)';
-        const newLayer: AddedLayer = {
+        let newLayer: AddedLayer = {
           ...srcLayer,
           id: newId,
           assetKey: newAssetKey,
@@ -2624,12 +3238,155 @@ export default function SvgaAeEditor({
           copiedFrames: nextCopiedFrames,
         };
 
+        const srcIdxInOrder = effectiveLayerOrder.indexOf(targetId);
+        const nextLayerOrder = [...effectiveLayerOrder];
+        if (srcIdxInOrder !== -1) {
+          nextLayerOrder.splice(srcIdxInOrder + 1, 0, newId);
+        } else {
+          nextLayerOrder.push(newId);
+        }
+
+        // Special handling for Shine Layers: when duplicated/mirrored, automatically assign to opposite/2nd target layer and place right above it
+        if (srcLayer.shineConfig?.enabled) {
+          const candidateTargets: Array<{ id: string; name: string; cx: number; cy: number }> = [];
+
+          movie.sp.forEach((sp, idx) => {
+            if (deletedSpriteIndices.has(idx)) return;
+            const lid = `sprite_${idx}`;
+            const displayNum = movie.sp.length - idx;
+            const key = sp.key || `vector_${displayNum}`;
+            const b = getTargetLayerBoundsAndBitmapAtFrame(lid, currentFrame);
+            candidateTargets.push({
+              id: lid,
+              name: `#${displayNum} (${key})`,
+              cx: (b.minX + b.maxX) / 2,
+              cy: (b.minY + b.maxY) / 2,
+            });
+          });
+
+          addedLayers.forEach((al) => {
+            if (al.id === srcLayer.id || al.shineConfig?.enabled) return;
+            const b = getTargetLayerBoundsAndBitmapAtFrame(al.id, currentFrame);
+            candidateTargets.push({
+              id: al.id,
+              name: al.name,
+              cx: (b.minX + b.maxX) / 2,
+              cy: (b.minY + b.maxY) / 2,
+            });
+          });
+
+          shapes.forEach((sh) => {
+            const b = getTargetLayerBoundsAndBitmapAtFrame(sh.id, currentFrame);
+            candidateTargets.push({
+              id: sh.id,
+              name: sh.name,
+              cx: (b.minX + b.maxX) / 2,
+              cy: (b.minY + b.maxY) / 2,
+            });
+          });
+
+          let nextTargetId = srcLayer.shineConfig.targetLayerId;
+          let targetName = 'كامل المشروع';
+
+          if (candidateTargets.length > 0) {
+            const curTarget = candidateTargets.find(
+              (c) => c.id === srcLayer.shineConfig?.targetLayerId
+            );
+
+            if (curTarget && mirrorMode !== 'none') {
+              // Spatial symmetry matching: find layer whose center is closest to mirrored position (canvasW - curTarget.cx, curTarget.cy)
+              const mirroredCx = canvasW - curTarget.cx;
+              const mirroredCy = curTarget.cy;
+
+              let bestDistSq = Infinity;
+              let bestTarget = curTarget;
+
+              candidateTargets.forEach((c) => {
+                if (c.id === curTarget.id) return;
+                const distSq = Math.pow(c.cx - mirroredCx, 2) + Math.pow(c.cy - mirroredCy, 2);
+                if (distSq < bestDistSq) {
+                  bestDistSq = distSq;
+                  bestTarget = c;
+                }
+              });
+
+              nextTargetId = bestTarget.id;
+              targetName = bestTarget.name;
+            } else {
+              // Fallback: cycle to next candidate in sequence
+              const curTargetIdx = candidateTargets.findIndex(
+                (c) => c.id === srcLayer.shineConfig?.targetLayerId
+              );
+              const nextTargetObj =
+                curTargetIdx !== -1
+                  ? candidateTargets[(curTargetIdx + 1) % candidateTargets.length]
+                  : candidateTargets[0];
+              nextTargetId = nextTargetObj.id;
+              targetName = nextTargetObj.name;
+            }
+          }
+
+          // Mirror motion points and mask contours across stage center X if mirrored
+          let nextMotionPoints = srcLayer.shineConfig.motionPoints;
+          let nextMaskContours = srcLayer.shineConfig.maskContours;
+          let nextBeamAngle = srcLayer.shineConfig.beamAngleDeg;
+
+          if (mirrorMode !== 'none') {
+            if (nextMotionPoints) {
+              nextMotionPoints = nextMotionPoints.map((p) => ({
+                x: Math.round(canvasW - p.x),
+                y: p.y,
+              }));
+            }
+            if (nextMaskContours) {
+              nextMaskContours = nextMaskContours.map((contour) =>
+                contour.map((p) => ({
+                  x: Math.round(canvasW - p.x),
+                  y: p.y,
+                }))
+              );
+            }
+            if (typeof nextBeamAngle === 'number') {
+              nextBeamAngle = -nextBeamAngle;
+            }
+          }
+
+          const suffixLabel = mirrorMode !== 'none' ? ' (معكوسة ↔)' : ' (نسخة)';
+          const shineName = `✨ لمعة: ${targetName}${suffixLabel}`;
+
+          newLayer = {
+            ...newLayer,
+            name: shineName,
+            shineConfig: {
+              ...srcLayer.shineConfig,
+              targetLayerId: nextTargetId,
+              motionPoints: nextMotionPoints,
+              maskContours: nextMaskContours,
+              beamAngleDeg: nextBeamAngle,
+            },
+          };
+
+          const targetIdxInOrder = nextLayerOrder.indexOf(nextTargetId);
+          if (targetIdxInOrder !== -1) {
+            const tempIdx = nextLayerOrder.indexOf(newId);
+            if (tempIdx !== -1) nextLayerOrder.splice(tempIdx, 1);
+            nextLayerOrder.splice(targetIdxInOrder + 1, 0, newId);
+          }
+        }
+
+        setLayerOrder(nextLayerOrder);
+
+        let nextAddedLayers: AddedLayer[] = [];
         setAddedLayers((prev) => {
           const idx = prev.findIndex((a) => a.id === targetId);
-          if (idx < 0) return [...prev, newLayer];
-          const next = [...prev];
-          next.splice(idx + 1, 0, newLayer);
-          return next;
+          if (idx < 0) {
+            nextAddedLayers = [...prev, newLayer];
+          } else {
+            const next = [...prev];
+            next.splice(idx + 1, 0, newLayer);
+            nextAddedLayers = next;
+          }
+          return nextAddedLayers;
         });
         setLayerTransforms((prev) => ({
           ...prev,
@@ -2648,10 +3405,14 @@ export default function SvgaAeEditor({
         }
         setSelectedTarget(newId);
         setSelectedAssetKey(null);
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          addedLayers: nextAddedLayers,
+          layerOrder: nextLayerOrder,
+        });
         setLastAction(
           mirrorMode !== 'none'
             ? `🪞 تم نسخ طبقة الصورة وعكسها من الشمال لليمين بنفس المقاسات (${newLayer.name})`
-            : `📋 تم نسخ طبقة الصورة بنفس المقاسات والأبعاد (${newLayer.name})`
+            : `📋 تم نسخ طبقة الصورة ووضعها فوق الطبقة الأصلية مباشرة (${newLayer.name})`
         );
         return;
       }
@@ -2677,6 +3438,14 @@ export default function SvgaAeEditor({
           name: `${srcShape.name}${suffix}`,
           transform: nextTransform,
         };
+        const srcIdxInOrder = effectiveLayerOrder.indexOf(targetId);
+        const nextLayerOrder = [...effectiveLayerOrder];
+        if (srcIdxInOrder !== -1) {
+          nextLayerOrder.splice(srcIdxInOrder + 1, 0, newId);
+        } else {
+          nextLayerOrder.push(newId);
+        }
+        setLayerOrder(nextLayerOrder);
         setShapes((prev) => [...prev, newShape]);
         setLayerTransforms((prev) => ({
           ...prev,
@@ -2684,10 +3453,13 @@ export default function SvgaAeEditor({
         }));
         setSelectedTarget(newId);
         setSelectedAssetKey(null);
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          layerOrder: nextLayerOrder,
+        });
         setLastAction(
           mirrorMode !== 'none'
             ? `🪞 تم نسخ الشكل/النص وعكسه من الشمال لليمين (${newShape.name})`
-            : `📋 تم نسخ الشكل/النص بنجاح (${newShape.name})`
+            : `📋 تم نسخ الشكل/النص ووضعه فوق الطبقة الأصلية مباشرة (${newShape.name})`
         );
         return;
       }
@@ -2710,6 +3482,15 @@ export default function SvgaAeEditor({
         if (!dupResult) return;
         const newSpriteIdx = dupResult.newIndex;
         const newSpriteId = `sprite_${newSpriteIdx}`;
+
+        const srcIdxInOrder = effectiveLayerOrder.indexOf(targetId);
+        const nextLayerOrder = [...effectiveLayerOrder];
+        if (srcIdxInOrder !== -1) {
+          nextLayerOrder.splice(srcIdxInOrder + 1, 0, newSpriteId);
+        } else {
+          nextLayerOrder.push(newSpriteId);
+        }
+        setLayerOrder(nextLayerOrder);
 
         setMovie((prev) => ({
           ...prev,
@@ -2763,10 +3544,13 @@ export default function SvgaAeEditor({
 
         setSelectedTarget(newSpriteId);
         setSelectedAssetKey(sKey || null);
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          layerOrder: nextLayerOrder,
+        });
         setLastAction(
           mirrorMode !== 'none'
             ? `🪞 تم نسخ الطبقة (${sKey}) وعكسها من الشمال لليمين بنفس الأنيميشن والفريمات`
-            : `📋 تم نسخ طبقة ثانية من (${sKey}) بنفس الأنيميشن والفريمات`
+            : `📋 تم نسخ طبقة ثانية من (${sKey}) ووضعها فوق الطبقة الأصلية مباشرة`
         );
       }
     },
@@ -2778,9 +3562,14 @@ export default function SvgaAeEditor({
       thumbs,
       canvasW,
       canvasH,
+      effectiveLayerOrder,
       layerTransforms,
       layerKeyframes,
       spriteFrameRanges,
+      docTransform,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
     ]
   );
 
@@ -2878,6 +3667,1013 @@ export default function SvgaAeEditor({
     [addedLayers, shapes, movie.sp, bitmaps, thumbs, canvasW, canvasH, layerTransforms]
   );
 
+  // ============================================================================
+  // SHINE / SHIMMER LAYER STUDIO HANDLERS (الطبقة اللامعة ونقاط القناع والحركة - إطار الهند)
+  // ============================================================================
+
+  const getTargetLayerBoundsAndBitmapAtFrame = useCallback(
+    (
+      targetId: string,
+      frameIdx: number
+    ): {
+      bitmap: ImageBitmap | null;
+      width: number;
+      height: number;
+      fx?: number;
+      fy?: number;
+      worldMatrix: [number, number, number, number, number, number];
+      minX: number;
+      minY: number;
+      maxX: number;
+      maxY: number;
+      cx: number;
+      cy: number;
+      label: string;
+    } => {
+      const docT = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+      if (targetId.startsWith('sprite_')) {
+        const sIdx = Number(targetId.replace('sprite_', ''));
+        const sp = movie.sp[sIdx];
+        if (sp) {
+          const resolved = resolveSpriteFrameAt(sp, frameIdx, totalFrames, spriteFrameRanges[sIdx]);
+          const f = resolved.frameObj || sp.fr.find((fr) => fr && fr.a > 0.001) || sp.fr[0];
+          const bm = sp.key ? bitmaps[sp.key] || null : null;
+          const assetW = bm?.width || thumbs[sp.key]?.w || f?.w || canvasW;
+          const assetH = bm?.height || thumbs[sp.key]?.h || f?.h || canvasH;
+          const lt = getEffectiveTransform(targetId, sp.key, frameIdx);
+          const mat = f
+            ? computeSpriteFrameMatrix(f, assetW, assetH, canvasW, canvasH, lt, docT)
+            : computeAddedLayerFrameMatrix(assetW, assetH, canvasW, canvasH, lt, docT);
+          const fx = f?.x || 0;
+          const fy = f?.y || 0;
+          const fw = f?.w || assetW;
+          const fh = f?.h || assetH;
+          const corners = [
+            { x: fx, y: fy },
+            { x: fx + fw, y: fy },
+            { x: fx + fw, y: fy + fh },
+            { x: fx, y: fy + fh },
+          ].map((p) => ({
+            x: mat[0] * p.x + mat[2] * p.y + mat[4],
+            y: mat[1] * p.x + mat[3] * p.y + mat[5],
+          }));
+          const minX = Math.min(...corners.map((c) => c.x));
+          const maxX = Math.max(...corners.map((c) => c.x));
+          const minY = Math.min(...corners.map((c) => c.y));
+          const maxY = Math.max(...corners.map((c) => c.y));
+          return {
+            bitmap: bm,
+            width: fw,
+            height: fh,
+            fx,
+            fy,
+            worldMatrix: mat,
+            minX,
+            minY,
+            maxX,
+            maxY,
+            cx: (minX + maxX) / 2,
+            cy: (minY + maxY) / 2,
+            label: `#${movie.sp.length - sIdx} · ${sp.key || 'layer'}`,
+          };
+        }
+      }
+
+      const targetAl = addedLayers.find((x) => x.id === targetId && !x.shineConfig?.enabled);
+      if (targetAl) {
+        const lt = getEffectiveTransform(targetAl.id, targetAl.assetKey, frameIdx);
+        const mat = computeAddedLayerFrameMatrix(
+          targetAl.width,
+          targetAl.height,
+          canvasW,
+          canvasH,
+          lt,
+          docT
+        );
+        const corners = [
+          { x: 0, y: 0 },
+          { x: targetAl.width, y: 0 },
+          { x: targetAl.width, y: targetAl.height },
+          { x: 0, y: targetAl.height },
+        ].map((p) => ({
+          x: mat[0] * p.x + mat[2] * p.y + mat[4],
+          y: mat[1] * p.x + mat[3] * p.y + mat[5],
+        }));
+        const minX = Math.min(...corners.map((c) => c.x));
+        const maxX = Math.max(...corners.map((c) => c.x));
+        const minY = Math.min(...corners.map((c) => c.y));
+        const maxY = Math.max(...corners.map((c) => c.y));
+        return {
+          bitmap: targetAl.originalBitmap || targetAl.bitmap,
+          width: targetAl.width,
+          height: targetAl.height,
+          fx: 0,
+          fy: 0,
+          worldMatrix: mat,
+          minX,
+          minY,
+          maxX,
+          maxY,
+          cx: (minX + maxX) / 2,
+          cy: (minY + maxY) / 2,
+          label: targetAl.name,
+        };
+      }
+
+      const targetSh = shapes.find((x) => x.id === targetId);
+      if (targetSh) {
+        const lt = getEffectiveTransform(targetSh.id, targetSh.assetKey, frameIdx);
+        const mat = computeAddedLayerFrameMatrix(targetSh.w, targetSh.h, canvasW, canvasH, lt, docT);
+        const corners = [
+          { x: 0, y: 0 },
+          { x: targetSh.w, y: 0 },
+          { x: targetSh.w, y: targetSh.h },
+          { x: 0, y: targetSh.h },
+        ].map((p) => ({
+          x: mat[0] * p.x + mat[2] * p.y + mat[4],
+          y: mat[1] * p.x + mat[3] * p.y + mat[5],
+        }));
+        const minX = Math.min(...corners.map((c) => c.x));
+        const maxX = Math.max(...corners.map((c) => c.x));
+        const minY = Math.min(...corners.map((c) => c.y));
+        const maxY = Math.max(...corners.map((c) => c.y));
+        return {
+          bitmap: null,
+          width: targetSh.w,
+          height: targetSh.h,
+          fx: 0,
+          fy: 0,
+          worldMatrix: mat,
+          minX,
+          minY,
+          maxX,
+          maxY,
+          cx: (minX + maxX) / 2,
+          cy: (minY + maxY) / 2,
+          label: targetSh.name,
+        };
+      }
+
+      const padX = Math.round(canvasW * 0.14);
+      const padY = Math.round(canvasH * 0.14);
+      return {
+        bitmap: null,
+        width: canvasW,
+        height: canvasH,
+        fx: 0,
+        fy: 0,
+        worldMatrix: [1, 0, 0, 1, 0, 0],
+        minX: padX,
+        minY: padY,
+        maxX: canvasW - padX,
+        maxY: canvasH - padY,
+        cx: canvasW / 2,
+        cy: canvasH / 2,
+        label: docName,
+      };
+    },
+    [
+      getEffectiveTransform,
+      movie.sp,
+      totalFrames,
+      spriteFrameRanges,
+      bitmaps,
+      thumbs,
+      canvasW,
+      canvasH,
+      addedLayers,
+      shapes,
+      docName,
+    ]
+  );
+
+  const traceContoursFromLayerTarget = useCallback(
+    (
+      targetId: string,
+      includeInnerHole: boolean,
+      numRays = 28
+    ): {
+      contours: Point2D[][];
+      bounds: ReturnType<typeof getTargetLayerBoundsAndBitmapAtFrame>;
+    } => {
+      const info = getTargetLayerBoundsAndBitmapAtFrame(targetId, currentFrame);
+      if (info.bitmap) {
+        try {
+          const sampleW = Math.min(256, Math.max(16, info.bitmap.width));
+          const sampleH = Math.min(256, Math.max(16, info.bitmap.height));
+          const c = document.createElement('canvas');
+          c.width = sampleW;
+          c.height = sampleH;
+          const ctx = c.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(info.bitmap, 0, 0, sampleW, sampleH);
+            const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
+            const scaleToLocalX = info.width / sampleW;
+            const scaleToLocalY = info.height / sampleH;
+            const fx = info.fx || 0;
+            const fy = info.fy || 0;
+            const adjMat: [number, number, number, number, number, number] = [
+              info.worldMatrix[0] * scaleToLocalX,
+              info.worldMatrix[1] * scaleToLocalX,
+              info.worldMatrix[2] * scaleToLocalY,
+              info.worldMatrix[3] * scaleToLocalY,
+              info.worldMatrix[0] * fx + info.worldMatrix[2] * fy + info.worldMatrix[4],
+              info.worldMatrix[1] * fx + info.worldMatrix[3] * fy + info.worldMatrix[5],
+            ];
+            const traced = traceAlphaContourFromRgba(
+              imgData.data,
+              sampleW,
+              sampleH,
+              adjMat,
+              {
+                alphaThreshold: 14,
+                detectInnerHole: includeInnerHole,
+                contourMethod: 'moore',
+                rdpEpsilon: 1.1,
+              }
+            );
+            if (traced.length > 0 && traced[0].length >= 3) {
+              return { contours: traced, bounds: info };
+            }
+          }
+        } catch {}
+      }
+
+      const rx = Math.max(24, (info.maxX - info.minX) / 2);
+      const ry = Math.max(24, (info.maxY - info.minY) / 2);
+      const fallbackContours = generateRingFrameMaskContours(
+        info.cx,
+        info.cy,
+        rx,
+        ry,
+        includeInnerHole ? 0.28 : 1,
+        24
+      );
+      return { contours: fallbackContours, bounds: info };
+    },
+    [getTargetLayerBoundsAndBitmapAtFrame, currentFrame]
+  );
+
+  const handleCreateShineLayer = useCallback(
+    async (preferredTargetId?: string): Promise<string> => {
+      // Pick the best target layer: preferredTargetId -> selectedTarget (if not a shine layer) -> topmost addedLayer -> topmost sprite -> DOCUMENT
+      let resolvedTargetId = preferredTargetId || selectedTarget;
+      const selectedAdded = addedLayers.find((l) => l.id === resolvedTargetId);
+      if (selectedAdded?.shineConfig?.enabled) {
+        resolvedTargetId = selectedAdded.shineConfig.targetLayerId || 'DOCUMENT';
+      }
+      if (
+        (!resolvedTargetId || resolvedTargetId === 'DOCUMENT' || resolvedTargetId.startsWith('merged_group_')) &&
+        !preferredTargetId
+      ) {
+        const nonShineAdded = [...addedLayers].reverse().find((l) => !l.shineConfig?.enabled && !hiddenLayerIds.has(l.id));
+        if (nonShineAdded) {
+          resolvedTargetId = nonShineAdded.id;
+        } else if (spriteLayers.length > 0) {
+          resolvedTargetId = spriteLayers[0].id;
+        } else {
+          resolvedTargetId = 'DOCUMENT';
+        }
+      }
+
+      const { contours, bounds } = traceContoursFromLayerTarget(resolvedTargetId, true, 28);
+      const spanW = Math.max(60, bounds.maxX - bounds.minX);
+      const spanH = Math.max(60, bounds.maxY - bounds.minY);
+      const shineW = Math.max(180, Math.min(900, Math.round(Math.max(spanW, spanH) * 1.55)));
+      const shineH = shineW;
+
+      const motionPoints: Point2D[] = [
+        {
+          x: Number((bounds.cx - spanW * 0.65).toFixed(1)),
+          y: Number((bounds.cy - spanH * 0.55).toFixed(1)),
+        },
+        {
+          x: Number(bounds.cx.toFixed(1)),
+          y: Number(bounds.cy.toFixed(1)),
+        },
+        {
+          x: Number((bounds.cx + spanW * 0.65).toFixed(1)),
+          y: Number((bounds.cy + spanH * 0.55).toFixed(1)),
+        },
+      ];
+
+      const sweepStart = 0;
+      const sweepEnd = Math.max(1, totalFrames - 1);
+      const presetId: ShineLayerConfig['presetId'] = 'royal_gold';
+      const beamAngleDeg = -32;
+      const beamWidthRatio = 0.28;
+      const beamSoftness = 0.85;
+      const colorPrimary = '#fde047';
+      const colorSecondary = '#ffffff';
+
+      const rendered = await renderProceduralShineBitmapAndBytes({
+        presetId,
+        width: shineW,
+        height: shineH,
+        colorPrimary,
+        colorSecondary,
+        beamAngleDeg,
+        beamWidthRatio,
+        beamSoftness,
+      });
+
+      const seqNum = addedLayers.filter((l) => l.shineConfig?.enabled).length + 1;
+      const id = `layer_shine_${Date.now()}_${seqNum}`;
+      const assetKey = `shine_beam_${seqNum}`;
+      const name = `✨ لمعة احترافية ${seqNum} (${bounds.label.slice(0, 18)})`;
+
+      const shineConfig: ShineLayerConfig = {
+        enabled: true,
+        targetLayerId: resolvedTargetId,
+        followTargetLayerTransform: true,
+        exactLayerAlphaMask: true,
+        blendMode: 'screen',
+        maskMode: 'auto_layer_contour',
+        maskContours: contours,
+        motionPoints,
+        presetId,
+        colorPrimary,
+        colorSecondary,
+        beamAngleDeg,
+        beamWidthRatio,
+        beamSoftness,
+        shineWidth: rendered.width,
+        shineHeight: rendered.height,
+        startFrame: sweepStart,
+        endFrame: sweepEnd,
+        loopCount: 1,
+        pauseFrames: 0,
+        referenceFrame: currentFrame,
+      };
+
+      const kfs = buildShineKeyframesFromMotionPoints(
+        shineConfig,
+        totalFrames,
+        canvasW,
+        canvasH,
+        100
+      );
+
+      const startPos = kfs.position?.[sweepStart] || {
+        x: Number((motionPoints[0].x - canvasW / 2).toFixed(2)),
+        y: Number((motionPoints[0].y - canvasH / 2).toFixed(2)),
+      };
+
+      const newShineLayer: AddedLayer = {
+        id,
+        assetKey,
+        name,
+        bitmap: rendered.bitmap,
+        originalBitmap: rendered.bitmap,
+        originalWidth: rendered.width,
+        originalHeight: rendered.height,
+        pngBytes: rendered.pngBytes,
+        dataUrl: rendered.dataUrl,
+        width: rendered.width,
+        height: rendered.height,
+        bytes: rendered.pngBytes.byteLength,
+        transform: {
+          ...DEFAULT_TRANSFORM,
+          x: startPos.x,
+          y: startPos.y,
+          opacity: 100,
+        },
+        inFrame: 0,
+        outFrame: totalFrames - 1,
+        shineConfig,
+      };
+
+      // Position new shine layer directly above its target layer in effectiveLayerOrder
+      const targetIdxInOrder = effectiveLayerOrder.indexOf(resolvedTargetId);
+      const nextLayerOrder = [...effectiveLayerOrder];
+      if (targetIdxInOrder !== -1) {
+        nextLayerOrder.splice(targetIdxInOrder + 1, 0, id);
+      } else {
+        nextLayerOrder.push(id);
+      }
+      setLayerOrder(nextLayerOrder);
+
+      let nextAdded: AddedLayer[];
+      const targetInAddedIdx = addedLayers.findIndex((l) => l.id === resolvedTargetId);
+      if (targetInAddedIdx !== -1) {
+        nextAdded = [...addedLayers];
+        nextAdded.splice(targetInAddedIdx + 1, 0, newShineLayer);
+      } else {
+        nextAdded = [...addedLayers, newShineLayer];
+      }
+      const nextKfs = { ...layerKeyframes, [id]: kfs };
+      setAddedLayers(nextAdded);
+      setLayerKeyframes(nextKfs);
+      setExpandedTimelineLayerIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      setSelectedTarget(id);
+      setSelectedAssetKey(null);
+      setShineEditSubmode('motion_points');
+      setActiveTool('Shine');
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+        layerKeyframes: nextKfs,
+        layerOrder: nextLayerOrder,
+      });
+      setLastAction(
+        `✨ تم وضع طبقة اللمعة الاحترافية فوق الطبقة المستهدفة مباشرة (${bounds.label}) بنفس حواف وشكل الطبقة الأصلية 100% بدون أي آثار قص`
+      );
+      return id;
+    },
+    [
+      selectedTarget,
+      addedLayers,
+      effectiveLayerOrder,
+      hiddenLayerIds,
+      spriteLayers,
+      traceContoursFromLayerTarget,
+      totalFrames,
+      canvasW,
+      canvasH,
+      currentFrame,
+      layerKeyframes,
+      pushHistory,
+      docTransform,
+      layerTransforms,
+      deletedSpriteIndices,
+    ]
+  );
+
+  const handleUpdateShineConfig = useCallback(
+    async (
+      shineLayerId: string,
+      patch: Partial<ShineLayerConfig>,
+      options?: {
+        regenerateBitmap?: boolean;
+        regenerateKeyframes?: boolean;
+        actionLabel?: string;
+      }
+    ) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+
+      const nextConfig: ShineLayerConfig = {
+        ...targetLayer.shineConfig,
+        ...patch,
+      };
+
+      let nextBitmap = targetLayer.bitmap;
+      let nextPngBytes = targetLayer.pngBytes;
+      let nextDataUrl = targetLayer.dataUrl;
+      let nextW = targetLayer.width;
+      let nextH = targetLayer.height;
+
+      if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
+        const rendered = await renderProceduralShineBitmapAndBytes({
+          presetId: nextConfig.presetId,
+          width: nextConfig.shineWidth || targetLayer.width,
+          height: nextConfig.shineHeight || targetLayer.height,
+          colorPrimary: nextConfig.colorPrimary || '#fde047',
+          colorSecondary: nextConfig.colorSecondary || '#ffffff',
+          beamAngleDeg: nextConfig.beamAngleDeg ?? -32,
+          beamWidthRatio: nextConfig.beamWidthRatio ?? 0.28,
+          beamSoftness: nextConfig.beamSoftness ?? 0.85,
+        });
+        nextBitmap = rendered.bitmap;
+        nextPngBytes = rendered.pngBytes;
+        nextDataUrl = rendered.dataUrl;
+        nextW = rendered.width;
+        nextH = rendered.height;
+      }
+
+      let nextTransform = targetLayer.transform;
+      if (options?.regenerateKeyframes && nextConfig.motionPoints.length >= 1) {
+        const kfs = buildShineKeyframesFromMotionPoints(
+          nextConfig,
+          totalFrames,
+          canvasW,
+          canvasH,
+          targetLayer.transform.opacity || 100
+        );
+        const posAtCur =
+          kfs.position?.[currentFrame] ||
+          kfs.position?.[nextConfig.startFrame] || {
+            x: targetLayer.transform.x,
+            y: targetLayer.transform.y,
+          };
+        nextTransform = {
+          ...targetLayer.transform,
+          x: posAtCur.x,
+          y: posAtCur.y,
+        };
+        setLayerKeyframes((prev) => ({
+          ...prev,
+          [shineLayerId]: {
+            ...prev[shineLayerId],
+            position: kfs.position,
+            opacity: kfs.opacity,
+          },
+        }));
+      }
+
+      setAddedLayers((prev) =>
+        prev.map((l) =>
+          l.id === shineLayerId
+            ? {
+                ...l,
+                bitmap: nextBitmap,
+                originalBitmap: nextBitmap,
+                pngBytes: nextPngBytes,
+                dataUrl: nextDataUrl,
+                width: nextW,
+                height: nextH,
+                bytes: nextPngBytes.byteLength,
+                transform: nextTransform,
+                shineConfig: {
+                  ...nextConfig,
+                  shineWidth: nextW,
+                  shineHeight: nextH,
+                },
+              }
+            : l
+        )
+      );
+
+      if (options?.actionLabel) {
+        setLastAction(options.actionLabel);
+      }
+    },
+    [addedLayers, canvasW, canvasH, totalFrames, currentFrame]
+  );
+
+  const handleAutoTraceShineTarget = useCallback(
+    (shineLayerId: string, overrideTargetId?: string) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const targetId = overrideTargetId || targetLayer.shineConfig.targetLayerId || 'DOCUMENT';
+      const { contours, bounds } = traceContoursFromLayerTarget(targetId, true, 28);
+      handleUpdateShineConfig(
+        shineLayerId,
+        {
+          targetLayerId: targetId,
+          maskContours: contours,
+          maskMode: 'auto_layer_contour',
+          exactLayerAlphaMask: true,
+          referenceFrame: currentFrame,
+        },
+        {
+          actionLabel: `🎯 تم استدعاء وتتبع حواف الطبقة (${bounds.label}) بدقة 100% بدون آثار قص (${contours[0]?.length || 0} نقطة)`,
+        }
+      );
+    },
+    [addedLayers, traceContoursFromLayerTarget, handleUpdateShineConfig, currentFrame]
+  );
+
+  const handleApplyShinePresetMask = useCallback(
+    (shineLayerId: string, preset: 'ring' | 'rect' | 'clear_for_free_draw') => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const bounds = getTargetLayerBoundsAndBitmapAtFrame(
+        targetLayer.shineConfig.targetLayerId,
+        currentFrame
+      );
+      if (preset === 'clear_for_free_draw') {
+        handleUpdateShineConfig(
+          shineLayerId,
+          {
+            maskContours: [[]],
+            maskMode: 'interactive_points',
+          },
+          {
+            actionLabel:
+              '✏️ تم تفريغ نقاط القناع — اضغط الآن بالماوس على الكانفاس لوضع نقاط القناع بحرية حول الشكل',
+          }
+        );
+        setShineEditSubmode('mask_points');
+        setActiveTool('Shine');
+        return;
+      }
+
+      if (preset === 'ring') {
+        const rx = Math.max(30, (bounds.maxX - bounds.minX) / 2);
+        const ry = Math.max(30, (bounds.maxY - bounds.minY) / 2);
+        const contours = generateRingFrameMaskContours(bounds.cx, bounds.cy, rx, ry, 0.28, 24);
+        handleUpdateShineConfig(
+          shineLayerId,
+          {
+            maskContours: contours,
+            maskMode: 'ring_frame',
+          },
+          {
+            actionLabel: '⭕ تم تطبيق قناع إطار دائري مفرغ منحني (مثل إطار الهند) قابل لتحريك النقاط',
+          }
+        );
+        setShineEditSubmode('mask_points');
+        return;
+      }
+
+      if (preset === 'rect') {
+        const w = Math.max(50, bounds.maxX - bounds.minX);
+        const h = Math.max(50, bounds.maxY - bounds.minY);
+        const contours = generateRectMaskContours(bounds.minX, bounds.minY, w, h);
+        handleUpdateShineConfig(
+          shineLayerId,
+          {
+            maskContours: contours,
+            maskMode: 'rect_box',
+          },
+          {
+            actionLabel: '⬜ تم تطبيق قناع مستطيل حول الطبقة قابل لتحريك النقاط',
+          }
+        );
+        setShineEditSubmode('mask_points');
+      }
+    },
+    [addedLayers, getTargetLayerBoundsAndBitmapAtFrame, currentFrame, handleUpdateShineConfig]
+  );
+
+  const handleRemoveLastShineMaskPoint = useCallback(
+    (shineLayerId: string) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const outer = targetLayer.shineConfig.maskContours[0] || [];
+      if (outer.length === 0) return;
+      const nextOuter = outer.slice(0, -1);
+      const nextContours = [nextOuter, ...targetLayer.shineConfig.maskContours.slice(1)];
+      handleUpdateShineConfig(
+        shineLayerId,
+        { maskContours: nextContours },
+        { actionLabel: `تم حذف آخر نقطة قناع (متبقي ${nextOuter.length} نقطة)` }
+      );
+    },
+    [addedLayers, handleUpdateShineConfig]
+  );
+
+  const handleApplyShineMotionDirection = useCallback(
+    (
+      shineLayerId: string,
+      dir: 'diag_tl_br' | 'diag_tr_bl' | 'horiz_lr' | 'vert_tb' | 'reverse'
+    ) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const sc = targetLayer.shineConfig;
+
+      if (dir === 'reverse') {
+        const rev = [...sc.motionPoints].reverse();
+        handleUpdateShineConfig(
+          shineLayerId,
+          { motionPoints: rev },
+          {
+            regenerateKeyframes: true,
+            actionLabel: '⇄ تم عكس اتجاه مسار حركة اللمعة',
+          }
+        );
+        return;
+      }
+
+      const bounds = getTargetLayerBoundsAndBitmapAtFrame(sc.targetLayerId, currentFrame);
+      const spanW = Math.max(60, bounds.maxX - bounds.minX);
+      const spanH = Math.max(60, bounds.maxY - bounds.minY);
+      let nextPts: ShinePoint[] = [];
+      let nextAngle = sc.beamAngleDeg;
+
+      if (dir === 'diag_tl_br') {
+        nextPts = [
+          { x: Number((bounds.cx - spanW * 0.65).toFixed(1)), y: Number((bounds.cy - spanH * 0.55).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.cx + spanW * 0.65).toFixed(1)), y: Number((bounds.cy + spanH * 0.55).toFixed(1)) },
+        ];
+        nextAngle = 135;
+      } else if (dir === 'diag_tr_bl') {
+        nextPts = [
+          { x: Number((bounds.cx + spanW * 0.65).toFixed(1)), y: Number((bounds.cy - spanH * 0.55).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.cx - spanW * 0.65).toFixed(1)), y: Number((bounds.cy + spanH * 0.55).toFixed(1)) },
+        ];
+        nextAngle = 45;
+      } else if (dir === 'horiz_lr') {
+        nextPts = [
+          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+        ];
+        nextAngle = 115;
+      } else if (dir === 'vert_tb') {
+        nextPts = [
+          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy - spanH * 0.7).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy + spanH * 0.7).toFixed(1)) },
+        ];
+        nextAngle = 25;
+      }
+
+      handleUpdateShineConfig(
+        shineLayerId,
+        { motionPoints: nextPts, beamAngleDeg: nextAngle },
+        {
+          regenerateBitmap: sc.presetId !== 'custom_image',
+          regenerateKeyframes: true,
+          actionLabel: '🧭 تم تحديث مسار حركة اللمعة وزاوية الشعاع تلقائياً',
+        }
+      );
+      setShineEditSubmode('motion_points');
+    },
+    [addedLayers, getTargetLayerBoundsAndBitmapAtFrame, currentFrame, handleUpdateShineConfig]
+  );
+
+  const handleAddShineMotionMidpoint = useCallback(
+    (shineLayerId: string) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const pts = targetLayer.shineConfig.motionPoints || [];
+      let nextPts: ShinePoint[];
+      if (pts.length === 0) {
+        nextPts = [
+          { x: Math.round(canvasW * 0.25), y: Math.round(canvasH * 0.25) },
+          { x: Math.round(canvasW * 0.75), y: Math.round(canvasH * 0.75) },
+        ];
+      } else if (pts.length === 1) {
+        nextPts = [
+          pts[0],
+          { x: Math.min(canvasW, pts[0].x + 120), y: Math.min(canvasH, pts[0].y + 120) },
+        ];
+      } else {
+        const last = pts[pts.length - 1];
+        const prev = pts[pts.length - 2];
+        const mid: ShinePoint = {
+          x: Number(((prev.x + last.x) / 2 + 25).toFixed(1)),
+          y: Number(((prev.y + last.y) / 2 - 25).toFixed(1)),
+        };
+        nextPts = [...pts.slice(0, -1), mid, last];
+      }
+      handleUpdateShineConfig(
+        shineLayerId,
+        { motionPoints: nextPts },
+        {
+          regenerateKeyframes: true,
+          actionLabel: `📍 تم إضافة نقطة مسار حركة للّمعـة (إجمالي ${nextPts.length} نقاط)`,
+        }
+      );
+      setShineEditSubmode('motion_points');
+    },
+    [addedLayers, canvasW, canvasH, handleUpdateShineConfig]
+  );
+
+  const handleRemoveLastShineMotionPoint = useCallback(
+    (shineLayerId: string) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const pts = targetLayer.shineConfig.motionPoints || [];
+      if (pts.length <= 2) return;
+      const nextPts = [...pts.slice(0, -2), pts[pts.length - 1]];
+      handleUpdateShineConfig(
+        shineLayerId,
+        { motionPoints: nextPts },
+        {
+          regenerateKeyframes: true,
+          actionLabel: `تم حذف النقطة الوسطى من مسار اللمعة (متبقي ${nextPts.length} نقاط)`,
+        }
+      );
+    },
+    [addedLayers, handleUpdateShineConfig]
+  );
+
+  const handleUploadCustomShineImage = useCallback(
+    async (shineLayerId: string, file: File) => {
+      try {
+        const rawBm = await createImageBitmap(file);
+        const feathered = await featherCustomShineBitmap(rawBm);
+
+        setAddedLayers((prev) =>
+          prev.map((l) =>
+            l.id === shineLayerId && l.shineConfig
+              ? {
+                  ...l,
+                  bitmap: feathered.bitmap,
+                  originalBitmap: feathered.bitmap,
+                  originalWidth: feathered.width,
+                  originalHeight: feathered.height,
+                  pngBytes: feathered.pngBytes,
+                  dataUrl: feathered.dataUrl,
+                  width: feathered.width,
+                  height: feathered.height,
+                  bytes: feathered.pngBytes.byteLength,
+                  shineConfig: {
+                    ...l.shineConfig,
+                    presetId: 'custom_image',
+                    shineWidth: feathered.width,
+                    shineHeight: feathered.height,
+                  },
+                }
+              : l
+          )
+        );
+        setLastAction(`✨ تم رفع صورة لمعة مخصصة وتنعيم حوافها لمنع آثار القص (${file.name})`);
+      } catch {
+        setLastAction('تعذر قراءة صورة اللمعة المرفوعة');
+      }
+    },
+    []
+  );
+
+  const handleSelectSvgaAssetAsShineImage = useCallback(
+    async (shineLayerId: string, assetKey: string) => {
+      const bm = bitmaps[assetKey];
+      const th = thumbs[assetKey];
+      const rawBytes = movie.im[assetKey];
+      if (!bm || !th || !rawBytes) return;
+
+      const feathered = await featherCustomShineBitmap(bm);
+
+      setAddedLayers((prev) =>
+        prev.map((l) =>
+          l.id === shineLayerId && l.shineConfig
+            ? {
+                ...l,
+                bitmap: feathered.bitmap,
+                originalBitmap: feathered.bitmap,
+                originalWidth: feathered.width,
+                originalHeight: feathered.height,
+                pngBytes: feathered.pngBytes,
+                dataUrl: feathered.dataUrl,
+                width: feathered.width,
+                height: feathered.height,
+                bytes: feathered.pngBytes.byteLength,
+                shineConfig: {
+                  ...l.shineConfig,
+                  presetId: 'custom_image',
+                  shineWidth: feathered.width,
+                  shineHeight: feathered.height,
+                },
+              }
+            : l
+        )
+      );
+      setLastAction(`✨ تم اختيار صورة اللمعة (${assetKey}) وتنعيم حوافها لمنع آثار القص`);
+    },
+    [bitmaps, thumbs, movie.im]
+  );
+
+  const handleConvertExistingSpriteToShineLayer = useCallback(
+    async (spriteIdx: number) => {
+      const sp = movie.sp[spriteIdx];
+      if (!sp) return;
+      const bm = sp.key ? bitmaps[sp.key] : undefined;
+      const th = sp.key ? thumbs[sp.key] : undefined;
+      const rawBytes = sp.key ? movie.im[sp.key] : undefined;
+      const extracted = extractShineConfigFromExistingSprite(
+        sp.fr,
+        th?.w || bm?.width || canvasW,
+        th?.h || bm?.height || canvasH,
+        canvasW,
+        canvasH
+      );
+
+      let shineBm = bm;
+      let shineBytes = rawBytes;
+      let shineUrl = th?.url || '';
+      let shineW = th?.w || bm?.width || 300;
+      let shineH = th?.h || bm?.height || 300;
+
+      if (!shineBm || !shineBytes) {
+        const rendered = await renderProceduralShineBitmapAndBytes({
+          presetId: 'royal_gold',
+          width: 320,
+          height: 320,
+          colorPrimary: '#fde047',
+          colorSecondary: '#ffffff',
+          beamAngleDeg: -32,
+          beamWidthRatio: 0.28,
+          beamSoftness: 0.85,
+        });
+        shineBm = rendered.bitmap;
+        shineBytes = rendered.pngBytes;
+        shineUrl = rendered.dataUrl;
+        shineW = rendered.width;
+        shineH = rendered.height;
+      }
+
+      const maskContours =
+        extracted?.maskContours && extracted.maskContours.length > 0
+          ? extracted.maskContours
+          : generateRingFrameMaskContours(
+              canvasW / 2,
+              canvasH / 2,
+              Math.min(canvasW, canvasH) * 0.36,
+              Math.min(canvasW, canvasH) * 0.36,
+              0.28,
+              24
+            );
+      const motionPoints =
+        extracted?.motionPoints && extracted.motionPoints.length >= 2
+          ? extracted.motionPoints
+          : [
+              { x: Math.round(canvasW * 0.2), y: Math.round(canvasH * 0.2) },
+              { x: Math.round(canvasW * 0.5), y: Math.round(canvasH * 0.5) },
+              { x: Math.round(canvasW * 0.8), y: Math.round(canvasH * 0.8) },
+            ];
+      const sweepStart = extracted?.startFrame ?? 0;
+      const sweepEnd = extracted?.endFrame ?? Math.max(1, totalFrames - 1);
+
+      const id = `layer_shine_sp_${spriteIdx}_${Date.now()}`;
+      const newConfig: ShineLayerConfig = {
+        enabled: true,
+        targetLayerId: 'DOCUMENT',
+        followTargetLayerTransform: false,
+        exactLayerAlphaMask: true,
+        blendMode: 'screen',
+        maskMode: 'interactive_points',
+        maskContours,
+        motionPoints,
+        presetId: sp.key && bm ? 'custom_image' : 'royal_gold',
+        colorPrimary: '#fde047',
+        colorSecondary: '#ffffff',
+        beamAngleDeg: -32,
+        beamWidthRatio: 0.28,
+        beamSoftness: 0.85,
+        shineWidth: shineW,
+        shineHeight: shineH,
+        startFrame: sweepStart,
+        endFrame: sweepEnd,
+        loopCount: 1,
+        pauseFrames: 0,
+        referenceFrame: currentFrame,
+      };
+
+      const kfs = buildShineKeyframesFromMotionPoints(
+        newConfig,
+        totalFrames,
+        canvasW,
+        canvasH,
+        100
+      );
+      const startPos = kfs.position?.[sweepStart] || { x: 0, y: 0 };
+
+      const newShineLayer: AddedLayer = {
+        id,
+        assetKey: `${sp.key || 'shine'}_editable`,
+        name: `✨ لمعة: ${sp.key || `#${movie.sp.length - spriteIdx}`}`,
+        bitmap: shineBm,
+        originalBitmap: shineBm,
+        originalWidth: shineW,
+        originalHeight: shineH,
+        pngBytes: shineBytes,
+        dataUrl: shineUrl,
+        width: shineW,
+        height: shineH,
+        bytes: shineBytes.byteLength,
+        transform: { ...DEFAULT_TRANSFORM, x: startPos.x, y: startPos.y, opacity: 100 },
+        inFrame: 0,
+        outFrame: totalFrames - 1,
+        shineConfig: newConfig,
+      };
+
+      // Hide original sprite so the new editable shine layer replaces it cleanly
+      setHiddenLayerIds((prev) => {
+        const next = new Set(prev);
+        next.add(`sprite_${spriteIdx}`);
+        return next;
+      });
+      setAddedLayers((prev) => [...prev, newShineLayer]);
+      setLayerKeyframes((prev) => ({ ...prev, [id]: kfs }));
+      setSelectedTarget(id);
+      setSelectedAssetKey(null);
+      setShineEditSubmode('mask_points');
+      setActiveTool('Shine');
+      setLastAction(
+        `✨ تم استخراج قناع ومسار لمعة الطبقة (${sp.key}) لتحرير نقاطها بحرية على الكانفاس`
+      );
+    },
+    [movie.sp, movie.im, bitmaps, thumbs, canvasW, canvasH, totalFrames, currentFrame]
+  );
+
+  // Target options list for SvgaShineStudioPanel
+  const shineTargetOptions = useMemo<ShineTargetOption[]>(() => {
+    const opts: ShineTargetOption[] = [
+      { id: 'DOCUMENT', label: `📐 كامل إطار المشروع (${canvasW}×${canvasH})` },
+    ];
+    addedLayers.forEach((al) => {
+      if (al.shineConfig?.enabled) return;
+      opts.push({
+        id: al.id,
+        label: `🖼️ طبقة مضافة: ${al.name} (${al.width}×${al.height})`,
+        assetKey: al.assetKey,
+      });
+    });
+    spriteLayers.forEach((sl) => {
+      opts.push({
+        id: sl.id,
+        label: `🎞️ طبقة #${sl.displayNum}: ${sl.key}`,
+        assetKey: sl.key,
+      });
+    });
+    shapes.forEach((sh) => {
+      opts.push({
+        id: sh.id,
+        label: `🔷 شكل/نص: ${sh.name}`,
+      });
+    });
+    return opts;
+  }, [canvasW, canvasH, addedLayers, spriteLayers, shapes]);
+
   // Expose programmatic helpers on window for automated E2E verification
   useEffect(() => {
     (window as any).__svgaCopyMotionToAddedLayer = handleCopyMotionFromSpriteToAddedLayer;
@@ -2885,6 +4681,8 @@ export default function SvgaAeEditor({
     (window as any).__svgaFlipLayerHorizontally = handleFlipLayerHorizontally;
     (window as any).__svgaBakeAddedLayerDimensions = handleBakeAddedLayerDimensions;
     (window as any).__svgaUpdateLayerTransform = updateLayerTransformById;
+    (window as any).__svgaCreateShineLayer = handleCreateShineLayer;
+    (window as any).__svgaUpdateShineConfig = handleUpdateShineConfig;
     (window as any).__svgaSeedTestProject = async () => {
       const c1 = document.createElement('canvas');
       c1.width = 240;
@@ -2973,6 +4771,7 @@ export default function SvgaAeEditor({
         outFrame: a.outFrame,
         copiedFromKey: a.copiedFromKey || null,
         copiedFramesCount: a.copiedFrames?.length || 0,
+        shineConfig: a.shineConfig || null,
       })),
       selectedTarget,
     });
@@ -2982,6 +4781,8 @@ export default function SvgaAeEditor({
     handleFlipLayerHorizontally,
     handleBakeAddedLayerDimensions,
     updateLayerTransformById,
+    handleCreateShineLayer,
+    handleUpdateShineConfig,
     movie.sp.length,
     addedLayers,
     selectedTarget,
@@ -3071,7 +4872,7 @@ export default function SvgaAeEditor({
       if (hiddenLayerIds.has(al.id)) continue;
       if (currentFrame < al.inFrame || currentFrame > al.outFrame) continue;
       const lt = getEffectiveTransform(al.id, al.assetKey, currentFrame);
-      if (al.copiedFrames && al.copiedFrames.length > 0) {
+      if (al.copiedFrames && al.copiedFrames.length > 0 && !al.shineConfig?.enabled) {
         const safeIdx = Math.max(0, Math.min(al.copiedFrames.length - 1, currentFrame));
         const cf = al.copiedFrames[safeIdx];
         if (!cf || cf.a <= 0.01) continue;
@@ -3226,8 +5027,11 @@ export default function SvgaAeEditor({
   };
 
   const dragRef = useRef<{
-    mode: 'moveLayer' | 'panStage' | 'cropBox' | 'scaleLayer';
+    mode: 'moveLayer' | 'panStage' | 'cropBox' | 'scaleLayer' | 'dragShinePoint';
     handle?: 'tl' | 'tr' | 'br' | 'bl' | 'tm' | 'mr' | 'bm' | 'ml';
+    shineKind?: 'mask' | 'motion';
+    shineContourIdx?: number;
+    shinePointIdx?: number;
     targetId: string;
     assetKey: string | null;
     startX: number;
@@ -3236,6 +5040,7 @@ export default function SvgaAeEditor({
     origY: number;
     origSx?: number;
     origSy?: number;
+    origZoom?: number;
     centerCanvasX?: number;
     centerCanvasY?: number;
     initialDist?: number;
@@ -3272,8 +5077,94 @@ export default function SvgaAeEditor({
       return;
     }
 
-    // 0. Handle hit-test: if clicking on a bounding box scale handle of the currently selected layer
-    if (activeTool === 'Move' && activeHandlesRef.current.length > 0) {
+    // 0a. Check if clicking on an interactive Shine Mask Point or Motion Waypoint handle
+    const activeShineLayer = addedLayers.find(
+      (l) => l.id === selectedTarget && l.shineConfig?.enabled
+    );
+    if (activeShineLayer && activeShineLayer.shineConfig && shineHandlesRef.current.length > 0) {
+      const cv = canvasRef.current;
+      if (cv) {
+        const rect = cv.getBoundingClientRect();
+        const scaleX = rect.width / Math.max(1, canvasW);
+        const scaleY = rect.height / Math.max(1, canvasH);
+        let hitShineHandle: (typeof shineHandlesRef.current)[0] | null = null;
+        // Prioritize whichever submode is active, or check all handles
+        const prioritizedHandles = [...shineHandlesRef.current].sort((a, b) => {
+          const aMatch =
+            (shineEditSubmode === 'mask_points' && a.kind === 'mask') ||
+            (shineEditSubmode === 'motion_points' && a.kind === 'motion')
+              ? 0
+              : 1;
+          const bMatch =
+            (shineEditSubmode === 'mask_points' && b.kind === 'mask') ||
+            (shineEditSubmode === 'motion_points' && b.kind === 'motion')
+              ? 0
+              : 1;
+          return aMatch - bMatch;
+        });
+
+        for (const sh of prioritizedHandles) {
+          const screenX = rect.left + sh.x * scaleX;
+          const screenY = rect.top + sh.y * scaleY;
+          if (Math.hypot(e.clientX - screenX, e.clientY - screenY) <= 13) {
+            hitShineHandle = sh;
+            break;
+          }
+        }
+
+        if (hitShineHandle) {
+          // Alt+Click deletes the mask point or motion waypoint
+          if (e.altKey) {
+            if (hitShineHandle.kind === 'mask') {
+              const nextContours = activeShineLayer.shineConfig.maskContours.map((c, cIdx) =>
+                cIdx === hitShineHandle!.contourIdx
+                  ? c.filter((_, pIdx) => pIdx !== hitShineHandle!.pointIdx)
+                  : c
+              );
+              handleUpdateShineConfig(
+                activeShineLayer.id,
+                { maskContours: nextContours },
+                { actionLabel: `تم حذف نقطة القناع #${hitShineHandle.pointIdx + 1}` }
+              );
+            } else if (
+              hitShineHandle.kind === 'motion' &&
+              activeShineLayer.shineConfig.motionPoints.length > 2
+            ) {
+              const nextMotion = activeShineLayer.shineConfig.motionPoints.filter(
+                (_, pIdx) => pIdx !== hitShineHandle!.pointIdx
+              );
+              handleUpdateShineConfig(
+                activeShineLayer.id,
+                { motionPoints: nextMotion },
+                {
+                  regenerateKeyframes: true,
+                  actionLabel: `تم حذف نقطة مسار اللمعة P${hitShineHandle.pointIdx + 1}`,
+                }
+              );
+            }
+            return;
+          }
+
+          dragRef.current = {
+            mode: 'dragShinePoint',
+            shineKind: hitShineHandle.kind,
+            shineContourIdx: hitShineHandle.contourIdx,
+            shinePointIdx: hitShineHandle.pointIdx,
+            targetId: activeShineLayer.id,
+            assetKey: null,
+            startX: e.clientX,
+            startY: e.clientY,
+            origX: hitShineHandle.x,
+            origY: hitShineHandle.y,
+          };
+          e.currentTarget.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+    }
+
+    // 0b. Handle hit-test: if clicking on a bounding box scale handle of the currently selected layer
+    if ((activeTool === 'Move' || activeTool === 'Shine') && activeHandlesRef.current.length > 0) {
       const cv = canvasRef.current;
       if (cv) {
         const rect = cv.getBoundingClientRect();
@@ -3305,6 +5196,7 @@ export default function SvgaAeEditor({
             origY: curT.y,
             origSx: curT.sx,
             origSy: curT.sy,
+            origZoom: curT.zoom ?? 100,
             centerCanvasX: center.x,
             centerCanvasY: center.y,
             initialDist: Math.max(4, initDist),
@@ -3318,6 +5210,54 @@ export default function SvgaAeEditor({
     }
 
     const pt = clientToCanvasCoords(e);
+
+    // Shine tool: add mask contour point or motion waypoint directly by clicking on Canvas (or create Shine layer if none active)
+    if (
+      activeTool === 'Shine' ||
+      (activeShineLayer &&
+        activeShineLayer.shineConfig &&
+        activeShineLayer.shineConfig.maskMode === 'interactive_points' &&
+        shineEditSubmode === 'mask_points')
+    ) {
+      if (!activeShineLayer || !activeShineLayer.shineConfig) {
+        const hit = hitTestCanvasPoint(pt.x, pt.y);
+        handleCreateShineLayer(hit.target);
+        return;
+      }
+
+      if (shineEditSubmode === 'motion_points') {
+        const curMotion = activeShineLayer.shineConfig.motionPoints || [];
+        const nextMotion = [...curMotion, { x: pt.x, y: pt.y }];
+        handleUpdateShineConfig(
+          activeShineLayer.id,
+          { motionPoints: nextMotion },
+          {
+            regenerateKeyframes: true,
+            actionLabel: `📍 تم وضع نقطة مسار حركة اللمعة P${nextMotion.length} عند (${pt.x}, ${pt.y})`,
+          }
+        );
+        return;
+      }
+
+      // Default in Shine tool / mask_points submode: append point to outer mask contour
+      const curOuter = activeShineLayer.shineConfig.maskContours[0] || [];
+      const nextOuter = [...curOuter, { x: pt.x, y: pt.y }];
+      const nextContours = [
+        nextOuter,
+        ...activeShineLayer.shineConfig.maskContours.slice(1),
+      ];
+      handleUpdateShineConfig(
+        activeShineLayer.id,
+        {
+          maskContours: nextContours,
+          maskMode: 'interactive_points',
+        },
+        {
+          actionLabel: `🎯 تم وضع نقطة قناع اللمعة #${nextOuter.length} عند (${pt.x}, ${pt.y})`,
+        }
+      );
+      return;
+    }
 
     // Crop tool (or Shift+drag in Move tool): drag a rectangular selection on the layer
     if (activeTool === 'Crop' || (activeTool === 'Move' && e.shiftKey)) {
@@ -3401,12 +5341,23 @@ export default function SvgaAeEditor({
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragRef.current) {
-      if (activeTool === 'Move' && activeHandlesRef.current.length > 0) {
-        const cv = canvasRef.current;
-        if (cv) {
-          const rect = cv.getBoundingClientRect();
-          const scaleX = rect.width / Math.max(1, canvasW);
-          const scaleY = rect.height / Math.max(1, canvasH);
+      const cv = canvasRef.current;
+      if (cv) {
+        const rect = cv.getBoundingClientRect();
+        const scaleX = rect.width / Math.max(1, canvasW);
+        const scaleY = rect.height / Math.max(1, canvasH);
+        if (shineHandlesRef.current.length > 0) {
+          const hoveredShinePt = shineHandlesRef.current.find((sh) => {
+            const screenX = rect.left + sh.x * scaleX;
+            const screenY = rect.top + sh.y * scaleY;
+            return Math.hypot(e.clientX - screenX, e.clientY - screenY) <= 13;
+          });
+          if (hoveredShinePt) {
+            e.currentTarget.style.cursor = 'pointer';
+            return;
+          }
+        }
+        if ((activeTool === 'Move' || activeTool === 'Shine') && activeHandlesRef.current.length > 0) {
           const hoveredHandle = activeHandlesRef.current.find((h) => {
             const screenX = rect.left + h.x * scaleX;
             const screenY = rect.top + h.y * scaleY;
@@ -3415,10 +5366,41 @@ export default function SvgaAeEditor({
           if (hoveredHandle) {
             e.currentTarget.style.cursor = hoveredHandle.cursor;
             return;
-          } else {
-            e.currentTarget.style.cursor = 'default';
           }
         }
+        e.currentTarget.style.cursor = activeTool === 'Shine' ? 'crosshair' : 'default';
+      }
+      return;
+    }
+
+    if (dragRef.current.mode === 'dragShinePoint') {
+      const pt = clientToCanvasCoords(e);
+      const shineLayerId = dragRef.current.targetId;
+      const shineKind = dragRef.current.shineKind;
+      const cIdx = dragRef.current.shineContourIdx ?? 0;
+      const pIdx = dragRef.current.shinePointIdx ?? 0;
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+
+      if (shineKind === 'mask') {
+        const nextContours = targetLayer.shineConfig.maskContours.map((contour, idx) =>
+          idx === cIdx
+            ? contour.map((oldPt, i) => (i === pIdx ? { x: pt.x, y: pt.y } : oldPt))
+            : contour
+        );
+        handleUpdateShineConfig(shineLayerId, {
+          maskContours: nextContours,
+          maskMode: 'interactive_points',
+        });
+      } else if (shineKind === 'motion') {
+        const nextMotion = targetLayer.shineConfig.motionPoints.map((oldPt, i) =>
+          i === pIdx ? { x: pt.x, y: pt.y } : oldPt
+        );
+        handleUpdateShineConfig(
+          shineLayerId,
+          { motionPoints: nextMotion },
+          { regenerateKeyframes: true }
+        );
       }
       return;
     }
@@ -3450,6 +5432,7 @@ export default function SvgaAeEditor({
         initialDist = 50,
         origSx = 100,
         origSy = 100,
+        origZoom = 100,
         handle = 'br',
         initialHandleX = centerCanvasX + 50,
         initialHandleY = centerCanvasY + 50,
@@ -3466,6 +5449,20 @@ export default function SvgaAeEditor({
       if (handle === 'tl' || handle === 'tr' || handle === 'br' || handle === 'bl') {
         const curDist = Math.hypot(pt.x - centerCanvasX, pt.y - centerCanvasY);
         const factor = curDist / Math.max(2, initialDist);
+        const kfKey = dragRef.current.targetId === 'GROUP_ALL' ? 'DOCUMENT' : dragRef.current.targetId;
+        const hasZoomKf = Boolean(
+          layerKeyframes[kfKey]?.zoom && Object.keys(layerKeyframes[kfKey].zoom!).length > 0
+        );
+        if (hasZoomKf) {
+          const newZoom = Math.max(2, Math.min(1000, Number((origZoom * factor).toFixed(1))));
+          updateLayerTransformById(
+            dragRef.current.targetId,
+            dragRef.current.assetKey,
+            { zoom: newZoom },
+            `تكبير/تصغير بدون مط (${newZoom}%)`
+          );
+          return;
+        }
         newSx = signX * Math.max(2, Math.min(1000, Number((absOrigSx * factor).toFixed(1))));
         newSy = signY * Math.max(2, Math.min(1000, Number((absOrigSy * factor).toFixed(1))));
       } else if (handle === 'mr' || handle === 'ml') {
@@ -3504,11 +5501,19 @@ export default function SvgaAeEditor({
     if (dragRef.current) {
       const mode = dragRef.current.mode;
       const movedTarget = dragRef.current.targetId;
+      const shineKind = dragRef.current.shineKind;
+      const shinePtIdx = dragRef.current.shinePointIdx ?? 0;
       dragRef.current = null;
       if (mode === 'cropBox') {
         setLastAction('تم تحديد المنطقة بالماوس — اختر قص أو فصل أو مسح من الشريط العلوي');
       } else if (mode === 'scaleLayer') {
         setLastAction(`تم تعديل مقاس الطبقة (${movedTarget}) بنجاح`);
+      } else if (mode === 'dragShinePoint') {
+        setLastAction(
+          shineKind === 'mask'
+            ? `🎯 تم تحريك نقطة قناع اللمعة #${shinePtIdx + 1}`
+            : `📍 تم تحريك نقطة مسار اللمعة P${shinePtIdx + 1} وتحديث الحركة`
+        );
       } else {
         setLastAction(`Moved ${selectedAssetKey || movedTarget}`);
       }
@@ -3560,6 +5565,9 @@ export default function SvgaAeEditor({
           assetKey,
           name,
           bitmap: bm,
+          originalBitmap: bm,
+          originalWidth: bm.width,
+          originalHeight: bm.height,
           pngBytes,
           dataUrl: c.toDataURL('image/png'),
           width: bm.width,
@@ -3951,22 +5959,109 @@ export default function SvgaAeEditor({
   const buildEditedSvgaBlob = async (): Promise<Blob> => {
     const extraLayers: DecomposedExtraLayer[] = [];
 
+    // Helper to resolve target layer world matrix at any frame for Shine layers
+    const resolveTargetMatrixAtFrame = (
+      targetLayerId: string,
+      frameIdx: number
+    ): [number, number, number, number, number, number] | null => {
+      if (!targetLayerId || targetLayerId === 'DOCUMENT') {
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return buildPivotTransformMatrix(canvasW / 2, canvasH / 2, canvasW / 2, canvasH / 2, dt);
+      }
+      if (targetLayerId.startsWith('sprite_')) {
+        const sIdx = Number(targetLayerId.replace('sprite_', ''));
+        const sp = movie.sp[sIdx];
+        if (!sp) return null;
+        const resolved = resolveSpriteFrameAt(sp, frameIdx, totalFrames, spriteFrameRanges[sIdx]);
+        const f = resolved.frameObj || sp.fr.find((fr) => fr && fr.a > 0.001) || sp.fr[0];
+        if (!f) return null;
+        const bm = sp.key ? bitmaps[sp.key] : undefined;
+        const assetW = bm?.width || thumbs[sp.key]?.w || f.w || canvasW;
+        const assetH = bm?.height || thumbs[sp.key]?.h || f.h || canvasH;
+        const lt = getEffectiveTransform(targetLayerId, sp.key, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeSpriteFrameMatrix(f, assetW, assetH, canvasW, canvasH, lt, dt);
+      }
+      const targetAl = addedLayers.find((x) => x.id === targetLayerId);
+      if (targetAl) {
+        const lt = getEffectiveTransform(targetAl.id, targetAl.assetKey, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeAddedLayerFrameMatrix(
+          targetAl.width,
+          targetAl.height,
+          canvasW,
+          canvasH,
+          lt,
+          dt
+        );
+      }
+      const targetSh = shapes.find((x) => x.id === targetLayerId);
+      if (targetSh) {
+        const lt = getEffectiveTransform(targetSh.id, targetSh.assetKey, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        return computeAddedLayerFrameMatrix(targetSh.w, targetSh.h, canvasW, canvasH, lt, dt);
+      }
+      return null;
+    };
+
     for (const al of addedLayers) {
       if (hiddenLayerIds.has(al.id)) continue;
       const kfForAl = layerKeyframes[al.id];
-      const hasScaleKeyframes = Boolean(kfForAl?.scale && Object.keys(kfForAl.scale).length > 0);
-      const absSx = Math.abs(al.transform.sx);
-      const absSy = Math.abs(al.transform.sy);
+      const isShineLayer = Boolean(al.shineConfig?.enabled);
+      const hasScaleKeyframes = Boolean(
+        (kfForAl?.scale && Object.keys(kfForAl.scale).length > 0) ||
+          (kfForAl?.zoom && Object.keys(kfForAl.zoom).length > 0)
+      );
+      const zoomFactor = (al.transform.zoom ?? 100) / 100;
+      const absSx = Math.abs(al.transform.sx) * zoomFactor;
+      const absSy = Math.abs(al.transform.sy) * zoomFactor;
       const needsDimensionBake =
-        !hasScaleKeyframes && (Math.abs(absSx - 100) > 0.25 || Math.abs(absSy - 100) > 0.25);
+        !isShineLayer &&
+        !hasScaleKeyframes &&
+        (Math.abs(absSx - 100) > 0.25 || Math.abs(absSy - 100) > 0.25);
 
       let exportPngBytes = al.pngBytes;
       let exportW = al.width;
       let exportH = al.height;
       let exportTransform: LayerTransform = { ...al.transform };
       let exportCopiedFrames = al.copiedFrames;
+      const sourceBm = al.originalBitmap || al.bitmap;
 
-      if (needsDimensionBake && al.bitmap) {
+      if (isShineLayer && al.shineConfig) {
+        const refFrame = al.shineConfig.referenceFrame ?? 0;
+        const refTargetMat =
+          al.shineConfig.followTargetLayerTransform &&
+          al.shineConfig.targetLayerId &&
+          al.shineConfig.targetLayerId !== 'DOCUMENT'
+            ? resolveTargetMatrixAtFrame(al.shineConfig.targetLayerId, refFrame) || undefined
+            : undefined;
+        exportCopiedFrames = buildClippedShineSvgaFrames({
+          totalFrames,
+          shineWidth: exportW,
+          shineHeight: exportH,
+          canvasW,
+          canvasH,
+          inFrame: al.inFrame,
+          outFrame: al.outFrame,
+          baseTransform: exportTransform,
+          keyframes: kfForAl,
+          copiedFrames: al.copiedFrames,
+          docTransformAtFrame: (fIdx) =>
+            interpolateLayerTransform(docTransform, layerKeyframes['DOCUMENT'], fIdx),
+          config: {
+            ...al.shineConfig,
+            referenceTargetMatrix: refTargetMat,
+          },
+          targetMatrixAtFrame:
+            al.shineConfig.followTargetLayerTransform &&
+            al.shineConfig.targetLayerId &&
+            al.shineConfig.targetLayerId !== 'DOCUMENT'
+              ? (fIdx) => resolveTargetMatrixAtFrame(al.shineConfig!.targetLayerId, fIdx)
+              : undefined,
+        });
+      }
+
+      if (needsDimensionBake && sourceBm) {
         const bakedW = Math.max(2, Math.round((al.width * absSx) / 100));
         const bakedH = Math.max(2, Math.round((al.height * absSy) / 100));
         const c = document.createElement('canvas');
@@ -3974,7 +6069,7 @@ export default function SvgaAeEditor({
         c.height = bakedH;
         const ctx = c.getContext('2d');
         if (ctx) {
-          ctx.drawImage(al.bitmap, 0, 0, bakedW, bakedH);
+          ctx.drawImage(sourceBm, 0, 0, bakedW, bakedH);
           const blob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
           if (blob) {
             const rawBaked = new Uint8Array(await blob.arrayBuffer());
@@ -3985,6 +6080,7 @@ export default function SvgaAeEditor({
               ...al.transform,
               sx: al.transform.sx < 0 ? -100 : 100,
               sy: al.transform.sy < 0 ? -100 : 100,
+              zoom: 100,
             };
             if (al.copiedFrames && al.copiedFrames.length > 0) {
               exportCopiedFrames = retargetCopiedFramesDimensions(al.copiedFrames, bakedW, bakedH);
@@ -4053,6 +6149,7 @@ export default function SvgaAeEditor({
       assetDimensions,
       extraLayers,
       mergedGroups,
+      layerOrder: effectiveLayerOrder,
     });
 
     const deflated = await compressDeflate(rawProto);
@@ -4287,6 +6384,11 @@ export default function SvgaAeEditor({
                 Icon: Scissors,
                 label: 'Crop / Cut (تحديد وقص جزء من الطبقة بالماوس وفصله أو تحريكه)',
               },
+              {
+                id: 'Shine',
+                Icon: Sparkles,
+                label: 'Shine (أداة الطبقة اللامعة ونقاط تحرير القناع والحركة مثل إطار الهند)',
+              },
               { id: 'Frame', Icon: Hash, label: 'Frame (Canvas size & FPS)' },
               { id: 'Shape', Icon: Square, label: 'Shape (Add shape layer)' },
               { id: 'Pen', Icon: PenTool, label: 'Pen (Draw vector path layer)' },
@@ -4304,6 +6406,20 @@ export default function SvgaAeEditor({
                 aria-label={t.label}
                 onClick={() => {
                   setActiveTool(t.id);
+                  if (t.id === 'Shine') {
+                    const curShine = addedLayers.find(
+                      (l) => l.id === selectedTarget && l.shineConfig?.enabled
+                    );
+                    if (!curShine) {
+                      const anyShine = addedLayers.find((l) => l.shineConfig?.enabled);
+                      if (anyShine) {
+                        setSelectedTarget(anyShine.id);
+                        setSelectedAssetKey(null);
+                      } else {
+                        handleCreateShineLayer();
+                      }
+                    }
+                  }
                   if (t.id === 'Frame') {
                     setSelectedTarget('DOCUMENT');
                     setSelectedAssetKey(null);
@@ -4318,16 +6434,20 @@ export default function SvgaAeEditor({
                   padding: '0 6px',
                   borderRadius: '6px',
                   border: on
-                    ? t.id === 'Crop'
+                    ? t.id === 'Crop' || t.id === 'Shine'
                       ? '1px solid #f59e0b'
                       : '1px solid #2e2e42'
                     : '1px solid transparent',
                   background: on
-                    ? t.id === 'Crop'
+                    ? t.id === 'Crop' || t.id === 'Shine'
                       ? 'rgba(245,158,11,0.18)'
                       : '#191924'
                     : 'transparent',
-                  color: on ? (t.id === 'Crop' ? '#fde047' : '#f2f2f7') : '#8e8ea0',
+                  color: on
+                    ? t.id === 'Crop' || t.id === 'Shine'
+                      ? '#fde047'
+                      : '#f2f2f7'
+                    : '#8e8ea0',
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -4340,13 +6460,18 @@ export default function SvgaAeEditor({
           })}
           <span
             style={{
-              color: activeTool === 'Crop' ? '#fde047' : '#7c7c8e',
+              color:
+                activeTool === 'Crop' || activeTool === 'Shine' ? '#fde047' : '#7c7c8e',
               fontSize: '11px',
               marginLeft: '5px',
-              fontWeight: activeTool === 'Crop' ? 700 : 400,
+              fontWeight: activeTool === 'Crop' || activeTool === 'Shine' ? 700 : 400,
             }}
           >
-            {activeTool === 'Crop' ? '✂ قص وتحديد بالماوس' : activeTool}
+            {activeTool === 'Crop'
+              ? '✂ قص وتحديد بالماوس'
+              : activeTool === 'Shine'
+                ? '✨ لمعة ونقاط تحرير'
+                : activeTool}
           </span>
           {activeTool === 'Pen' && penDraftPoints.length > 0 && (
             <button
@@ -4618,6 +6743,29 @@ export default function SvgaAeEditor({
             >
               <ImagePlus size={13} color="#a0a0b4" />
               <span>Add image layer</span>
+            </button>
+            <button
+              type="button"
+              id="edAddShineLayerBtn"
+              onClick={() => handleCreateShineLayer()}
+              title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
+              style={{
+                padding: '5px 10px',
+                borderRadius: '6px',
+                border: '1px solid rgba(245, 158, 11, 0.45)',
+                background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.12))',
+                color: '#fde68a',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11.5px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Sparkles size={13} color="#fbbf24" />
+              <span>✨ إضافة لمعة (Shine)</span>
             </button>
             <button
               type="button"
@@ -5166,22 +7314,819 @@ export default function SvgaAeEditor({
                     );
                   })}
 
-                  {/* Added Shape / Text Layers */}
-                  {shapes.map((sh, index) => {
-                    const isHidden = hiddenLayerIds.has(sh.id);
-                    const isSel = selectedTarget === sh.id;
+                  {/* Unified Visual Layers List (in true stacking hierarchy order) */}
+                  {filteredUnifiedLayers.map((layerItem) => {
+                    const isHidden = hiddenLayerIds.has(layerItem.id);
+                    const isSel = selectedTarget === layerItem.id;
+
+                    if (layerItem.type === 'shape') {
+                      const sh = layerItem.shape!;
+                      return (
+                        <div
+                          key={sh.id}
+                          onClick={() => {
+                            setSelectedTarget(sh.id);
+                            setSelectedAssetKey(null);
+                          }}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '5px',
+                            padding: '6px 8px',
+                            borderRadius: '7px',
+                            cursor: 'pointer',
+                            marginTop: '3px',
+                            background: isSel ? '#1d1d2d' : 'rgba(255,255,255,0.02)',
+                            border: isSel ? '1px solid #7c5cff' : '1px solid #222230',
+                            opacity: isHidden ? 0.45 : 1,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleLayerVisibility(sh.id);
+                              }}
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: isHidden ? '#555566' : '#8e8ea0',
+                                cursor: 'pointer',
+                                padding: 0,
+                                display: 'grid',
+                                placeItems: 'center',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                            </button>
+                            {sh.type === 'text' ? (
+                              <Type size={12} color={sh.color} style={{ flexShrink: 0 }} />
+                            ) : (
+                              <Hexagon size={12} color={sh.color} style={{ flexShrink: 0 }} />
+                            )}
+                            <span
+                              style={{
+                                flex: 1,
+                                fontWeight: 500,
+                                color: '#e8e8ee',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {sh.name}
+                            </span>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMoveMenuLayerId(moveMenuLayerId === sh.id ? null : sh.id);
+                                }}
+                                title="نقل وترتيب الطبقة في المشروع (Move Layer)"
+                                style={{
+                                  background: moveMenuLayerId === sh.id ? 'rgba(124, 92, 255, 0.28)' : 'rgba(255,255,255,0.05)',
+                                  border: moveMenuLayerId === sh.id ? '1px solid #8b5cf6' : '1px solid #2a2a3c',
+                                  color: moveMenuLayerId === sh.id ? '#f3e8ff' : '#c4b5fd',
+                                  borderRadius: '6px',
+                                  padding: '3px 8px',
+                                  fontSize: '10.5px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <ArrowUpDown size={11} color="#a78bfa" />
+                                <span>نقل</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMoveLayer(sh.id, 'up');
+                                }}
+                                title="رفع الطبقة للأعلى (Move Up)"
+                                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid #28283a', color: '#a78bfa', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                              >
+                                <ChevronUp size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMoveLayer(sh.id, 'down');
+                                }}
+                                title="خفض الطبقة للأسفل (Move Down)"
+                                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid #28283a', color: '#a78bfa', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                              >
+                                <ChevronDown size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteLayer(sh.id);
+                                }}
+                                title="Delete layer"
+                                style={{
+                                  background: 0,
+                                  border: 0,
+                                  color: '#727284',
+                                  cursor: 'pointer',
+                                  padding: '2px',
+                                }}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Move Menu Popover for Shape */}
+                          {moveMenuLayerId === sh.id && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                background: '#12121c',
+                                border: '1px solid #2e2e42',
+                                borderRadius: '8px',
+                                padding: '10px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px',
+                                marginTop: '6px',
+                                boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #242436', paddingBottom: '6px' }}>
+                                <span style={{ fontSize: '11px', fontWeight: 700, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                  <ArrowUpDown size={12} color="#8b5cf6" />
+                                  <span>نقل وترتيب الطبقة في المشروع</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setMoveMenuLayerId(null)}
+                                  style={{ background: 0, border: 0, color: '#8e8ea0', cursor: 'pointer', padding: '2px', borderRadius: '4px', display: 'grid', placeItems: 'center' }}
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveLayer(sh.id, 'top')}
+                                  title="أعلى الكل (Frontmost)"
+                                  style={{
+                                    flex: 1,
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    border: '1px solid rgba(167, 139, 250, 0.4)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '5px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <ArrowUpToLine size={12} color="#c4b5fd" />
+                                  <span>أعلى الكل ⤒</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveLayer(sh.id, 'bottom')}
+                                  title="أسفل الكل (Backmost)"
+                                  style={{
+                                    flex: 1,
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    border: '1px solid rgba(167, 139, 250, 0.4)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '5px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <ArrowDownToLine size={12} color="#c4b5fd" />
+                                  <span>أسفل الكل ⤓</span>
+                                </button>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                                <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 600 }}>نقل نسبة لطبقة أخرى:</span>
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <select
+                                    value={moveTargetSelectId}
+                                    onChange={(e) => setMoveTargetSelectId(e.target.value)}
+                                    style={{
+                                      flex: 1,
+                                      background: '#0a0a10',
+                                      border: '1px solid #2e2e42',
+                                      borderRadius: '6px',
+                                      color: '#f3e8ff',
+                                      fontSize: '11px',
+                                      padding: '4px 8px',
+                                      outline: 'none',
+                                    }}
+                                  >
+                                    <option value="">-- اختر الطبقة المرجعية --</option>
+                                    {effectiveLayerOrder.filter((id) => id !== sh.id).map((id) => {
+                                      let label = id;
+                                      if (id.startsWith('sprite_')) {
+                                        const sIdx = Number(id.replace('sprite_', ''));
+                                        const sp = movie.sp[sIdx];
+                                        label = `#${movie.sp.length - sIdx} · ${sp?.key || 'sprite'}`;
+                                      } else if (id.startsWith('layer_')) {
+                                        const foundAl = addedLayers.find((x) => x.id === id);
+                                        label = foundAl?.name || id;
+                                      } else if (id.startsWith('shape_')) {
+                                        const foundSh = shapes.find((x) => x.id === id);
+                                        label = foundSh?.name || id;
+                                      }
+                                      return <option key={id} value={id}>{label}</option>;
+                                    })}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={!moveTargetSelectId}
+                                    onClick={() => handleMoveLayer(sh.id, 'above', moveTargetSelectId)}
+                                    title="وضع فوق الطبقة المختارة"
+                                    style={{
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(16, 185, 129, 0.2)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(16, 185, 129, 0.5)',
+                                      color: !moveTargetSelectId ? '#555' : '#6ee7b7',
+                                      borderRadius: '6px',
+                                      padding: '4px 8px',
+                                      fontSize: '10.5px',
+                                      fontWeight: 700,
+                                      cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    فوقها ↑
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!moveTargetSelectId}
+                                    onClick={() => handleMoveLayer(sh.id, 'below', moveTargetSelectId)}
+                                    title="وضع تحت الطبقة المختارة"
+                                    style={{
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(56, 189, 248, 0.2)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(56, 189, 248, 0.5)',
+                                      color: !moveTargetSelectId ? '#555' : '#7dd3fc',
+                                      borderRadius: '6px',
+                                      padding: '4px 8px',
+                                      fontSize: '10.5px',
+                                      fontWeight: 700,
+                                      cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    تحتها ↓
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    if (layerItem.type === 'added') {
+                      const al = layerItem.addedLayer!;
+                      const isShine = !!al.shineConfig?.enabled;
+                      const targetLid = al.shineConfig?.targetLayerId;
+                      const isTargetDoc = !targetLid || targetLid === 'DOCUMENT';
+
+                      let targetName = 'كامل المشروع';
+                      if (!isTargetDoc && targetLid) {
+                        if (targetLid.startsWith('sprite_')) {
+                          const sIdx = Number(targetLid.replace('sprite_', ''));
+                          const sp = movie.sp[sIdx];
+                          targetName = `#${movie.sp.length - sIdx} (${sp?.key || 'طبقة'})`;
+                        } else {
+                          const foundAl = addedLayers.find((x) => x.id === targetLid);
+                          targetName = foundAl?.name || targetLid;
+                        }
+                      }
+
+                      return (
+                        <div
+                          key={al.id}
+                          onClick={() => {
+                            setSelectedTarget(al.id);
+                            setSelectedAssetKey(null);
+                          }}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '5px',
+                            padding: '6px 8px',
+                            borderRadius: '7px',
+                            cursor: 'pointer',
+                            marginTop: '3px',
+                            background: isSel
+                              ? (isShine ? 'rgba(245, 158, 11, 0.12)' : '#1d1d2d')
+                              : (isShine ? 'rgba(245, 158, 11, 0.04)' : 'rgba(255,255,255,0.02)'),
+                            border: isSel
+                              ? (isShine ? '1px solid #f59e0b' : '1px solid #7c5cff')
+                              : (isShine ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid #222230'),
+                            opacity: isHidden ? 0.45 : 1,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleLayerVisibility(al.id);
+                              }}
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: isHidden ? '#555566' : '#8e8ea0',
+                                cursor: 'pointer',
+                                padding: 0,
+                                display: 'grid',
+                                placeItems: 'center',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                            </button>
+                            {isShine ? (
+                              <Sparkles size={13} color="#fcd34d" style={{ flexShrink: 0 }} />
+                            ) : (
+                              <ImageIcon size={12} color="#a78bfa" style={{ flexShrink: 0 }} />
+                            )}
+                            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden' }}>
+                                <span
+                                  style={{
+                                    fontWeight: 600,
+                                    color: isShine ? '#fde68a' : '#e8e8ee',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {al.name}
+                                </span>
+                                {isShine && (
+                                  <span
+                                    style={{
+                                      fontSize: '9px',
+                                      padding: '1px 4px',
+                                      borderRadius: '3px',
+                                      background: 'rgba(245, 158, 11, 0.25)',
+                                      color: '#fef08a',
+                                      fontWeight: 700,
+                                      whiteSpace: 'nowrap',
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    ✨ لمعة
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: '9.5px',
+                                  color: isShine ? '#fbbf24' : (al.copiedFromKey ? '#34d399' : '#727284'),
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {isShine
+                                  ? (isTargetDoc ? 'لمعة على كامل المشروع' : `🎯 فوق الطبقة: ${targetName}`)
+                                  : al.copiedFromKey
+                                  ? `🎬 حركة: ${al.copiedFromKey} · F${al.inFrame}–${al.outFrame}`
+                                  : `ADDED · ${al.width}×${al.height}`}
+                              </span>
+                            </div>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMoveMenuLayerId(moveMenuLayerId === al.id ? null : al.id);
+                                }}
+                                title="نقل وترتيب الطبقة في المشروع (Move Layer)"
+                                style={{
+                                  background: isShine
+                                    ? 'rgba(245, 158, 11, 0.16)'
+                                    : (moveMenuLayerId === al.id ? 'rgba(124, 92, 255, 0.28)' : 'rgba(255,255,255,0.05)'),
+                                  border: isShine
+                                    ? '1px solid rgba(245, 158, 11, 0.45)'
+                                    : (moveMenuLayerId === al.id ? '1px solid #8b5cf6' : '1px solid #28283a'),
+                                  color: isShine ? '#fde68a' : (moveMenuLayerId === al.id ? '#f3e8ff' : '#c4b5fd'),
+                                  borderRadius: '6px',
+                                  padding: '3px 8px',
+                                  fontSize: '10.5px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <ArrowUpDown size={11} color={isShine ? '#fbbf24' : '#a78bfa'} />
+                                <span>نقل</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMoveLayer(al.id, 'up');
+                                }}
+                                title="رفع الطبقة للأعلى (Move Up)"
+                                style={{
+                                  background: isShine ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255,255,255,0.04)',
+                                  border: isShine ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #28283a',
+                                  color: isShine ? '#fde68a' : '#a78bfa',
+                                  cursor: 'pointer',
+                                  padding: '2px 4px',
+                                  borderRadius: '5px',
+                                }}
+                              >
+                                <ChevronUp size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMoveLayer(al.id, 'down');
+                                }}
+                                title="خفض الطبقة للأسفل (Move Down)"
+                                style={{
+                                  background: isShine ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255,255,255,0.04)',
+                                  border: isShine ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #28283a',
+                                  color: isShine ? '#fde68a' : '#a78bfa',
+                                  cursor: 'pointer',
+                                  padding: '2px 4px',
+                                  borderRadius: '5px',
+                                }}
+                              >
+                                <ChevronDown size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteLayer(al.id);
+                                }}
+                                title="Delete layer"
+                                style={{
+                                  background: 0,
+                                  border: 0,
+                                  color: isShine ? '#fca5a5' : '#727284',
+                                  cursor: 'pointer',
+                                  padding: '2px',
+                                }}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Move Menu Popover for Added Layer */}
+                          {moveMenuLayerId === al.id && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                background: '#12121c',
+                                border: '1px solid #2e2e42',
+                                borderRadius: '8px',
+                                padding: '10px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px',
+                                marginTop: '6px',
+                                boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #242436', paddingBottom: '6px' }}>
+                                <span style={{ fontSize: '11px', fontWeight: 700, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                  <ArrowUpDown size={12} color="#8b5cf6" />
+                                  <span>نقل وترتيب الطبقة في المشروع</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setMoveMenuLayerId(null)}
+                                  style={{ background: 0, border: 0, color: '#8e8ea0', cursor: 'pointer', padding: '2px', borderRadius: '4px', display: 'grid', placeItems: 'center' }}
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveLayer(al.id, 'top')}
+                                  title="أعلى الكل (Frontmost)"
+                                  style={{
+                                    flex: 1,
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    border: '1px solid rgba(167, 139, 250, 0.4)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '5px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <ArrowUpToLine size={12} color="#c4b5fd" />
+                                  <span>أعلى الكل ⤒</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveLayer(al.id, 'bottom')}
+                                  title="أسفل الكل (Backmost)"
+                                  style={{
+                                    flex: 1,
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    border: '1px solid rgba(167, 139, 250, 0.4)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '5px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <ArrowDownToLine size={12} color="#c4b5fd" />
+                                  <span>أسفل الكل ⤓</span>
+                                </button>
+                              </div>
+
+                              {isShine && !isTargetDoc && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleMoveLayer(al.id, 'above', targetLid)}
+                                  title="وضع اللمعة فوق الطبقة المستهدفة مباشرة"
+                                  style={{
+                                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
+                                    border: '1px solid rgba(245, 158, 11, 0.5)',
+                                    color: '#fde68a',
+                                    borderRadius: '6px',
+                                    padding: '6px 10px',
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '5px',
+                                    boxShadow: '0 2px 8px rgba(245, 158, 11, 0.12)',
+                                  }}
+                                >
+                                  <Sparkles size={12} color="#fbbf24" />
+                                  <span>🎯 وضع فوق الطبقة المستهدفة مباشرة ({targetName})</span>
+                                </button>
+                              )}
+
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                                <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 600 }}>نقل نسبة لطبقة أخرى:</span>
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <select
+                                    value={moveTargetSelectId}
+                                    onChange={(e) => setMoveTargetSelectId(e.target.value)}
+                                    style={{
+                                      flex: 1,
+                                      background: '#0a0a10',
+                                      border: '1px solid #2e2e42',
+                                      borderRadius: '6px',
+                                      color: '#f3e8ff',
+                                      fontSize: '11px',
+                                      padding: '4px 8px',
+                                      outline: 'none',
+                                    }}
+                                  >
+                                    <option value="">-- اختر الطبقة المرجعية --</option>
+                                    {effectiveLayerOrder.filter((id) => id !== al.id).map((id) => {
+                                      let label = id;
+                                      if (id.startsWith('sprite_')) {
+                                        const sIdx = Number(id.replace('sprite_', ''));
+                                        const sp = movie.sp[sIdx];
+                                        label = `#${movie.sp.length - sIdx} · ${sp?.key || 'sprite'}`;
+                                      } else if (id.startsWith('layer_')) {
+                                        const foundAl = addedLayers.find((x) => x.id === id);
+                                        label = foundAl?.name || id;
+                                      } else if (id.startsWith('shape_')) {
+                                        const foundSh = shapes.find((x) => x.id === id);
+                                        label = foundSh?.name || id;
+                                      }
+                                      return <option key={id} value={id}>{label}</option>;
+                                    })}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={!moveTargetSelectId}
+                                    onClick={() => handleMoveLayer(al.id, 'above', moveTargetSelectId)}
+                                    title="وضع فوق الطبقة المختارة"
+                                    style={{
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(16, 185, 129, 0.2)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(16, 185, 129, 0.5)',
+                                      color: !moveTargetSelectId ? '#555' : '#6ee7b7',
+                                      borderRadius: '6px',
+                                      padding: '4px 8px',
+                                      fontSize: '10.5px',
+                                      fontWeight: 700,
+                                      cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    فوقها ↑
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={!moveTargetSelectId}
+                                    onClick={() => handleMoveLayer(al.id, 'below', moveTargetSelectId)}
+                                    title="وضع تحت الطبقة المختارة"
+                                    style={{
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(56, 189, 248, 0.2)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(56, 189, 248, 0.5)',
+                                      color: !moveTargetSelectId ? '#555' : '#7dd3fc',
+                                      borderRadius: '6px',
+                                      padding: '4px 8px',
+                                      fontSize: '10.5px',
+                                      fontWeight: 700,
+                                      cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                    }}
+                                  >
+                                    تحتها ↓
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', paddingLeft: '16px', flexWrap: 'wrap' }}>
+                            {!isShine && (
+                              <button
+                                type="button"
+                                className="btn-copy-motion-layer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedTarget(al.id);
+                                  setSelectedAssetKey(null);
+                                  setCopyMotionSearch('');
+                                  setCopyMotionModalLayerId(al.id);
+                                }}
+                                title="اختر طبقة من ملف SVGA لأخذ نفس الحركة والأنيميشن والفريمات"
+                                style={{
+                                  flex: 1,
+                                  background: al.copiedFromKey
+                                    ? 'rgba(16, 185, 129, 0.16)'
+                                    : 'rgba(124, 92, 255, 0.16)',
+                                  border: al.copiedFromKey
+                                    ? '1px solid rgba(16, 185, 129, 0.45)'
+                                    : '1px solid rgba(124, 92, 255, 0.45)',
+                                  color: al.copiedFromKey ? '#6ee7b7' : '#c4b5fd',
+                                  borderRadius: '6px',
+                                  padding: '4px 8px',
+                                  fontSize: '10.5px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                <Clapperboard size={11} />
+                                <span>{al.copiedFromKey ? 'تغيير الحركة' : 'نسخ حركة SVGA'}</span>
+                              </button>
+                            )}
+
+                            {!isShine ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCreateShineLayer(al.id);
+                                }}
+                                title="إضافة طبقة لمعة احترافية على هذه الطبقة (Shine Layer)"
+                                style={{
+                                  background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
+                                  border: '1px solid rgba(245, 158, 11, 0.5)',
+                                  color: '#fde68a',
+                                  borderRadius: '6px',
+                                  padding: '4px 8px',
+                                  fontSize: '10.5px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                <Sparkles size={11} color="#fbbf24" />
+                                <span>لمعة</span>
+                              </button>
+                            ) : null}
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDuplicateLayer(al.id, 'none');
+                              }}
+                              title="نسخ طبقة ثانية مباشرة فوق هذه الطبقة (Duplicate Layer)"
+                              style={{
+                                background: isShine
+                                  ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                                  : 'rgba(255, 255, 255, 0.05)',
+                                border: isShine
+                                  ? '1px solid rgba(245, 158, 11, 0.5)'
+                                  : '1px solid #28283a',
+                                color: isShine ? '#fde68a' : '#e8e8ee',
+                                borderRadius: '6px',
+                                padding: '4px 8px',
+                                fontSize: '10.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              <CopyPlus size={11} color={isShine ? '#fbbf24' : '#e8e8ee'} />
+                              <span>نسخ</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDuplicateLayer(al.id, 'canvas');
+                              }}
+                              title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
+                              style={{
+                                background: isShine
+                                  ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                                  : 'rgba(255, 255, 255, 0.05)',
+                                border: isShine
+                                  ? '1px solid rgba(245, 158, 11, 0.5)'
+                                  : '1px solid #28283a',
+                                color: isShine ? '#fde68a' : '#e8e8ee',
+                                borderRadius: '6px',
+                                padding: '4px 8px',
+                                fontSize: '10.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              <FlipHorizontal2 size={11} color={isShine ? '#fbbf24' : '#e8e8ee'} />
+                              <span>عكس</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // layerItem.type === 'sprite'
+                    const sl = layerItem;
+                    const sIdx = sl.spriteIdx!;
+                    const th = sl.key ? thumbs[sl.key] : undefined;
+                    const parentGroup = mergedGroups.find((g) => g.spriteIds.includes(sl.id));
+                    // If in a grouped merged group, skip rendering in main list unless ungrouped
+                    if (parentGroup && !parentGroup.isUngrouped) return null;
+
                     return (
                       <div
-                        key={sh.id}
+                        key={sl.id}
                         onClick={() => {
-                          setSelectedTarget(sh.id);
-                          setSelectedAssetKey(null);
+                          setSelectedTarget(sl.id);
+                          setSelectedAssetKey(sl.key || null);
                         }}
                         style={{
                           display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '5px 8px 5px 18px',
+                          flexDirection: 'column',
+                          gap: '5px',
+                          padding: '6px 8px 6px 12px',
                           borderRadius: '6px',
                           cursor: 'pointer',
                           marginTop: '2px',
@@ -5190,117 +8135,14 @@ export default function SvgaAeEditor({
                           opacity: isHidden ? 0.45 : 1,
                         }}
                       >
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleLayerVisibility(sh.id);
-                          }}
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: isHidden ? '#555566' : '#8e8ea0',
-                            cursor: 'pointer',
-                            padding: 0,
-                            display: 'grid',
-                            placeItems: 'center',
-                          }}
-                        >
-                          {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                        {sh.type === 'text' ? (
-                          <Type size={12} color={sh.color} />
-                        ) : (
-                          <Hexagon size={12} color={sh.color} />
-                        )}
-                        <span
-                          style={{
-                            flex: 1,
-                            fontWeight: 500,
-                            color: '#e8e8ee',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {sh.name}
-                        </span>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMoveShapeUp(index);
-                            }}
-                            title="رفع الطبقة للأعلى (Move Up)"
-                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
-                          >
-                            <ChevronUp size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMoveShapeDown(index);
-                            }}
-                            title="خفض الطبقة للأسفل (Move Down)"
-                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
-                          >
-                            <ChevronDown size={12} />
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteLayer(sh.id);
-                          }}
-                          title="Delete layer"
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: '#727284',
-                            cursor: 'pointer',
-                            padding: 0,
-                          }}
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </div>
-                    );
-                  })}
-
-                  {/* Added Image Layers */}
-                  {addedLayers.map((al, index) => {
-                    const isHidden = hiddenLayerIds.has(al.id);
-                    const isSel = selectedTarget === al.id;
-                    return (
-                      <div
-                        key={al.id}
-                        onClick={() => {
-                          setSelectedTarget(al.id);
-                          setSelectedAssetKey(null);
-                        }}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '5px',
-                          padding: '6px 8px',
-                          borderRadius: '7px',
-                          cursor: 'pointer',
-                          marginTop: '3px',
-                          background: isSel ? '#1d1d2d' : 'rgba(255,255,255,0.02)',
-                          border: isSel ? '1px solid #7c5cff' : '1px solid #222230',
-                          opacity: isHidden ? 0.45 : 1,
-                        }}
-                      >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              toggleLayerVisibility(al.id);
+                              toggleLayerVisibility(sl.id);
                             }}
+                            title={isHidden ? 'Show layer' : 'Hide layer'}
                             style={{
                               background: 0,
                               border: 0,
@@ -5314,42 +8156,86 @@ export default function SvgaAeEditor({
                           >
                             {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
                           </button>
-                          <ImageIcon size={12} color="#a78bfa" style={{ flexShrink: 0 }} />
-                          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                            <span
-                              style={{
-                                fontWeight: 600,
-                                color: '#e8e8ee',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {al.name}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: '9.5px',
-                                color: al.copiedFromKey ? '#34d399' : '#727284',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {al.copiedFromKey
-                                ? `🎬 حركة: ${al.copiedFromKey} · F${al.inFrame}–${al.outFrame}`
-                                : `ADDED · ${al.width}×${al.height}`}
-                            </span>
+                          <div
+                            style={{
+                              width: '22px',
+                              height: '22px',
+                              borderRadius: '4px',
+                              background:
+                                'repeating-conic-gradient(#22222c 0 25%, #17171f 0 50%) 0 0 / 8px 8px',
+                              display: 'grid',
+                              placeItems: 'center',
+                              overflow: 'hidden',
+                              flexShrink: 0,
+                            }}
+                          >
+                            {th ? (
+                              <img
+                                src={th.url}
+                                alt={sl.key}
+                                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                              />
+                            ) : (
+                              <ImageIcon size={11} color="#8e8ea0" />
+                            )}
                           </div>
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span style={{ color: '#a78bfa', fontSize: '10px', fontWeight: 700 }}>
+                                #{sl.displayNum}
+                              </span>
+                              <span
+                                style={{
+                                  fontWeight: 500,
+                                  color: '#e8e8ee',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {sl.key}
+                              </span>
+                            </div>
+                            {sl.span && (
+                              <span style={{ fontSize: '10px', color: '#727284' }}>
+                                F{sl.span.firstFrame}–{sl.span.lastFrame} ({sl.span.activeCount}f)
+                                {sl.span.isStatic ? ' · static' : ''}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleMoveAddedLayerUp(index);
+                                setMoveMenuLayerId(moveMenuLayerId === sl.id ? null : sl.id);
+                              }}
+                              title="نقل وترتيب الطبقة في المشروع (Move Layer)"
+                              style={{
+                                background: moveMenuLayerId === sl.id ? 'rgba(124, 92, 255, 0.28)' : 'rgba(255,255,255,0.05)',
+                                border: moveMenuLayerId === sl.id ? '1px solid #8b5cf6' : '1px solid #2a2a3c',
+                                color: moveMenuLayerId === sl.id ? '#f3e8ff' : '#c4b5fd',
+                                borderRadius: '6px',
+                                padding: '3px 8px',
+                                fontSize: '10.5px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                            >
+                              <ArrowUpDown size={11} color="#a78bfa" />
+                              <span>نقل</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveLayer(sl.id, 'up');
                               }}
                               title="رفع الطبقة للأعلى (Move Up)"
-                              style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid #28283a', color: '#a78bfa', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
                             >
                               <ChevronUp size={12} />
                             </button>
@@ -5357,10 +8243,10 @@ export default function SvgaAeEditor({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleMoveAddedLayerDown(index);
+                                handleMoveLayer(sl.id, 'down');
                               }}
                               title="خفض الطبقة للأسفل (Move Down)"
-                              style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
+                              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid #28283a', color: '#a78bfa', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
                             >
                               <ChevronDown size={12} />
                             </button>
@@ -5368,207 +8254,202 @@ export default function SvgaAeEditor({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleDeleteLayer(al.id);
+                                handleDeleteLayer(sl.id);
                               }}
-                              title="Delete layer"
+                              title={`Delete layer #${sl.displayNum}`}
                               style={{
                                 background: 0,
                                 border: 0,
                                 color: '#727284',
                                 cursor: 'pointer',
-                                padding: '1px',
+                                padding: '2px',
                               }}
                             >
-                              <Trash2 size={11} />
+                              <Trash2 size={12} />
                             </button>
                           </div>
                         </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingLeft: '16px' }}>
+                        {/* Move Menu Popover for Sprite Layer */}
+                        {moveMenuLayerId === sl.id && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              background: '#12121c',
+                              border: '1px solid #2e2e42',
+                              borderRadius: '8px',
+                              padding: '10px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '8px',
+                              marginTop: '6px',
+                              boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #242436', paddingBottom: '6px' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                <ArrowUpDown size={12} color="#8b5cf6" />
+                                <span>نقل وترتيب الطبقة #{sl.displayNum}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setMoveMenuLayerId(null)}
+                                style={{ background: 0, border: 0, color: '#8e8ea0', cursor: 'pointer', padding: '2px', borderRadius: '4px', display: 'grid', placeItems: 'center' }}
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleMoveLayer(sl.id, 'top')}
+                                title="أعلى الكل (Frontmost)"
+                                style={{
+                                  flex: 1,
+                                  background: 'rgba(124, 92, 255, 0.16)',
+                                  border: '1px solid rgba(167, 139, 250, 0.4)',
+                                  color: '#f3e8ff',
+                                  borderRadius: '6px',
+                                  padding: '5px 8px',
+                                  fontSize: '11px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <ArrowUpToLine size={12} color="#c4b5fd" />
+                                <span>أعلى الكل ⤒</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleMoveLayer(sl.id, 'bottom')}
+                                title="أسفل الكل (Backmost)"
+                                style={{
+                                  flex: 1,
+                                  background: 'rgba(124, 92, 255, 0.16)',
+                                  border: '1px solid rgba(167, 139, 250, 0.4)',
+                                  color: '#f3e8ff',
+                                  borderRadius: '6px',
+                                  padding: '5px 8px',
+                                  fontSize: '11px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <ArrowDownToLine size={12} color="#c4b5fd" />
+                                <span>أسفل الكل ⤓</span>
+                              </button>
+                            </div>
+
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                              <span style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 600 }}>نقل نسبة لطبقة أخرى:</span>
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <select
+                                  value={moveTargetSelectId}
+                                  onChange={(e) => setMoveTargetSelectId(e.target.value)}
+                                  style={{
+                                    flex: 1,
+                                    background: '#0a0a10',
+                                    border: '1px solid #2e2e42',
+                                    borderRadius: '6px',
+                                    color: '#f3e8ff',
+                                    fontSize: '11px',
+                                    padding: '4px 8px',
+                                    outline: 'none',
+                                  }}
+                                >
+                                  <option value="">-- اختر الطبقة المرجعية --</option>
+                                  {effectiveLayerOrder.filter((id) => id !== sl.id).map((id) => {
+                                    let label = id;
+                                    if (id.startsWith('sprite_')) {
+                                      const sIdx = Number(id.replace('sprite_', ''));
+                                      const sp = movie.sp[sIdx];
+                                      label = `#${movie.sp.length - sIdx} · ${sp?.key || 'sprite'}`;
+                                    } else if (id.startsWith('layer_')) {
+                                      const foundAl = addedLayers.find((x) => x.id === id);
+                                      label = foundAl?.name || id;
+                                    } else if (id.startsWith('shape_')) {
+                                      const foundSh = shapes.find((x) => x.id === id);
+                                      label = foundSh?.name || id;
+                                    }
+                                    return <option key={id} value={id}>{label}</option>;
+                                  })}
+                                </select>
+                                <button
+                                  type="button"
+                                  disabled={!moveTargetSelectId}
+                                  onClick={() => handleMoveLayer(sl.id, 'above', moveTargetSelectId)}
+                                  title="وضع فوق الطبقة المختارة"
+                                  style={{
+                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(16, 185, 129, 0.2)',
+                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(16, 185, 129, 0.5)',
+                                    color: !moveTargetSelectId ? '#555' : '#6ee7b7',
+                                    borderRadius: '6px',
+                                    padding: '4px 8px',
+                                    fontSize: '10.5px',
+                                    fontWeight: 700,
+                                    cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                  }}
+                                >
+                                  فوقها ↑
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!moveTargetSelectId}
+                                  onClick={() => handleMoveLayer(sl.id, 'below', moveTargetSelectId)}
+                                  title="وضع تحت الطبقة المختارة"
+                                  style={{
+                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(56, 189, 248, 0.2)',
+                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(56, 189, 248, 0.5)',
+                                    color: !moveTargetSelectId ? '#555' : '#7dd3fc',
+                                    borderRadius: '6px',
+                                    padding: '4px 8px',
+                                    fontSize: '10.5px',
+                                    fontWeight: 700,
+                                    cursor: !moveTargetSelectId ? 'not-allowed' : 'pointer',
+                                  }}
+                                >
+                                  تحتها ↓
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', paddingLeft: '16px', flexWrap: 'wrap' }}>
                           <button
                             type="button"
-                            className="btn-copy-motion-layer"
+                            className="btn-shine-sprite"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setSelectedTarget(al.id);
-                              setSelectedAssetKey(null);
-                              setCopyMotionSearch('');
-                              setCopyMotionModalLayerId(al.id);
+                              handleCreateShineLayer(sl.id);
                             }}
-                            title="اختر طبقة من ملف SVGA لأخذ نفس الحركة والأنيميشن والفريمات"
+                            title="إضافة طبقة لمعة احترافية مباشرة فوق هذه الطبقة (Add Shine Layer)"
                             style={{
-                              flex: 1,
-                              background: al.copiedFromKey
-                                ? 'rgba(16, 185, 129, 0.2)'
-                                : 'rgba(245, 158, 11, 0.18)',
-                              border: al.copiedFromKey
-                                ? '1px solid rgba(16, 185, 129, 0.5)'
-                                : '1px solid rgba(245, 158, 11, 0.45)',
-                              color: al.copiedFromKey ? '#6ee7b7' : '#fcd34d',
-                              borderRadius: '5px',
-                              padding: '3px 6px',
-                              fontSize: '10px',
+                              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
+                              border: '1px solid rgba(245, 158, 11, 0.5)',
+                              color: '#fde68a',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '10.5px',
                               fontWeight: 700,
                               cursor: 'pointer',
                               display: 'inline-flex',
                               alignItems: 'center',
-                              justifyContent: 'center',
                               gap: '4px',
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            <Clapperboard size={10} />
-                            <span>{al.copiedFromKey ? 'تغيير الحركة' : 'نسخ حركة SVGA'}</span>
+                            <Sparkles size={11} color="#fbbf24" />
+                            <span>لمعة</span>
                           </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDuplicateLayer(al.id, 'none');
-                            }}
-                            title="نسخ طبقة ثانية (Duplicate Layer)"
-                            style={{
-                              background: 'rgba(56, 189, 248, 0.14)',
-                              border: '1px solid rgba(56, 189, 248, 0.35)',
-                              color: '#7dd3fc',
-                              borderRadius: '5px',
-                              padding: '3px 6px',
-                              fontSize: '9.5px',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '3px',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            <CopyPlus size={10} />
-                            <span>نسخ</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDuplicateLayer(al.id, 'canvas');
-                            }}
-                            title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
-                            style={{
-                              background: 'rgba(236, 72, 153, 0.14)',
-                              border: '1px solid rgba(236, 72, 153, 0.35)',
-                              color: '#f9a8d4',
-                              borderRadius: '5px',
-                              padding: '3px 6px',
-                              fontSize: '9.5px',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '3px',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            <FlipHorizontal2 size={10} />
-                            <span>عكس</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* All Decomposed SVGA Sprite Layers (#N down to #1) */}
-                  {filteredSpriteLayers.map((sl) => {
-                    const isHidden = hiddenLayerIds.has(sl.id);
-                    const isSel = selectedTarget === sl.id;
-                    const th = thumbs[sl.key];
-                    const parentGroup = mergedGroups.find((g) => g.spriteIds.includes(sl.id));
-                    // If in a grouped merged group, skip rendering in main list unless ungrouped
-                    if (parentGroup && !parentGroup.isUngrouped) return null;
-
-                    return (
-                      <div
-                        key={sl.id}
-                        onClick={() => {
-                          setSelectedTarget(sl.id);
-                          setSelectedAssetKey(sl.key);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '5px 8px 5px 14px',
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          marginTop: '2px',
-                          background: isSel ? '#1d1d2d' : 'transparent',
-                          border: isSel ? '1px solid #7c5cff' : '1px solid transparent',
-                          opacity: isHidden ? 0.45 : 1,
-                        }}
-                      >
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleLayerVisibility(sl.id);
-                          }}
-                          title={isHidden ? 'Show layer' : 'Hide layer'}
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: isHidden ? '#555566' : '#8e8ea0',
-                            cursor: 'pointer',
-                            padding: 0,
-                            display: 'grid',
-                            placeItems: 'center',
-                          }}
-                        >
-                          {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
-                        </button>
-                        <div
-                          style={{
-                            width: '22px',
-                            height: '22px',
-                            borderRadius: '4px',
-                            background:
-                              'repeating-conic-gradient(#22222c 0 25%, #17171f 0 50%) 0 0 / 8px 8px',
-                            display: 'grid',
-                            placeItems: 'center',
-                            overflow: 'hidden',
-                            flexShrink: 0,
-                          }}
-                        >
-                          {th ? (
-                            <img
-                              src={th.url}
-                              alt={sl.key}
-                              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-                            />
-                          ) : (
-                            <ImageIcon size={11} color="#8e8ea0" />
-                          )}
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span style={{ color: '#a78bfa', fontSize: '10px', fontWeight: 700 }}>
-                              #{sl.displayNum}
-                            </span>
-                            <span
-                              style={{
-                                fontWeight: 500,
-                                color: '#e8e8ee',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {sl.key}
-                            </span>
-                          </div>
-                          <span style={{ fontSize: '10px', color: '#727284' }}>
-                            F{sl.span.firstFrame}–{sl.span.lastFrame} ({sl.span.activeCount}f)
-                            {sl.span.isStatic ? ' · static' : ''}
-                          </span>
-                        </div>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
                           <button
                             type="button"
                             className="btn-dup-sprite"
@@ -5576,19 +8457,24 @@ export default function SvgaAeEditor({
                               e.stopPropagation();
                               handleDuplicateLayer(sl.id, 'none');
                             }}
-                            title="نسخ طبقة ثانية (Duplicate Layer)"
+                            title="نسخ طبقة ثانية مباشرة فوق هذه الطبقة (Duplicate Layer)"
                             style={{
-                              background: 'rgba(56, 189, 248, 0.12)',
-                              border: '1px solid rgba(56, 189, 248, 0.3)',
-                              color: '#7dd3fc',
-                              borderRadius: '4px',
-                              padding: '2px 3px',
+                              background: 'rgba(255, 255, 255, 0.05)',
+                              border: '1px solid #28283a',
+                              color: '#e8e8ee',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '10.5px',
+                              fontWeight: 700,
                               cursor: 'pointer',
-                              display: 'grid',
-                              placeItems: 'center',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              whiteSpace: 'nowrap',
                             }}
                           >
-                            <CopyPlus size={11} />
+                            <CopyPlus size={11} color="#e8e8ee" />
+                            <span>نسخ</span>
                           </button>
                           <button
                             type="button"
@@ -5599,58 +8485,24 @@ export default function SvgaAeEditor({
                             }}
                             title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
                             style={{
-                              background: 'rgba(236, 72, 153, 0.12)',
-                              border: '1px solid rgba(236, 72, 153, 0.3)',
-                              color: '#f9a8d4',
-                              borderRadius: '4px',
-                              padding: '2px 3px',
+                              background: 'rgba(255, 255, 255, 0.05)',
+                              border: '1px solid #28283a',
+                              color: '#e8e8ee',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '10.5px',
+                              fontWeight: 700,
                               cursor: 'pointer',
-                              display: 'grid',
-                              placeItems: 'center',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              whiteSpace: 'nowrap',
                             }}
                           >
-                            <FlipHorizontal2 size={11} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMoveSpriteLayerUp(sl.spriteIdx);
-                            }}
-                            title="رفع الطبقة للأعلى (Move Up)"
-                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
-                          >
-                            <ChevronUp size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMoveSpriteLayerDown(sl.spriteIdx);
-                            }}
-                            title="خفض الطبقة للأسفل (Move Down)"
-                            style={{ background: 0, border: 0, color: '#a78bfa', cursor: 'pointer', padding: '1px' }}
-                          >
-                            <ChevronDown size={12} />
+                            <FlipHorizontal2 size={11} color="#e8e8ee" />
+                            <span>عكس</span>
                           </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteLayer(sl.id);
-                          }}
-                          title={`Delete layer #${sl.displayNum}`}
-                          style={{
-                            background: 0,
-                            border: 0,
-                            color: '#727284',
-                            cursor: 'pointer',
-                            padding: 0,
-                          }}
-                        >
-                          <Trash2 size={11} />
-                        </button>
                       </div>
                     );
                   })}
@@ -6748,9 +9600,13 @@ export default function SvgaAeEditor({
                         style={{
                           padding: '7px 8px',
                           borderRadius: '7px',
-                          border: '1px solid rgba(56, 189, 248, 0.45)',
-                          background: 'rgba(56, 189, 248, 0.14)',
-                          color: '#bae6fd',
+                          border: selectedAddedLayer?.shineConfig?.enabled
+                            ? '1px solid rgba(245, 158, 11, 0.5)'
+                            : '1px solid #28283a',
+                          background: selectedAddedLayer?.shineConfig?.enabled
+                            ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                            : '#14141e',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
                           fontWeight: 700,
                           fontSize: '10.5px',
                           cursor: 'pointer',
@@ -6760,7 +9616,7 @@ export default function SvgaAeEditor({
                           gap: '5px',
                         }}
                       >
-                        <CopyPlus size={12} />
+                        <CopyPlus size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
                         <span>نسخ طبقة ثانية</span>
                       </button>
 
@@ -6772,9 +9628,13 @@ export default function SvgaAeEditor({
                         style={{
                           padding: '7px 8px',
                           borderRadius: '7px',
-                          border: '1px solid rgba(236, 72, 153, 0.45)',
-                          background: 'rgba(236, 72, 153, 0.15)',
-                          color: '#fbcfe8',
+                          border: selectedAddedLayer?.shineConfig?.enabled
+                            ? '1px solid rgba(245, 158, 11, 0.5)'
+                            : '1px solid #28283a',
+                          background: selectedAddedLayer?.shineConfig?.enabled
+                            ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                            : '#14141e',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
                           fontWeight: 700,
                           fontSize: '10.5px',
                           cursor: 'pointer',
@@ -6784,38 +9644,155 @@ export default function SvgaAeEditor({
                           gap: '5px',
                         }}
                       >
-                        <FlipHorizontal2 size={12} />
+                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
                         <span>نسخ وعكس (شمال↔يمين)</span>
                       </button>
                     </div>
 
-                    <button
-                      type="button"
-                      id="edInspectorFlipInPlaceBtn"
-                      onClick={() => handleFlipLayerHorizontally(selectedTarget, 'canvas')}
-                      title="عكس الطبقة الحالية نفسها من الشمال لليمين"
-                      style={{
-                        width: '100%',
-                        padding: '6px 8px',
-                        borderRadius: '7px',
-                        border: '1px solid rgba(168, 85, 247, 0.35)',
-                        background: 'rgba(168, 85, 247, 0.1)',
-                        color: '#e9d5ff',
-                        fontWeight: 600,
-                        fontSize: '10.5px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '5px',
-                      }}
-                    >
-                      <FlipHorizontal2 size={12} />
-                      <span>↔️ عكس الطبقة الحالية من الشمال لليمين</span>
-                    </button>
-                  </div>
-                </>
-              )}
+                      <button
+                        type="button"
+                        id="edInspectorFlipInPlaceBtn"
+                        onClick={() => handleFlipLayerHorizontally(selectedTarget, 'canvas')}
+                        title="عكس الطبقة الحالية نفسها من الشمال لليمين"
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          borderRadius: '7px',
+                          border: selectedAddedLayer?.shineConfig?.enabled
+                            ? '1px solid rgba(245, 158, 11, 0.4)'
+                            : '1px solid #28283a',
+                          background: selectedAddedLayer?.shineConfig?.enabled
+                            ? 'rgba(245, 158, 11, 0.12)'
+                            : '#14141e',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
+                          fontWeight: 600,
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
+                        <span>↔️ عكس الطبقة الحالية من الشمال لليمين</span>
+                      </button>
+
+                      {/* ✨ زر إضافة لمعة احترافية على الطبقة الحالية أو تحويل طبقة قناع إلى لمعة */}
+                      {!selectedAddedLayer?.shineConfig?.enabled && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginTop: '2px' }}>
+                          <button
+                            type="button"
+                            id="edInspectorAddShineBtn"
+                            onClick={() => handleCreateShineLayer(selectedTarget)}
+                            title="استدعاء طبقة لمعة احترافية مع نقاط القناع ومسار الحركة فوق هذه الطبقة (مثل إطار الهند)"
+                            style={{
+                              width: '100%',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(251, 191, 36, 0.65)',
+                              background: 'linear-gradient(135deg, rgba(245,158,11,0.28), rgba(217,119,6,0.18))',
+                              color: '#fef08a',
+                              fontWeight: 800,
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                              boxShadow: '0 2px 10px rgba(245, 158, 11, 0.16)',
+                            }}
+                          >
+                            <Sparkles size={13} color="#fbbf24" />
+                            <span>✨ إضافة طبقة لمعة احترافية على هذه الطبقة (Shine)</span>
+                          </button>
+
+                          {selectedTarget.startsWith('sprite_') &&
+                            movie.sp[Number(selectedTarget.replace('sprite_', ''))]?.fr?.some(
+                              (fr: any) => fr && typeof fr.clipPath === 'string' && fr.clipPath.trim().length > 0
+                            ) && (
+                              <button
+                                type="button"
+                                id="edInspectorConvertClipSpriteToShineBtn"
+                                onClick={() =>
+                                  handleConvertExistingSpriteToShineLayer(
+                                    Number(selectedTarget.replace('sprite_', ''))
+                                  )
+                                }
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  borderRadius: '7px',
+                                  border: '1px solid rgba(56, 189, 248, 0.5)',
+                                  background: 'rgba(14, 165, 233, 0.16)',
+                                  color: '#bae6fd',
+                                  fontWeight: 700,
+                                  fontSize: '10px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '5px',
+                                }}
+                              >
+                                <Sparkles size={11} />
+                                <span>🎯 استخراج نقاط القناع واللمعة من هذه الطبقة لتعديلها</span>
+                              </button>
+                            )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ✨ لوحة استوديو اللمعة الاحترافية بالنقاط عند اختيار طبقة لمعة */}
+                    {selectedAddedLayer?.shineConfig?.enabled && (
+                      <SvgaShineStudioPanel
+                        shineLayerId={selectedAddedLayer.id}
+                        shineLayerName={selectedAddedLayer.name}
+                        shineThumbUrl={selectedAddedLayer.dataUrl}
+                        config={selectedAddedLayer.shineConfig}
+                        editSubmode={shineEditSubmode}
+                        onChangeEditSubmode={(mode) => {
+                          setShineEditSubmode(mode);
+                          if (mode !== 'none') setActiveTool('Shine');
+                        }}
+                        targetOptions={shineTargetOptions}
+                        svgaAssetKeys={Object.keys(thumbs)}
+                        totalFrames={totalFrames}
+                        onUpdateConfig={(patch, options) =>
+                          handleUpdateShineConfig(selectedAddedLayer.id, patch, options)
+                        }
+                        onAutoTraceTargetLayer={(targetId) =>
+                          handleAutoTraceShineTarget(selectedAddedLayer.id, targetId)
+                        }
+                        onApplyPresetMask={(preset) =>
+                          handleApplyShinePresetMask(selectedAddedLayer.id, preset)
+                        }
+                        onRemoveLastMaskPoint={() =>
+                          handleRemoveLastShineMaskPoint(selectedAddedLayer.id)
+                        }
+                        onApplyMotionDirection={(dir) =>
+                          handleApplyShineMotionDirection(selectedAddedLayer.id, dir)
+                        }
+                        onAddMotionMidpoint={() =>
+                          handleAddShineMotionMidpoint(selectedAddedLayer.id)
+                        }
+                        onRemoveLastMotionPoint={() =>
+                          handleRemoveLastShineMotionPoint(selectedAddedLayer.id)
+                        }
+                        onUploadCustomShineImage={(file) =>
+                          handleUploadCustomShineImage(selectedAddedLayer.id, file)
+                        }
+                        onSelectSvgaAssetAsShineImage={(assetKey) =>
+                          handleSelectSvgaAssetAsShineImage(selectedAddedLayer.id, assetKey)
+                        }
+                        onTriggerPlayPreview={() => {
+                          setCurrentFrame(selectedAddedLayer.shineConfig?.startFrame || 0);
+                          setPlaying(true);
+                        }}
+                      />
+                    )}
+                  </>
+                )}
 
               {/* IMAGE ASSET SECTION (for SVGA Sprite Layers) */}
               {selectedAssetStat && (
@@ -7069,13 +10046,14 @@ export default function SvgaAeEditor({
                       : selectedAssetKey && thumbs[selectedAssetKey]
                         ? thumbs[selectedAssetKey].h
                         : canvasH;
+                  const zoomFactor = (activeLayerTransform.zoom ?? 100) / 100;
                   const curPixelW = Math.max(
                     1,
-                    Math.round((baseW * Math.abs(activeLayerTransform.sx)) / 100)
+                    Math.round((baseW * Math.abs(activeLayerTransform.sx) * zoomFactor) / 100)
                   );
                   const curPixelH = Math.max(
                     1,
-                    Math.round((baseH * Math.abs(activeLayerTransform.sy)) / 100)
+                    Math.round((baseH * Math.abs(activeLayerTransform.sy) * zoomFactor) / 100)
                   );
                   const signX = activeLayerTransform.sx < 0 ? -1 : 1;
                   const signY = activeLayerTransform.sy < 0 ? -1 : 1;
@@ -7455,6 +10433,7 @@ export default function SvgaAeEditor({
                     gridTemplateColumns: '56px 1fr 22px',
                     alignItems: 'center',
                     gap: '6px',
+                    marginBottom: '8px',
                   }}
                 >
                   <span style={{ color: '#8e8ea0', fontSize: '11px' }}>Rotation</span>
@@ -7512,6 +10491,134 @@ export default function SvgaAeEditor({
                       placeItems: 'center',
                       color:
                         layerKeyframes[selectedTarget]?.rotation?.[currentFrame] !== undefined
+                          ? '#fbbf24'
+                          : '#7e7e90',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    <Diamond size={11} />
+                  </button>
+                </div>
+
+                {/* UNIFORM ZOOM / SCALE WITHOUT STRETCHING (تكبير وتصغير الطبقة بدون مط + بوينت Keyframe) */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '56px 1fr 22px',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <span
+                    title="تكبير وتصغير الطبقة بشكل متناسق من دون مط"
+                    style={{
+                      color: '#c4b5fd',
+                      fontSize: '10.5px',
+                      fontWeight: 600,
+                      lineHeight: 1.15,
+                    }}
+                  >
+                    Zoom
+                    <small style={{ display: 'block', color: '#8e8ea0', fontSize: '9px', fontWeight: 400 }}>
+                      بدون مط
+                    </small>
+                  </span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      background: '#14141e',
+                      border: '1px solid rgba(192, 132, 252, 0.35)',
+                      borderRadius: '6px',
+                      padding: '0 6px',
+                      minWidth: 0,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <span
+                      style={{
+                        color: '#c084fc',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        flexShrink: 0,
+                      }}
+                    >
+                      Z
+                    </span>
+                    <input
+                      id="edInspectorUniformZoomSlider"
+                      type="range"
+                      min="10"
+                      max="300"
+                      step="1"
+                      aria-label="Uniform layer zoom slider without stretching"
+                      value={Math.min(300, Math.max(10, Math.round(activeLayerTransform.zoom ?? 100)))}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        updateActiveTransform(
+                          computeUnstretchedZoomPatch(activeLayerTransform, v),
+                          `تكبير/تصغير بدون مط (${v}%)`
+                        );
+                      }}
+                      style={{
+                        flex: 1,
+                        width: '100%',
+                        minWidth: 0,
+                        accentColor: '#c084fc',
+                        cursor: 'pointer',
+                      }}
+                    />
+                    <input
+                      id="edInspectorUniformZoomInput"
+                      type="number"
+                      min="1"
+                      max="1000"
+                      step="1"
+                      aria-label="Uniform layer zoom percentage without stretching"
+                      value={activeLayerTransform.zoom ?? 100}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        updateActiveTransform(
+                          computeUnstretchedZoomPatch(activeLayerTransform, v),
+                          `تكبير/تصغير بدون مط (${v}%)`
+                        );
+                      }}
+                      style={{
+                        border: 0,
+                        background: 'transparent',
+                        padding: '4px 0',
+                        textAlign: 'right',
+                        width: '36px',
+                        minWidth: 0,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span style={{ color: '#6e6e80', fontSize: '10px', flexShrink: 0 }}>%</span>
+                  </div>
+                  <button
+                    type="button"
+                    id="edInspectorZoomKeyframeBtn"
+                    aria-label="Add or remove Zoom keyframe point"
+                    title="إضافة / حذف نقطة تحريك (Keyframe Point) لتكبير وتصغير الطبقة بدون مط"
+                    onClick={() => handleTogglePropertyKeyframe(selectedTarget, 'zoom')}
+                    style={{
+                      background:
+                        layerKeyframes[selectedTarget]?.zoom?.[currentFrame] !== undefined
+                          ? 'rgba(245,158,11,0.18)'
+                          : 'transparent',
+                      border:
+                        layerKeyframes[selectedTarget]?.zoom?.[currentFrame] !== undefined
+                          ? '1px solid #f59e0b'
+                          : '1px solid #2a2a3c',
+                      borderRadius: '4px',
+                      width: '20px',
+                      height: '20px',
+                      display: 'grid',
+                      placeItems: 'center',
+                      color:
+                        layerKeyframes[selectedTarget]?.zoom?.[currentFrame] !== undefined
                           ? '#fbbf24'
                           : '#7e7e90',
                       cursor: 'pointer',

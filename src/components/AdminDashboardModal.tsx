@@ -33,7 +33,6 @@ import {
   savePermanentBranding,
   loadPermanentBranding,
   PRO_TOOLS_DEFINITIONS,
-  ProToolDefinition,
   ProFeatureRule,
   ProFeatureScope,
   normalizeProFeatureRules,
