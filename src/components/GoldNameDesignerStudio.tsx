@@ -453,51 +453,59 @@ export default function GoldNameDesignerStudio({
         height: '100%',
         overflowY: 'auto',
         background:
-          'radial-gradient(ellipse at 20% 0%, rgba(124, 92, 255, 0.10), transparent 50%), radial-gradient(ellipse at 85% 10%, rgba(245, 158, 11, 0.08), transparent 45%), #07070a',
+          'radial-gradient(ellipse at 20% 0%, rgba(124, 92, 255, 0.12), transparent 50%), radial-gradient(ellipse at 85% 10%, rgba(139, 92, 246, 0.08), transparent 45%), #07070a',
         color: '#e8e8ee',
-        fontFamily: "'Cairo', 'Inter', sans-serif",
-        padding: '16px 20px 48px',
+        fontFamily: "'Cairo', 'Plus Jakarta Sans', sans-serif",
+        padding: '10px 14px 20px',
       }}
     >
-      {/* Top Studio Header Bar (Harmonized with Dark Site Theme) */}
+      {/* Unified Compact Top Studio Header + Input & Generation Bar */}
       <div
         style={{
           ...cardStyle,
-          maxWidth: '1460px',
-          margin: '0 auto 12px',
-          padding: '10px 18px',
+          maxWidth: '1760px',
+          margin: '0 auto 10px',
+          padding: '10px 14px',
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: '12px',
+          flexDirection: 'column',
+          gap: '8px',
+          border: '1px solid rgba(124, 92, 255, 0.34)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div
-            style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '12px',
-              background: 'linear-gradient(135deg, #7c5cff 0%, #f59e0b 100%)',
-              display: 'grid',
-              placeItems: 'center',
-              fontSize: '20px',
-              boxShadow: '0 4px 16px rgba(124, 92, 255, 0.35)',
-              border: '1px solid rgba(255, 255, 255, 0.2)',
-              flexShrink: 0,
-            }}
-          >
-            👑
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+        {/* Top Row: Title + Badges + Quick Sample Chips + Reference Style Actions */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '8px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <div
+              style={{
+                width: '32px',
+                height: '32px',
+                borderRadius: '9px',
+                background: 'linear-gradient(135deg, #7c5cff 0%, #6d28d9 100%)',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '16px',
+                boxShadow: '0 4px 14px rgba(124, 92, 255, 0.35)',
+                border: '1px solid rgba(167, 139, 250, 0.35)',
+                flexShrink: 0,
+              }}
+            >
+              👑
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
               <h2
                 style={{
                   margin: 0,
-                  fontSize: '16.5px',
+                  fontSize: '15px',
                   fontWeight: 900,
-                  background: 'linear-gradient(90deg, #ffffff 0%, #c4b5fd 50%, #fbbf24 100%)',
+                  background: 'linear-gradient(90deg, #ffffff 0%, #ddd6fe 55%, #c4b5fd 100%)',
                   WebkitBackgroundClip: 'text',
                   WebkitTextFillColor: 'transparent',
                 }}
@@ -541,138 +549,196 @@ export default function GoldNameDesignerStudio({
                       : '🔒 PRO'}
                 </span>
               )}
-              <span
+            </div>
+
+            {/* Inline Quick Sample Chips */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                flexWrap: 'wrap',
+                paddingInlineStart: '6px',
+                borderInlineStart: '1px solid rgba(255, 255, 255, 0.1)',
+              }}
+            >
+              <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#94a3b8' }}>
+                {isAr ? 'نماذج:' : 'Samples:'}
+              </span>
+              {SAMPLE_NAMES.map((sample) => {
+                const active = inputText.trim() === sample;
+                return (
+                  <button
+                    key={sample}
+                    type="button"
+                    onClick={() => {
+                      setInputText(sample);
+                      handleGenerateDesign(sample, false);
+                    }}
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      border: active
+                        ? '1px solid #7c5cff'
+                        : '1px solid rgba(255, 255, 255, 0.09)',
+                      background: active
+                        ? 'rgba(124, 92, 255, 0.26)'
+                        : 'rgba(255, 255, 255, 0.04)',
+                      color: active ? '#ffffff' : '#cbd5e1',
+                      fontSize: '10.5px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {sample}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right Side of Top Row: Active Style Thumbnail & Quick Actions */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+            {(isGenerating || generationStatusText) && (
+              <div
+                id="goldDesignerProgress"
                 style={{
-                  fontSize: '10.5px',
-                  fontWeight: 800,
-                  padding: '2px 9px',
-                  borderRadius: '6px',
-                  background: 'rgba(124, 92, 255, 0.18)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '11px',
+                  fontWeight: 700,
                   color: '#c4b5fd',
-                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  marginInlineEnd: '4px',
                 }}
               >
-                {isAr ? 'تغيير الألوان + استخلاص شكل ولون أي صورة' : 'Custom Colors + Image Style Extractor'}
-              </span>
-            </div>
-            <p style={{ margin: '2px 0 0', fontSize: '11.5px', color: '#94a3b8', fontWeight: 600 }}>
-              {isAr
-                ? 'حوّل أي اسم إلى مجسم 3D احترافي، غيّر لونه لأي لون، أو استدعِ أي صورة ليأخذ النص لونها وشكلها اللوني تلقائياً.'
-                : 'Convert any name into 3D metallic typography, change its color, or import any image to apply its exact color & visual shading style.'}
-            </p>
-          </div>
-        </div>
+                {isGenerating && (
+                  <div
+                    style={{
+                      width: '64px',
+                      height: '5px',
+                      borderRadius: '99px',
+                      background: 'rgba(255, 255, 255, 0.12)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${generationProgress}%`,
+                        height: '100%',
+                        background: 'linear-gradient(90deg, #7c5cff, #a78bfa)',
+                        transition: 'width 0.15s ease',
+                      }}
+                    />
+                  </div>
+                )}
+                <span>{generationStatusText}</span>
+              </div>
+            )}
 
-        {/* Reference Style Thumbnail & Quick Actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '4px 10px',
-              borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.04)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-            }}
-          >
-            <img
-              src={config.colorSourceImageUrl || config.referenceImageUrl}
-              alt="Active Style Reference"
+            <div
               style={{
-                width: '52px',
-                height: '34px',
-                objectFit: 'contain',
-                background: '#FFFFFF',
-                borderRadius: '6px',
-                border: '1px solid rgba(245, 158, 11, 0.5)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '3px 8px',
+                borderRadius: '8px',
+                background: 'rgba(255, 255, 255, 0.04)',
+                border: '1px solid rgba(124, 92, 255, 0.25)',
               }}
-            />
-            <div>
-              <div style={{ fontSize: '10.5px', fontWeight: 800, color: '#e2e8f0' }}>
-                {isAr ? 'النمط اللوني النشط' : 'Active Style Source'}
-              </div>
-              <div style={{ fontSize: '10px', color: '#fbbf24', fontWeight: 700 }}>
-                {colorSourceImageName ||
-                  customReferenceName ||
-                  (isAr ? 'الذهب المرجعي الأصلي' : 'Original Reference Gold')}
+            >
+              <img
+                src={config.colorSourceImageUrl || config.referenceImageUrl}
+                alt="Active Style Reference"
+                referrerPolicy="no-referrer"
+                style={{
+                  width: '40px',
+                  height: '26px',
+                  objectFit: 'contain',
+                  background: '#FFFFFF',
+                  borderRadius: '4px',
+                  border: '1px solid rgba(124, 92, 255, 0.45)',
+                }}
+              />
+              <div style={{ lineHeight: 1.15 }}>
+                <div style={{ fontSize: '9.5px', fontWeight: 800, color: '#94a3b8' }}>
+                  {isAr ? 'النمط النشط' : 'Active Style'}
+                </div>
+                <div style={{ fontSize: '10px', color: '#ddd6fe', fontWeight: 800 }}>
+                  {colorSourceImageName ||
+                    customReferenceName ||
+                    (isAr ? 'الذهب المرجعي' : 'Reference Gold')}
+                </div>
               </div>
             </div>
+
+            <input
+              ref={refFileInputRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={handleReferenceUpload}
+            />
+            <button
+              type="button"
+              id="goldDesignerUploadRefBtn"
+              onClick={() => refFileInputRef.current?.click()}
+              style={{
+                padding: '5px 10px',
+                borderRadius: '8px',
+                border: '1px solid rgba(124, 92, 255, 0.45)',
+                background: 'rgba(124, 92, 255, 0.18)',
+                color: '#e2e8f0',
+                fontSize: '11px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>🖼️</span>
+              <span>{isAr ? 'استدعاء صورة للنمط' : 'Import Style Image'}</span>
+            </button>
+
+            <button
+              type="button"
+              id="goldDesignerResetBtn"
+              onClick={handleResetToReferenceStyle}
+              style={{
+                padding: '5px 10px',
+                borderRadius: '8px',
+                border: '1px solid rgba(124, 92, 255, 0.25)',
+                background: 'rgba(255, 255, 255, 0.05)',
+                color: '#cbd5e1',
+                fontSize: '11px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>🔄</span>
+              <span>{isAr ? 'إعادة للمرجعي' : 'Reset to Reference'}</span>
+            </button>
           </div>
-
-          <input
-            ref={refFileInputRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange={handleReferenceUpload}
-          />
-          <button
-            type="button"
-            id="goldDesignerUploadRefBtn"
-            onClick={() => refFileInputRef.current?.click()}
-            style={{
-              padding: '7px 12px',
-              borderRadius: '10px',
-              border: '1px solid rgba(124, 92, 255, 0.45)',
-              background: 'rgba(124, 92, 255, 0.16)',
-              color: '#e2e8f0',
-              fontSize: '11.5px',
-              fontWeight: 800,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-            }}
-          >
-            <span>🖼️</span>
-            <span>{isAr ? 'استدعاء صورة للألوان والنمط' : 'Import Style Image'}</span>
-          </button>
-
-          <button
-            type="button"
-            id="goldDesignerResetBtn"
-            onClick={handleResetToReferenceStyle}
-            style={{
-              padding: '7px 12px',
-              borderRadius: '10px',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              background: 'rgba(255, 255, 255, 0.05)',
-              color: '#cbd5e1',
-              fontSize: '11.5px',
-              fontWeight: 800,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-            }}
-          >
-            <span>🔄</span>
-            <span>{isAr ? 'إعادة للنمط المرجعي' : 'Reset to Reference'}</span>
-          </button>
         </div>
-      </div>
 
-      {/* Prominent Text Input & Generate Bar */}
-      <div
-        style={{
-          ...cardStyle,
-          maxWidth: '1460px',
-          margin: '0 auto 14px',
-          padding: '12px 18px',
-          border: '1px solid rgba(124, 92, 255, 0.35)',
-        }}
-      >
+        {/* Bottom Row of Top Bar: Text Input + Quick Color Swatches + Import Image + Generate 3D Button */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            gap: '8px',
             flexWrap: 'wrap',
           }}
         >
-          {/* 1. Large Text Input Field */}
-          <div style={{ flex: '1 1 300px', minWidth: '260px', position: 'relative' }}>
+          {/* 1. Text Input Field */}
+          <div style={{ flex: '1 1 280px', minWidth: '240px', position: 'relative' }}>
             <input
               ref={textInputRef}
               id="goldDesignerTextInput"
@@ -695,23 +761,23 @@ export default function GoldNameDesignerStudio({
               }}
               placeholder={
                 isAr
-                  ? 'اكتب أي اسم أو عبارة هنا (عربي، إنجليزي، أرقام)... مثل: 66666 أو وكيل شحن'
+                  ? 'اكتب أي اسم أو عبارة هنا (عربي، إنجليزي، أرقام)... مثل: وكيل شحن'
                   : 'Enter any name or phrase (Arabic, English, numbers)...'
               }
               style={{
                 width: '100%',
-                height: '48px',
-                paddingRight: scriptInfo.hasArabic ? '16px' : '142px',
-                paddingLeft: scriptInfo.hasArabic ? '142px' : '16px',
-                borderRadius: '12px',
+                height: '40px',
+                paddingRight: scriptInfo.hasArabic ? '14px' : '125px',
+                paddingLeft: scriptInfo.hasArabic ? '125px' : '14px',
+                borderRadius: '10px',
                 border: '1px solid rgba(124, 92, 255, 0.45)',
                 background: '#090a10',
                 color: '#ffffff',
-                fontSize: '18px',
+                fontSize: '16px',
                 fontWeight: 800,
                 fontFamily: "'Cairo', sans-serif",
                 outline: 'none',
-                boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.6)',
+                boxShadow: 'inset 0 2px 6px rgba(0, 0, 0, 0.6)',
               }}
             />
             <span
@@ -719,12 +785,12 @@ export default function GoldNameDesignerStudio({
                 position: 'absolute',
                 top: '50%',
                 transform: 'translateY(-50%)',
-                left: scriptInfo.hasArabic ? '12px' : 'auto',
-                right: scriptInfo.hasArabic ? 'auto' : '12px',
-                fontSize: '10.5px',
+                left: scriptInfo.hasArabic ? '10px' : 'auto',
+                right: scriptInfo.hasArabic ? 'auto' : '10px',
+                fontSize: '10px',
                 fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: '6px',
+                padding: '2px 7px',
+                borderRadius: '5px',
                 background: 'rgba(124, 92, 255, 0.18)',
                 color: '#c4b5fd',
                 border: '1px solid rgba(124, 92, 255, 0.35)',
@@ -733,43 +799,41 @@ export default function GoldNameDesignerStudio({
             >
               {scriptInfo.hasArabic
                 ? isAr
-                  ? 'عربي متصل RTL ✓'
+                  ? 'عربي RTL ✓'
                   : 'Arabic RTL ✓'
                 : isAr
-                  ? 'إنجليزي / أرقام LTR ✓'
-                  : 'Latin / Numbers ✓'}
+                  ? 'إنجليزي LTR ✓'
+                  : 'Latin LTR ✓'}
             </span>
           </div>
 
-          {/* 2. Embedded Color Changer with Live Swatches & Native Color Picker (Right Next to Button) */}
+          {/* 2. Embedded Color Changer with Live Swatches & Native Color Picker */}
           <div
             id="goldTopColorCluster"
             style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '6px',
-              padding: '4px 10px',
-              borderRadius: '12px',
-              background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(124, 92, 255, 0.14) 100%)',
-              border: '1px solid rgba(124, 92, 255, 0.4)',
-              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.3)',
-              height: '48px',
+              padding: '3px 8px',
+              borderRadius: '10px',
+              background: 'rgba(124, 92, 255, 0.12)',
+              border: '1px solid rgba(124, 92, 255, 0.38)',
+              height: '40px',
               flexShrink: 0,
             }}
           >
-            {/* Color Picker Label & Trigger */}
             <label
               id="goldTopColorPickerBtn"
-              title={isAr ? 'اضغط لتغيير لون النص ثلاثي الأبعاد واختيار أي لون تريده' : 'Click to change 3D text color'}
+              title={isAr ? 'اضغط لتغيير لون النص ثلاثي الأبعاد' : 'Click to change 3D text color'}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
+                gap: '5px',
                 cursor: 'pointer',
-                padding: '4px 8px',
-                borderRadius: '8px',
+                padding: '3px 7px',
+                borderRadius: '7px',
                 background: 'rgba(0, 0, 0, 0.35)',
-                border: '1px solid rgba(255, 255, 255, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.14)',
               }}
             >
               <input
@@ -777,24 +841,24 @@ export default function GoldNameDesignerStudio({
                 value={config.customBaseColorHex || config.referencePalette.midGoldHex}
                 onChange={(e) => handleBaseTextColorChange(e.target.value)}
                 style={{
-                  width: '24px',
-                  height: '24px',
+                  width: '20px',
+                  height: '20px',
                   border: 'none',
-                  borderRadius: '6px',
+                  borderRadius: '4px',
                   cursor: 'pointer',
                   padding: 0,
                   background: 'transparent',
                 }}
               />
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
-                <span style={{ fontSize: '11px', fontWeight: 900, color: '#f8fafc', whiteSpace: 'nowrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.05 }}>
+                <span style={{ fontSize: '10px', fontWeight: 900, color: '#f8fafc', whiteSpace: 'nowrap' }}>
                   🎨 {isAr ? 'تغيير اللون' : 'Change Color'}
                 </span>
                 <span
                   style={{
-                    fontSize: '9.5px',
+                    fontSize: '9px',
                     fontWeight: 800,
-                    color: config.customBaseColorHex || config.referencePalette.midGoldHex,
+                    color: '#c4b5fd',
                     fontFamily: 'monospace',
                   }}
                 >
@@ -803,8 +867,7 @@ export default function GoldNameDesignerStudio({
               </div>
             </label>
 
-            {/* Quick 1-Click Metallic Color Preset Swatches */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginInlineStart: '2px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
               {[
                 { id: 'reference-gold', hex: '#f59e0b', tip: isAr ? 'ذهب 24K' : '24K Gold' },
                 { id: 'cyber-violet', hex: '#7c5cff', tip: isAr ? 'بنفسجي سايبر' : 'Cyber Violet' },
@@ -824,17 +887,14 @@ export default function GoldNameDesignerStudio({
                     title={sw.tip}
                     onClick={() => handleSelectMaterialPreset(sw.id)}
                     style={{
-                      width: '22px',
-                      height: '22px',
+                      width: '19px',
+                      height: '19px',
                       borderRadius: '50%',
                       background: sw.hex,
                       border: isSelected ? '2px solid #ffffff' : '1px solid rgba(0, 0, 0, 0.4)',
-                      boxShadow: isSelected
-                        ? `0 0 10px ${sw.hex}, 0 0 2px #fff`
-                        : '0 2px 5px rgba(0, 0, 0, 0.35)',
+                      boxShadow: isSelected ? `0 0 8px ${sw.hex}` : 'none',
                       cursor: 'pointer',
-                      transform: isSelected ? 'scale(1.18)' : 'scale(1)',
-                      transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+                      transform: isSelected ? 'scale(1.15)' : 'scale(1)',
                       padding: 0,
                     }}
                   />
@@ -843,7 +903,7 @@ export default function GoldNameDesignerStudio({
             </div>
           </div>
 
-          {/* 3. Embedded Image Caller Button (Extract Color & Shape Texture right next to button) */}
+          {/* 3. Embedded Image Caller Button */}
           <input
             ref={colorImageInputRef}
             id="goldTopColorImageInput"
@@ -856,31 +916,21 @@ export default function GoldNameDesignerStudio({
             type="button"
             id="goldTopImportImgBtn"
             onClick={() => colorImageInputRef.current?.click()}
-            title={
-              isAr
-                ? 'استدعاء أي صورة من جهازك ليأخذ النص ثلاثي الأبعاد لونها وتدرجها وشكلها تلقائياً'
-                : 'Import any image to extract its exact metallic color & shading style'
-            }
             style={{
-              height: '48px',
-              padding: '0 14px',
-              borderRadius: '12px',
-              border: colorSourceImgEl
-                ? '1px solid rgba(16, 185, 129, 0.8)'
-                : '1px solid rgba(16, 185, 129, 0.45)',
+              height: '40px',
+              padding: '0 12px',
+              borderRadius: '10px',
+              border: '1px solid rgba(124, 92, 255, 0.48)',
               background: colorSourceImgEl
-                ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.28) 0%, rgba(5, 150, 105, 0.4) 100%)'
-                : 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(15, 23, 42, 0.7) 100%)',
-              color: '#ecfdf5',
-              fontSize: '12.5px',
+                ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.34) 0%, rgba(109, 40, 217, 0.45) 100%)'
+                : 'rgba(124, 92, 255, 0.16)',
+              color: '#f3e8ff',
+              fontSize: '11.5px',
               fontWeight: 800,
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '8px',
-              boxShadow: colorSourceImgEl
-                ? '0 0 14px rgba(16, 185, 129, 0.3)'
-                : '0 4px 12px rgba(0, 0, 0, 0.3)',
+              gap: '6px',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
@@ -889,24 +939,25 @@ export default function GoldNameDesignerStudio({
               <img
                 src={config.colorSourceImageUrl || ''}
                 alt="Source"
+                referrerPolicy="no-referrer"
                 style={{
-                  width: '26px',
-                  height: '26px',
-                  borderRadius: '6px',
+                  width: '22px',
+                  height: '22px',
+                  borderRadius: '5px',
                   objectFit: 'cover',
-                  border: '1px solid #10b981',
+                  border: '1px solid #a78bfa',
                 }}
               />
             ) : (
-              <span style={{ fontSize: '16px' }}>🖼️</span>
+              <span style={{ fontSize: '14px' }}>🖼️</span>
             )}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.15 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
               <span>{isAr ? 'استدعاء صورة' : 'Import Image'}</span>
-              <span style={{ fontSize: '9.5px', color: colorSourceImgEl ? '#34d399' : '#a7f3d0', fontWeight: 700 }}>
+              <span style={{ fontSize: '9px', color: '#c4b5fd', fontWeight: 700 }}>
                 {colorSourceImgEl
                   ? isAr
-                    ? '✓ تم أخذ اللون والنمط'
-                    : '✓ Style Extracted'
+                    ? '✓ تم أخذ اللون'
+                    : '✓ Style Active'
                   : isAr
                     ? 'أخذ اللون والشكل'
                     : 'Extract Color & Style'}
@@ -924,13 +975,12 @@ export default function GoldNameDesignerStudio({
                 style={{
                   display: 'grid',
                   placeItems: 'center',
-                  width: '18px',
-                  height: '18px',
+                  width: '16px',
+                  height: '16px',
                   borderRadius: '50%',
-                  background: 'rgba(0, 0, 0, 0.4)',
+                  background: 'rgba(0, 0, 0, 0.45)',
                   color: '#ffffff',
-                  fontSize: '10px',
-                  marginInlineStart: '2px',
+                  fontSize: '9px',
                 }}
               >
                 ✕
@@ -938,148 +988,66 @@ export default function GoldNameDesignerStudio({
             )}
           </button>
 
-          {/* 4. The Main Generate 3D Design Button (Dynamically Glows with Chosen Color) */}
+          {/* 4. Main Generate 3D Design Button (Unified Purple Site Theme) */}
           <button
             type="button"
             id="goldDesignerGenerateBtn"
             onClick={() => handleGenerateDesign(inputText, false)}
             disabled={isGenerating}
             style={{
-              padding: '0 24px',
-              height: '48px',
-              borderRadius: '12px',
-              border: `1px solid ${config.customBaseColorHex || '#f59e0b'}`,
-              background: `linear-gradient(135deg, #7c5cff 0%, #6d28d9 40%, ${config.customBaseColorHex || '#d97706'} 100%)`,
+              padding: '0 18px',
+              height: '40px',
+              borderRadius: '10px',
+              border: '1px solid #8b5cf6',
+              background: 'linear-gradient(135deg, #7c5cff 0%, #6d28d9 100%)',
               color: '#ffffff',
-              fontSize: '14.5px',
+              fontSize: '13px',
               fontWeight: 900,
               cursor: isGenerating ? 'wait' : 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '8px',
-              boxShadow: `0 6px 22px rgba(124, 92, 255, 0.35), 0 0 16px ${config.customBaseColorHex || '#f59e0b'}44`,
+              gap: '6px',
+              boxShadow: '0 4px 16px rgba(124, 92, 255, 0.4)',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
           >
-            <span style={{ fontSize: '18px' }}>✨</span>
+            <span style={{ fontSize: '15px' }}>✨</span>
             <span>
               {isGenerating
                 ? isAr
-                  ? 'جاري توليد التصميم...'
+                  ? 'جاري التوليد...'
                   : 'Generating...'
                 : isAr
-                  ? 'توليد التصميم ثلاثي الأبعاد 3D'
+                  ? 'توليد التصميم 3D'
                   : 'Generate 3D Design'}
             </span>
           </button>
         </div>
-
-        {/* Quick Sample Name Chips & Status Bar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: '8px',
-            marginTop: '9px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8' }}>
-              {isAr ? 'نماذج سريعة:' : 'Quick Samples:'}
-            </span>
-            {SAMPLE_NAMES.map((sample) => {
-              const active = inputText.trim() === sample;
-              return (
-                <button
-                  key={sample}
-                  type="button"
-                  onClick={() => {
-                    setInputText(sample);
-                    handleGenerateDesign(sample, false);
-                  }}
-                  style={{
-                    padding: '3px 10px',
-                    borderRadius: '8px',
-                    border: active
-                      ? '1px solid #7c5cff'
-                      : '1px solid rgba(255, 255, 255, 0.09)',
-                    background: active
-                      ? 'rgba(124, 92, 255, 0.24)'
-                      : 'rgba(255, 255, 255, 0.04)',
-                    color: active ? '#ffffff' : '#cbd5e1',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {sample}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Progress Indicator */}
-          {(isGenerating || generationStatusText) && (
-            <div
-              id="goldDesignerProgress"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: '11.5px',
-                fontWeight: 700,
-                color: '#fbbf24',
-              }}
-            >
-              {isGenerating && (
-                <div
-                  style={{
-                    width: '80px',
-                    height: '6px',
-                    borderRadius: '99px',
-                    background: 'rgba(255, 255, 255, 0.12)',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${generationProgress}%`,
-                      height: '100%',
-                      background: 'linear-gradient(90deg, #7c5cff, #f59e0b)',
-                      transition: 'width 0.15s ease',
-                    }}
-                  />
-                </div>
-              )}
-              <span>{generationStatusText}</span>
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* Main Workspace Grid: Live Preview Stage + Right Customization & Color/Image Extractor */}
+      {/* ALL-IN-ONE 3-COLUMN STUDIO WORKSPACE: Everything visible in the main screen without scrolling! */}
       <div
         style={{
-          maxWidth: '1460px',
+          maxWidth: '1760px',
           margin: '0 auto',
           display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) 420px',
-          gap: '16px',
+          gridTemplateColumns: 'minmax(430px, 1fr) 355px 345px',
+          gap: '12px',
           alignItems: 'start',
         }}
       >
-        {/* Left/Center Column: Live High-Resolution 3D Preview Stage + Direct Color & Image Style Bar */}
+        {/* COLUMN 1: Live High-Resolution 3D Preview Stage + Direct Quick Bar + Instant Sliders + Export Bar */}
         <div
           style={{
             ...cardStyle,
-            padding: '14px 16px',
+            padding: '12px 14px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '12px',
+            gap: '9px',
+            position: 'sticky',
+            top: '8px',
           }}
         >
           {/* Preview Top Toolbar */}
@@ -1089,15 +1057,15 @@ export default function GoldNameDesignerStudio({
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: '8px',
-              paddingBottom: '8px',
+              gap: '6px',
+              paddingBottom: '6px',
               borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
               <span
                 style={{
-                  fontSize: '13px',
+                  fontSize: '12.5px',
                   fontWeight: 900,
                   color: '#f8fafc',
                 }}
@@ -1106,10 +1074,10 @@ export default function GoldNameDesignerStudio({
               </span>
               <span
                 style={{
-                  fontSize: '11px',
+                  fontSize: '10.5px',
                   fontWeight: 800,
-                  padding: '2px 9px',
-                  borderRadius: '6px',
+                  padding: '2px 7px',
+                  borderRadius: '5px',
                   background: 'rgba(255, 255, 255, 0.06)',
                   color: '#cbd5e1',
                   border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -1120,13 +1088,13 @@ export default function GoldNameDesignerStudio({
               {lastLayout && (
                 <span
                   style={{
-                    fontSize: '11px',
+                    fontSize: '10.5px',
                     fontWeight: 700,
-                    padding: '2px 9px',
-                    borderRadius: '6px',
-                    background: 'rgba(245, 158, 11, 0.14)',
-                    color: '#fbbf24',
-                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                    padding: '2px 7px',
+                    borderRadius: '5px',
+                    background: 'rgba(124, 92, 255, 0.16)',
+                    color: '#ddd6fe',
+                    border: '1px solid rgba(124, 92, 255, 0.35)',
                   }}
                 >
                   {isAr
@@ -1136,8 +1104,7 @@ export default function GoldNameDesignerStudio({
               )}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              {/* Transparent Checkerboard Preview Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
               <button
                 type="button"
                 id="goldToggleTransparentPreviewBtn"
@@ -1148,8 +1115,8 @@ export default function GoldNameDesignerStudio({
                   }))
                 }
                 style={{
-                  padding: '5px 11px',
-                  borderRadius: '8px',
+                  padding: '4px 9px',
+                  borderRadius: '7px',
                   border: config.transparentPreview
                     ? '1px solid #7c5cff'
                     : '1px solid rgba(255, 255, 255, 0.12)',
@@ -1157,36 +1124,35 @@ export default function GoldNameDesignerStudio({
                     ? 'rgba(124, 92, 255, 0.24)'
                     : 'rgba(255, 255, 255, 0.05)',
                   color: config.transparentPreview ? '#ffffff' : '#cbd5e1',
-                  fontSize: '11px',
+                  fontSize: '10.5px',
                   fontWeight: 800,
                   cursor: 'pointer',
                 }}
               >
                 {config.transparentPreview
                   ? isAr
-                    ? '🏁 معاينة شفافة: مفعلة'
-                    : '🏁 Transparent View: ON'
+                    ? '🏁 معاينة شفافة'
+                    : '🏁 Transparent View'
                   : isAr
                     ? '⬜ معاينة بالخلفية'
                     : '⬜ Solid BG View'}
               </button>
 
-              {/* Compare with Reference Image Toggle */}
               <button
                 type="button"
                 id="goldCompareRefBtn"
                 onClick={() => setShowReferenceComparison((p) => !p)}
                 style={{
-                  padding: '5px 11px',
-                  borderRadius: '8px',
+                  padding: '4px 9px',
+                  borderRadius: '7px',
                   border: showReferenceComparison
-                    ? '1px solid #f59e0b'
+                    ? '1px solid #8b5cf6'
                     : '1px solid rgba(255, 255, 255, 0.12)',
                   background: showReferenceComparison
-                    ? 'rgba(245, 158, 11, 0.2)'
+                    ? 'rgba(124, 92, 255, 0.24)'
                     : 'rgba(255, 255, 255, 0.05)',
-                  color: showReferenceComparison ? '#fbbf24' : '#cbd5e1',
-                  fontSize: '11px',
+                  color: showReferenceComparison ? '#ddd6fe' : '#cbd5e1',
+                  fontSize: '10.5px',
                   fontWeight: 800,
                   cursor: 'pointer',
                 }}
@@ -1194,14 +1160,13 @@ export default function GoldNameDesignerStudio({
                 {isAr ? '👁️ مقارنة بالمرجع' : '👁️ Compare Reference'}
               </button>
 
-              {/* Zoom Controls */}
               <div
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
                   background: 'rgba(255, 255, 255, 0.05)',
                   border: '1px solid rgba(255, 255, 255, 0.12)',
-                  borderRadius: '8px',
+                  borderRadius: '7px',
                   overflow: 'hidden',
                 }}
               >
@@ -1211,7 +1176,7 @@ export default function GoldNameDesignerStudio({
                   style={{
                     border: 0,
                     background: 'transparent',
-                    padding: '4px 9px',
+                    padding: '3px 7px',
                     cursor: 'pointer',
                     fontWeight: 900,
                     color: '#cbd5e1',
@@ -1225,9 +1190,9 @@ export default function GoldNameDesignerStudio({
                   style={{
                     border: 0,
                     background: 'transparent',
-                    padding: '4px 6px',
+                    padding: '3px 5px',
                     cursor: 'pointer',
-                    fontSize: '11px',
+                    fontSize: '10.5px',
                     fontWeight: 800,
                     color: '#c4b5fd',
                   }}
@@ -1240,7 +1205,7 @@ export default function GoldNameDesignerStudio({
                   style={{
                     border: 0,
                     background: 'transparent',
-                    padding: '4px 9px',
+                    padding: '3px 7px',
                     cursor: 'pointer',
                     fontWeight: 900,
                     color: '#cbd5e1',
@@ -1257,7 +1222,7 @@ export default function GoldNameDesignerStudio({
             style={{
               display: 'grid',
               gridTemplateColumns: showReferenceComparison ? '1fr 1fr' : '1fr',
-              gap: '12px',
+              gap: '10px',
               alignItems: 'center',
             }}
           >
@@ -1265,8 +1230,8 @@ export default function GoldNameDesignerStudio({
               style={{
                 position: 'relative',
                 width: '100%',
-                height: '390px',
-                borderRadius: '14px',
+                height: '330px',
+                borderRadius: '12px',
                 border: '1px solid rgba(255, 255, 255, 0.14)',
                 background: config.transparentPreview
                   ? 'repeating-conic-gradient(#181824 0 25%, #232334 0 50%) 0 0 / 20px 20px'
@@ -1276,7 +1241,7 @@ export default function GoldNameDesignerStudio({
                 justifyContent: 'center',
                 overflow: 'auto',
                 boxShadow: 'inset 0 2px 16px rgba(0, 0, 0, 0.25)',
-                padding: '10px',
+                padding: '8px',
               }}
             >
               <canvas
@@ -1289,12 +1254,12 @@ export default function GoldNameDesignerStudio({
                     : 'Left-click on the design to download immediately in selected format'
                 }
                 style={{
-                  maxHeight: previewZoom === 100 ? '366px' : 'none',
+                  maxHeight: previewZoom === 100 ? '310px' : 'none',
                   maxWidth: '100%',
                   height: previewZoom === 100 ? '100%' : `${previewZoom}%`,
                   width: 'auto',
                   objectFit: 'contain',
-                  borderRadius: '10px',
+                  borderRadius: '8px',
                   cursor: 'pointer',
                   transition: 'transform 0.15s ease',
                 }}
@@ -1304,23 +1269,23 @@ export default function GoldNameDesignerStudio({
             {showReferenceComparison && (
               <div
                 style={{
-                  borderRadius: '14px',
-                  border: '2px dashed rgba(245, 158, 11, 0.6)',
+                  borderRadius: '12px',
+                  border: '2px dashed rgba(139, 92, 246, 0.6)',
                   background: '#0c0d14',
-                  padding: '12px',
+                  padding: '10px',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  height: '390px',
+                  height: '330px',
                 }}
               >
                 <div
                   style={{
-                    fontSize: '12px',
+                    fontSize: '11px',
                     fontWeight: 800,
-                    color: '#fbbf24',
-                    marginBottom: '8px',
+                    color: '#c4b5fd',
+                    marginBottom: '6px',
                   }}
                 >
                   {isAr ? 'الصورة المرجعية / صورة اللون المختارة' : 'Reference / Imported Style Image'}
@@ -1328,11 +1293,12 @@ export default function GoldNameDesignerStudio({
                 <img
                   src={config.colorSourceImageUrl || config.referenceImageUrl}
                   alt="Reference Style"
+                  referrerPolicy="no-referrer"
                   style={{
                     maxWidth: '100%',
-                    maxHeight: '320px',
+                    maxHeight: '275px',
                     objectFit: 'contain',
-                    borderRadius: '10px',
+                    borderRadius: '8px',
                     background: '#FFFFFF',
                   }}
                 />
@@ -1340,33 +1306,32 @@ export default function GoldNameDesignerStudio({
             )}
           </div>
 
-          {/* Direct Quick Bar Under Canvas: Change Text Color + Import Image for Color & Shape + Change Background */}
+          {/* Direct Quick Bar Under Canvas: Change Text Color + Import Image + Change Background */}
           <div
             id="goldQuickColorAndImageBar"
             style={{
               background: 'linear-gradient(180deg, rgba(124, 92, 255, 0.12), rgba(15, 17, 28, 0.9))',
               border: '1px solid rgba(124, 92, 255, 0.32)',
-              borderRadius: '13px',
-              padding: '10px 14px',
+              borderRadius: '10px',
+              padding: '7px 11px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: '10px',
+              gap: '8px',
             }}
           >
-            {/* 1. Direct 3D Text Color Picker */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '12px', fontWeight: 900, color: '#e2e8f0' }}>
-                🎨 {isAr ? 'تغيير لون النص 3D:' : '3D Text Color:'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '11px', fontWeight: 900, color: '#e2e8f0' }}>
+                🎨 {isAr ? 'لون النص 3D:' : '3D Text Color:'}
               </span>
               <label
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  padding: '4px 10px',
-                  borderRadius: '9px',
+                  gap: '5px',
+                  padding: '3px 8px',
+                  borderRadius: '7px',
                   background: 'rgba(255, 255, 255, 0.06)',
                   border: '1px solid rgba(255, 255, 255, 0.16)',
                   cursor: 'pointer',
@@ -1378,61 +1343,50 @@ export default function GoldNameDesignerStudio({
                   value={config.customBaseColorHex || config.referencePalette.midGoldHex}
                   onChange={(e) => handleBaseTextColorChange(e.target.value)}
                   style={{
-                    width: '26px',
-                    height: '24px',
+                    width: '22px',
+                    height: '20px',
                     border: 'none',
-                    borderRadius: '5px',
+                    borderRadius: '4px',
                     cursor: 'pointer',
                     padding: 0,
                     background: 'transparent',
                   }}
                 />
-                <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#fbbf24' }}>
+                <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#ddd6fe' }}>
                   {config.customBaseColorHex || config.referencePalette.midGoldHex}
                 </span>
               </label>
 
-              {/* 2. Import Image to Extract Color & Shape right next to Color Picker */}
-              <input
-                ref={colorImageInputRef}
-                id="goldColorImageInput"
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={handleColorSourceImageUpload}
-              />
               <button
                 type="button"
                 id="goldImportColorImageBtn"
                 onClick={() => colorImageInputRef.current?.click()}
                 style={{
-                  padding: '6px 13px',
-                  borderRadius: '9px',
-                  border: '1px solid rgba(16, 185, 129, 0.5)',
-                  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.22), rgba(5, 150, 105, 0.35))',
-                  color: '#ecfdf5',
-                  fontSize: '11.5px',
-                  fontWeight: 900,
+                  padding: '4px 10px',
+                  borderRadius: '7px',
+                  border: '1px solid rgba(124, 92, 255, 0.48)',
+                  background: 'rgba(124, 92, 255, 0.22)',
+                  color: '#f3e8ff',
+                  fontSize: '10.5px',
+                  fontWeight: 800,
                   cursor: 'pointer',
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)',
+                  gap: '5px',
                 }}
               >
                 <span>🖼️</span>
                 <span>
                   {isAr
-                    ? 'استدعاء صورة لأخذ لونها وشكلها اللوني'
+                    ? 'استدعاء صورة لأخذ لونها وشكلها'
                     : 'Import Image to Extract Color & Style'}
                 </span>
               </button>
             </div>
 
-            {/* 3. Background Color Picker right beside it */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#94a3b8' }}>
-                {isAr ? 'لون الخلفية:' : 'BG Color:'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#94a3b8' }}>
+                {isAr ? 'الخلفية:' : 'BG Color:'}
               </span>
               <input
                 type="color"
@@ -1445,10 +1399,10 @@ export default function GoldNameDesignerStudio({
                   }))
                 }
                 style={{
-                  width: '28px',
-                  height: '26px',
+                  width: '24px',
+                  height: '22px',
                   border: '1px solid rgba(255, 255, 255, 0.25)',
-                  borderRadius: '6px',
+                  borderRadius: '5px',
                   cursor: 'pointer',
                   padding: 0,
                   background: 'transparent',
@@ -1470,8 +1424,8 @@ export default function GoldNameDesignerStudio({
                     }))
                   }
                   style={{
-                    padding: '4px 8px',
-                    borderRadius: '6px',
+                    padding: '3px 7px',
+                    borderRadius: '5px',
                     border:
                       !config.transparentPreview &&
                       config.backgroundColor.toUpperCase() === bgOpt.hex
@@ -1483,7 +1437,7 @@ export default function GoldNameDesignerStudio({
                         ? 'rgba(124, 92, 255, 0.25)'
                         : 'rgba(255, 255, 255, 0.04)',
                     color: '#e2e8f0',
-                    fontSize: '10.5px',
+                    fontSize: '10px',
                     fontWeight: 800,
                     cursor: 'pointer',
                   }}
@@ -1499,12 +1453,12 @@ export default function GoldNameDesignerStudio({
             <div
               role="status"
               style={{
-                padding: '10px 16px',
-                borderRadius: '11px',
+                padding: '7px 12px',
+                borderRadius: '9px',
                 background: 'rgba(124, 92, 255, 0.18)',
                 border: '1px solid rgba(124, 92, 255, 0.45)',
                 color: '#e2e8f0',
-                fontSize: '12.5px',
+                fontSize: '11.5px',
                 fontWeight: 800,
                 textAlign: 'center',
               }}
@@ -1513,20 +1467,19 @@ export default function GoldNameDesignerStudio({
             </div>
           )}
 
-          {/* Action Buttons Under Preview: Download Formats, Regenerate, Edit */}
+          {/* Action Buttons Under Preview: Download Formats, Regenerate, Edit (Unified Purple Theme) */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: '10px',
-              paddingTop: '6px',
+              gap: '7px',
+              paddingTop: '4px',
               borderTop: '1px solid rgba(255, 255, 255, 0.08)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              {/* Export Buttons */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
               {(() => {
                 const isLocked = !!(attemptStatus?.rule?.isPro && !isPro && attemptStatus.remainingAttempts <= 0);
                 const lockSuffix = isLocked ? ' 🔒 PRO' : '';
@@ -1537,18 +1490,18 @@ export default function GoldNameDesignerStudio({
                       id="exportGoldPngWhiteBtn"
                       onClick={() => handleExportDesign('png-white')}
                       style={{
-                        padding: '9px 16px',
-                        borderRadius: '10px',
-                        border: '1px solid rgba(245, 158, 11, 0.6)',
-                        background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                        color: '#09090b',
-                        fontSize: '12.5px',
+                        padding: '7px 13px',
+                        borderRadius: '9px',
+                        border: '1px solid #8b5cf6',
+                        background: 'linear-gradient(135deg, #7c5cff 0%, #6d28d9 100%)',
+                        color: '#ffffff',
+                        fontSize: '11.5px',
                         fontWeight: 900,
                         cursor: 'pointer',
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '7px',
-                        boxShadow: '0 4px 14px rgba(245, 158, 11, 0.25)',
+                        gap: '5px',
+                        boxShadow: '0 4px 14px rgba(124, 92, 255, 0.35)',
                       }}
                     >
                       <span>📥</span>
@@ -1560,23 +1513,23 @@ export default function GoldNameDesignerStudio({
                       id="exportGoldPngTransparentBtn"
                       onClick={() => handleExportDesign('png-transparent')}
                       style={{
-                        padding: '9px 15px',
-                        borderRadius: '10px',
+                        padding: '7px 12px',
+                        borderRadius: '9px',
                         border: '1px solid rgba(124, 92, 255, 0.5)',
                         background: 'rgba(124, 92, 255, 0.2)',
                         color: '#e2e8f0',
-                        fontSize: '12.5px',
+                        fontSize: '11.5px',
                         fontWeight: 800,
                         cursor: 'pointer',
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '7px',
+                        gap: '5px',
                       }}
                     >
                       <span>✨</span>
                       <span>
                         {isAr
-                          ? `تحميل PNG شفاف (مع الظل واللمعة)${lockSuffix}`
+                          ? `تحميل PNG شفاف (مع الظل)${lockSuffix}`
                           : `Download PNG (Transparent + Shadow)${lockSuffix}`}
                       </span>
                     </button>
@@ -1586,17 +1539,17 @@ export default function GoldNameDesignerStudio({
                       id="exportGoldJpegBtn"
                       onClick={() => handleExportDesign('jpeg')}
                       style={{
-                        padding: '9px 14px',
-                        borderRadius: '10px',
-                        border: '1px solid rgba(255, 255, 255, 0.14)',
+                        padding: '7px 11px',
+                        borderRadius: '9px',
+                        border: '1px solid rgba(124, 92, 255, 0.28)',
                         background: 'rgba(255, 255, 255, 0.05)',
                         color: '#cbd5e1',
-                        fontSize: '12px',
+                        fontSize: '11px',
                         fontWeight: 800,
                         cursor: 'pointer',
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '6px',
+                        gap: '5px',
                       }}
                     >
                       <span>🖼️</span>
@@ -1611,23 +1564,23 @@ export default function GoldNameDesignerStudio({
               })()}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <button
                 type="button"
                 id="goldDesignerRegenerateBtn"
                 onClick={() => handleGenerateDesign(inputText, true)}
                 style={{
-                  padding: '8px 13px',
-                  borderRadius: '10px',
+                  padding: '6px 10px',
+                  borderRadius: '8px',
                   border: '1px solid rgba(124, 92, 255, 0.4)',
                   background: 'rgba(124, 92, 255, 0.12)',
                   color: '#c4b5fd',
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 800,
                   cursor: 'pointer',
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
                 }}
               >
                 <span>🔁</span>
@@ -1642,17 +1595,17 @@ export default function GoldNameDesignerStudio({
                   textInputRef.current?.select();
                 }}
                 style={{
-                  padding: '8px 13px',
-                  borderRadius: '10px',
+                  padding: '6px 10px',
+                  borderRadius: '8px',
                   border: '1px solid rgba(255, 255, 255, 0.12)',
                   background: 'rgba(255, 255, 255, 0.05)',
                   color: '#cbd5e1',
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 800,
                   cursor: 'pointer',
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
                 }}
               >
                 <span>✏️</span>
@@ -1662,17 +1615,17 @@ export default function GoldNameDesignerStudio({
           </div>
         </div>
 
-        {/* Right Column: Color & Image Style Studio + Dimensions + 3D Typography Controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        {/* COLUMN 2: Color Changer & Image Style Extractor + Dimensions & Export Options */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {/* PANEL A: 3D Color Changer & Image Color/Shape Extractor */}
           <div
             id="goldColorAndImageStudioPanel"
             style={{
               ...cardStyle,
-              padding: '15px 16px',
+              padding: '11px 13px',
               display: 'flex',
               flexDirection: 'column',
-              gap: '11px',
+              gap: '8px',
               border: '1px solid rgba(124, 92, 255, 0.35)',
             }}
           >
@@ -1681,24 +1634,25 @@ export default function GoldNameDesignerStudio({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                gap: '8px',
+                gap: '6px',
               }}
             >
-              <h3 style={{ margin: 0, fontSize: '13.5px', fontWeight: 900, color: '#f8fafc' }}>
+              <h3 style={{ margin: 0, fontSize: '12.5px', fontWeight: 900, color: '#f8fafc' }}>
                 🎨 {isAr ? 'تغيير اللون واستدعاء لون وشكل صورة' : 'Color Changer & Image Style Extractor'}
               </h3>
               <button
                 type="button"
                 onClick={() => handleSelectMaterialPreset('reference-gold')}
                 style={{
-                  padding: '3px 9px',
+                  padding: '2px 8px',
                   borderRadius: '6px',
-                  border: '1px solid rgba(245, 158, 11, 0.45)',
-                  background: 'rgba(245, 158, 11, 0.14)',
-                  color: '#fbbf24',
-                  fontSize: '10.5px',
+                  border: '1px solid rgba(124, 92, 255, 0.45)',
+                  background: 'rgba(124, 92, 255, 0.18)',
+                  color: '#ddd6fe',
+                  fontSize: '10px',
                   fontWeight: 800,
                   cursor: 'pointer',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {isAr ? 'الذهب المرجعي' : 'Reference Gold'}
@@ -1710,7 +1664,7 @@ export default function GoldNameDesignerStudio({
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1.25fr',
-                gap: '8px',
+                gap: '7px',
               }}
             >
               <label
@@ -1718,14 +1672,14 @@ export default function GoldNameDesignerStudio({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  padding: '8px 10px',
-                  borderRadius: '10px',
+                  padding: '6px 9px',
+                  borderRadius: '8px',
                   background: '#0b0c14',
                   border: '1px solid rgba(255, 255, 255, 0.14)',
                   cursor: 'pointer',
                 }}
               >
-                <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#e2e8f0' }}>
+                <span style={{ fontSize: '11px', fontWeight: 800, color: '#e2e8f0' }}>
                   {isAr ? 'اختر أي لون:' : 'Pick Color:'}
                 </span>
                 <input
@@ -1733,10 +1687,10 @@ export default function GoldNameDesignerStudio({
                   value={config.customBaseColorHex || config.referencePalette.midGoldHex}
                   onChange={(e) => handleBaseTextColorChange(e.target.value)}
                   style={{
-                    width: '32px',
-                    height: '26px',
+                    width: '28px',
+                    height: '22px',
                     border: 'none',
-                    borderRadius: '6px',
+                    borderRadius: '5px',
                     cursor: 'pointer',
                     padding: 0,
                     background: 'transparent',
@@ -1748,42 +1702,43 @@ export default function GoldNameDesignerStudio({
                 type="button"
                 onClick={() => colorImageInputRef.current?.click()}
                 style={{
-                  padding: '8px 10px',
-                  borderRadius: '10px',
-                  border: '1px solid rgba(16, 185, 129, 0.5)',
-                  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(124, 92, 255, 0.25))',
+                  padding: '6px 9px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(124, 92, 255, 0.5)',
+                  background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(109, 40, 217, 0.35))',
                   color: '#ffffff',
-                  fontSize: '11.5px',
+                  fontSize: '11px',
                   fontWeight: 900,
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: '6px',
+                  gap: '5px',
                 }}
               >
                 <span>🖼️</span>
-                <span>{isAr ? 'استدعاء صورة لأخذ لونها' : 'Import Image Color'}</span>
+                <span>{isAr ? 'استدعاء صورة للون' : 'Import Image Color'}</span>
               </button>
             </div>
 
-            {/* Imported Image Color & Shape Inspector (Shown when user imports an image or clicks) */}
+            {/* Imported Image Color & Shape Inspector */}
             {colorSourceImgEl && (
               <div
                 style={{
-                  padding: '10px',
-                  borderRadius: '11px',
-                  background: 'rgba(16, 185, 129, 0.08)',
-                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                  padding: '8px',
+                  borderRadius: '9px',
+                  background: 'rgba(124, 92, 255, 0.1)',
+                  border: '1px solid rgba(124, 92, 255, 0.38)',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '8px',
+                  gap: '6px',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <img
                     src={config.colorSourceImageUrl}
                     alt="Imported Color Source"
+                    referrerPolicy="no-referrer"
                     onClick={handleSampleSpotFromColorImage}
                     title={
                       isAr
@@ -1791,11 +1746,11 @@ export default function GoldNameDesignerStudio({
                         : 'Click anywhere on the image to sample that exact spot color'
                     }
                     style={{
-                      width: '68px',
-                      height: '52px',
+                      width: '54px',
+                      height: '42px',
                       objectFit: 'cover',
-                      borderRadius: '8px',
-                      border: '2px solid #10b981',
+                      borderRadius: '6px',
+                      border: '2px solid #8b5cf6',
                       cursor: 'crosshair',
                       flexShrink: 0,
                     }}
@@ -1803,41 +1758,40 @@ export default function GoldNameDesignerStudio({
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
-                        fontSize: '11px',
+                        fontSize: '10.5px',
                         fontWeight: 900,
-                        color: '#6ee7b7',
+                        color: '#ddd6fe',
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                       }}
                     >
-                      {isAr ? `الصورة المستدعاة: ${colorSourceImageName}` : `Source: ${colorSourceImageName}`}
+                      {isAr ? `الصورة: ${colorSourceImageName}` : `Source: ${colorSourceImageName}`}
                     </div>
-                    <div style={{ fontSize: '10px', color: '#cbd5e1', marginTop: '2px' }}>
+                    <div style={{ fontSize: '9.5px', color: '#cbd5e1', marginTop: '1px' }}>
                       {isAr
-                        ? '💡 اضغط على أي جزء في الصورة المصغرة لأخذ لونه، أو تحكم في قوة دمج شكل ألوان الصورة بالأسفل:'
-                        : '💡 Click thumbnail to sample a spot, or adjust image color-shape blend below:'}
+                        ? 'اضغط على الصورة المصغرة لأخذ لون نقطة محددة:'
+                        : 'Click thumbnail to sample a color spot:'}
                     </div>
                   </div>
                 </div>
 
-                {/* Slider: Image Color-Shape Texture Blend */}
                 <div>
                   <div
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
-                      fontSize: '11px',
+                      fontSize: '10px',
                       fontWeight: 800,
                       color: '#e2e8f0',
                     }}
                   >
                     <span>
                       {isAr
-                        ? 'قوة أخذ الشكل اللوني للصورة داخل الحروف:'
-                        : 'Image Color-Shape Blend inside Text:'}
+                        ? 'قوة دمج الشكل اللوني للصورة:'
+                        : 'Image Color-Shape Blend:'}
                     </span>
-                    <b style={{ color: '#6ee7b7' }}>{config.imageTextureBlend ?? 0}%</b>
+                    <b style={{ color: '#c4b5fd' }}>{config.imageTextureBlend ?? 0}%</b>
                   </div>
                   <input
                     id="goldImageTextureBlendSlider"
@@ -1851,7 +1805,7 @@ export default function GoldNameDesignerStudio({
                         imageTextureBlend: Number(e.target.value),
                       }))
                     }
-                    style={{ width: '100%', accentColor: '#10b981' }}
+                    style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
                   />
                 </div>
               </div>
@@ -1861,19 +1815,19 @@ export default function GoldNameDesignerStudio({
             <div>
               <div
                 style={{
-                  fontSize: '11px',
+                  fontSize: '10.5px',
                   fontWeight: 800,
                   color: '#94a3b8',
-                  marginBottom: '6px',
+                  marginBottom: '4px',
                 }}
               >
-                {isAr ? 'ألوان وخامات 3D جاهزة متناسقة مع الموقع:' : '3D Metallic Color Presets:'}
+                {isAr ? 'خامات وألوان 3D معدنية جاهزة:' : '3D Metallic Color Presets:'}
               </div>
               <div
                 style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                  gap: '6px',
+                  gap: '5px',
                 }}
               >
                 {GOLD_MATERIAL_PRESETS.map((preset) => {
@@ -1885,8 +1839,8 @@ export default function GoldNameDesignerStudio({
                       id={`goldMaterialPreset_${preset.id}`}
                       onClick={() => handleSelectMaterialPreset(preset.id)}
                       style={{
-                        padding: '6px 6px',
-                        borderRadius: '8px',
+                        padding: '5px 7px',
+                        borderRadius: '7px',
                         border: active
                           ? '1px solid #7c5cff'
                           : '1px solid rgba(255, 255, 255, 0.09)',
@@ -1905,8 +1859,8 @@ export default function GoldNameDesignerStudio({
                     >
                       <span
                         style={{
-                          width: '13px',
-                          height: '13px',
+                          width: '12px',
+                          height: '12px',
                           borderRadius: '50%',
                           background: `radial-gradient(circle at 30% 30%, ${preset.palette.highlightHex}, ${preset.previewHex}, ${preset.palette.deepBronzeHex})`,
                           border: '1px solid rgba(255,255,255,0.4)',
@@ -1928,48 +1882,28 @@ export default function GoldNameDesignerStudio({
               </div>
             </div>
 
-            {/* 5 Editable 3D Layer Color Swatches (Shows exact extracted or active colors) */}
+            {/* 5 Editable 3D Layer Color Swatches */}
             <div>
               <div
                 style={{
-                  fontSize: '10.5px',
+                  fontSize: '10px',
                   fontWeight: 800,
                   color: '#94a3b8',
-                  marginBottom: '5px',
+                  marginBottom: '4px',
                 }}
               >
                 {isAr
-                  ? 'درجات تدرج الـ 3D المستخلصة (اضغط لتخصيص أي طبقة):'
+                  ? 'درجات تدرج الـ 3D المستخلصة (اضغط للتخصيص):'
                   : 'Extracted 3D Shading Stops (Click to customize):'}
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '5px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px' }}>
                 {(
                   [
-                    {
-                      key: 'highlightHex',
-                      labelAr: 'اللمعة',
-                      labelEn: 'Highlight',
-                    },
-                    {
-                      key: 'brightGoldHex',
-                      labelAr: 'الوجه',
-                      labelEn: 'Bright',
-                    },
-                    {
-                      key: 'midGoldHex',
-                      labelAr: 'الأساسي',
-                      labelEn: 'Core',
-                    },
-                    {
-                      key: 'warmAmberHex',
-                      labelAr: 'الشطف',
-                      labelEn: 'Bevel',
-                    },
-                    {
-                      key: 'deepBronzeHex',
-                      labelAr: 'عمق 3D',
-                      labelEn: '3D Depth',
-                    },
+                    { key: 'highlightHex', labelAr: 'اللمعة', labelEn: 'Highlight' },
+                    { key: 'brightGoldHex', labelAr: 'الوجه', labelEn: 'Bright' },
+                    { key: 'midGoldHex', labelAr: 'الأساسي', labelEn: 'Core' },
+                    { key: 'warmAmberHex', labelAr: 'الشطف', labelEn: 'Bevel' },
+                    { key: 'deepBronzeHex', labelAr: 'عمق 3D', labelEn: '3D Depth' },
                   ] as const
                 ).map((stop) => (
                   <label
@@ -1978,9 +1912,9 @@ export default function GoldNameDesignerStudio({
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
-                      gap: '3px',
-                      padding: '4px',
-                      borderRadius: '8px',
+                      gap: '2px',
+                      padding: '3px',
+                      borderRadius: '7px',
                       background: 'rgba(255, 255, 255, 0.03)',
                       border: '1px solid rgba(255, 255, 255, 0.08)',
                       cursor: 'pointer',
@@ -1992,15 +1926,15 @@ export default function GoldNameDesignerStudio({
                       onChange={(e) => handlePaletteStopChange(stop.key, e.target.value)}
                       style={{
                         width: '100%',
-                        height: '20px',
+                        height: '16px',
                         border: 'none',
-                        borderRadius: '4px',
+                        borderRadius: '3px',
                         cursor: 'pointer',
                         padding: 0,
                         background: 'transparent',
                       }}
                     />
-                    <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#cbd5e1' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, color: '#cbd5e1' }}>
                       {isAr ? stop.labelAr : stop.labelEn}
                     </span>
                   </label>
@@ -2013,13 +1947,13 @@ export default function GoldNameDesignerStudio({
           <div
             style={{
               ...cardStyle,
-              padding: '15px 16px',
+              padding: '11px 13px',
             }}
           >
             <h3
               style={{
-                margin: '0 0 10px',
-                fontSize: '13.5px',
+                margin: '0 0 7px',
+                fontSize: '12.5px',
                 fontWeight: 900,
                 color: '#f8fafc',
                 display: 'flex',
@@ -2028,7 +1962,7 @@ export default function GoldNameDesignerStudio({
               }}
             >
               <span>📐 {isAr ? 'أبعاد الصورة وخيارات التصدير' : 'Dimensions & Export Options'}</span>
-              <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 800 }}>
+              <span style={{ fontSize: '10.5px', color: '#a78bfa', fontWeight: 800 }}>
                 {config.canvasWidth}×{config.canvasHeight}
               </span>
             </h3>
@@ -2038,8 +1972,8 @@ export default function GoldNameDesignerStudio({
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr',
-                gap: '7px',
-                marginBottom: '10px',
+                gap: '5px',
+                marginBottom: '7px',
               }}
             >
               {GOLD_DIMENSION_PRESETS.map((preset) => {
@@ -2052,8 +1986,8 @@ export default function GoldNameDesignerStudio({
                     onClick={() => handleSelectDimensionPreset(preset.id)}
                     style={{
                       gridColumn: preset.id === 'custom' ? '1 / -1' : undefined,
-                      padding: '7px 10px',
-                      borderRadius: '10px',
+                      padding: '5px 8px',
+                      borderRadius: '8px',
                       border: isSelected
                         ? '1px solid #7c5cff'
                         : '1px solid rgba(255, 255, 255, 0.09)',
@@ -2065,13 +1999,13 @@ export default function GoldNameDesignerStudio({
                       cursor: 'pointer',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '2px',
+                      gap: '1px',
                     }}
                   >
-                    <span style={{ fontSize: '11.5px', fontWeight: 800 }}>
+                    <span style={{ fontSize: '10.5px', fontWeight: 800 }}>
                       {isAr ? preset.labelAr : preset.labelEn}
                     </span>
-                    <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>
+                    <span style={{ fontSize: '9px', color: '#94a3b8', fontWeight: 600 }}>
                       {isAr ? preset.subLabelAr : preset.subLabelEn}
                     </span>
                   </button>
@@ -2085,10 +2019,10 @@ export default function GoldNameDesignerStudio({
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 1fr',
-                  gap: '10px',
-                  marginBottom: '10px',
-                  padding: '10px',
-                  borderRadius: '10px',
+                  gap: '8px',
+                  marginBottom: '7px',
+                  padding: '7px',
+                  borderRadius: '8px',
                   background: 'rgba(124, 92, 255, 0.08)',
                   border: '1px solid rgba(124, 92, 255, 0.3)',
                 }}
@@ -2097,10 +2031,10 @@ export default function GoldNameDesignerStudio({
                   <label
                     style={{
                       display: 'block',
-                      fontSize: '10.5px',
+                      fontSize: '10px',
                       fontWeight: 800,
                       color: '#cbd5e1',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
                     {isAr ? 'العرض (Width px)' : 'Width (px)'}
@@ -2118,12 +2052,13 @@ export default function GoldNameDesignerStudio({
                     }
                     style={{
                       width: '100%',
-                      padding: '6px 10px',
-                      borderRadius: '8px',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
                       border: '1px solid rgba(124, 92, 255, 0.45)',
                       background: '#090a10',
                       color: '#ffffff',
                       fontWeight: 800,
+                      fontSize: '11px',
                     }}
                   />
                 </div>
@@ -2131,10 +2066,10 @@ export default function GoldNameDesignerStudio({
                   <label
                     style={{
                       display: 'block',
-                      fontSize: '10.5px',
+                      fontSize: '10px',
                       fontWeight: 800,
                       color: '#cbd5e1',
-                      marginBottom: '4px',
+                      marginBottom: '3px',
                     }}
                   >
                     {isAr ? 'الارتفاع (Height px)' : 'Height (px)'}
@@ -2152,12 +2087,13 @@ export default function GoldNameDesignerStudio({
                     }
                     style={{
                       width: '100%',
-                      padding: '6px 10px',
-                      borderRadius: '8px',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
                       border: '1px solid rgba(124, 92, 255, 0.45)',
                       background: '#090a10',
                       color: '#ffffff',
                       fontWeight: 800,
+                      fontSize: '11px',
                     }}
                   />
                 </div>
@@ -2165,8 +2101,8 @@ export default function GoldNameDesignerStudio({
             )}
 
             {/* Default Export Format & JPEG Quality */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '11px', fontWeight: 800, color: '#cbd5e1' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <label style={{ fontSize: '10px', fontWeight: 800, color: '#cbd5e1' }}>
                 {isAr ? 'صيغة التصدير الافتراضية:' : 'Default Export Format:'}
               </label>
               <select
@@ -2180,12 +2116,12 @@ export default function GoldNameDesignerStudio({
                 }
                 style={{
                   width: '100%',
-                  padding: '8px 12px',
-                  borderRadius: '9px',
+                  padding: '6px 10px',
+                  borderRadius: '7px',
                   border: '1px solid rgba(124, 92, 255, 0.4)',
                   background: '#090a10',
                   color: '#f8fafc',
-                  fontSize: '11.5px',
+                  fontSize: '10.5px',
                   fontWeight: 800,
                 }}
               >
@@ -2207,18 +2143,18 @@ export default function GoldNameDesignerStudio({
               </select>
 
               {config.exportFormat === 'jpeg' && (
-                <div style={{ marginTop: '4px' }}>
+                <div style={{ marginTop: '2px' }}>
                   <div
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
-                      fontSize: '11px',
+                      fontSize: '10px',
                       fontWeight: 800,
                       color: '#cbd5e1',
                     }}
                   >
                     <span>{isAr ? 'جودة صورة JPEG:' : 'JPEG Quality:'}</span>
-                    <span style={{ color: '#fbbf24' }}>{config.jpegQuality}%</span>
+                    <span style={{ color: '#c4b5fd' }}>{config.jpegQuality}%</span>
                   </div>
                   <input
                     type="range"
@@ -2231,369 +2167,372 @@ export default function GoldNameDesignerStudio({
                         jpegQuality: Number(e.target.value),
                       }))
                     }
-                    style={{ width: '100%', accentColor: '#7c5cff' }}
+                    style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
                   />
                 </div>
               )}
             </div>
           </div>
+        </div>
 
-          {/* PANEL C: 3D Material & Typography Customization Controls */}
+        {/* COLUMN 3: 3D Depth, Typography, Lighting & Positioning Controls (Always visible in main view!) */}
+        <div
+          id="goldTypographyAndDepthPanel"
+          style={{
+            ...cardStyle,
+            padding: '11px 13px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            border: '1px solid rgba(124, 92, 255, 0.35)',
+          }}
+        >
           <div
             style={{
-              ...cardStyle,
-              padding: '15px 16px',
               display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
+              alignItems: 'center',
+              justifyContent: 'space-between',
             }}
           >
+            <h3 style={{ margin: 0, fontSize: '12.5px', fontWeight: 900, color: '#f8fafc' }}>
+              ✨ {isAr ? 'خصائص البروز ثلاثي الأبعاد والخط' : '3D Depth & Typography Controls'}
+            </h3>
+            <button
+              type="button"
+              onClick={handleResetToReferenceStyle}
+              style={{
+                padding: '2px 8px',
+                borderRadius: '6px',
+                border: '1px solid rgba(124, 92, 255, 0.35)',
+                background: 'rgba(124, 92, 255, 0.14)',
+                color: '#ddd6fe',
+                fontSize: '10px',
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              {isAr ? 'إعادة ضبط الكل' : 'Reset All'}
+            </button>
+          </div>
+
+          {/* Font Selector */}
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
+                marginBottom: '3px',
+              }}
+            >
+              {isAr ? 'نمط الخط العريض (Typography Style):' : 'Arabic/Latin Font Style:'}
+            </label>
+            <select
+              id="goldFontSelect"
+              value={config.fontId}
+              onChange={(e) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  fontId: e.target.value,
+                }))
+              }
+              style={{
+                width: '100%',
+                padding: '6px 9px',
+                borderRadius: '8px',
+                border: '1px solid rgba(124, 92, 255, 0.4)',
+                background: '#090a10',
+                color: '#f8fafc',
+                fontSize: '11px',
+                fontWeight: 800,
+              }}
+            >
+              {GOLD_FONT_OPTIONS.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {isAr ? f.labelAr : f.labelEn}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 1. Color / Gold Intensity */}
+          <div>
             <div
               style={{
                 display: 'flex',
-                alignItems: 'center',
                 justifyContent: 'space-between',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
               }}
             >
-              <h3 style={{ margin: 0, fontSize: '13.5px', fontWeight: 900, color: '#f8fafc' }}>
-                ✨ {isAr ? 'خصائص البروز ثلاثي الأبعاد والخط' : '3D Depth & Typography Controls'}
-              </h3>
-              <button
-                type="button"
-                onClick={handleResetToReferenceStyle}
+              <span>{isAr ? '1. تشبع وكثافة اللون المعدني' : '1. Metallic Color Intensity'}</span>
+              <span style={{ color: '#c4b5fd' }}>{config.goldIntensity}%</span>
+            </div>
+            <input
+              type="range"
+              min={50}
+              max={150}
+              value={config.goldIntensity}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, goldIntensity: Number(e.target.value) }))
+              }
+              style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+            />
+          </div>
+
+          {/* 2. Brightness & Reflections */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
+              }}
+            >
+              <span>
+                {isAr ? '2. السطوع ولمعة الانعكاسات (Brightness)' : '2. Brightness & Reflections'}
+              </span>
+              <span style={{ color: '#c4b5fd' }}>{config.brightness}%</span>
+            </div>
+            <input
+              type="range"
+              min={60}
+              max={140}
+              value={config.brightness}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, brightness: Number(e.target.value) }))
+              }
+              style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+            />
+          </div>
+
+          {/* 3. 3D Extrusion Depth */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
+              }}
+            >
+              <span>{isAr ? '3. العمق ثلاثي الأبعاد (3D Depth)' : '3. 3D Extrusion Depth'}</span>
+              <span style={{ color: '#ddd6fe' }}>{config.extrusionDepth}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={60}
+              value={config.extrusionDepth}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, extrusionDepth: Number(e.target.value) }))
+              }
+              style={{ width: '100%', accentColor: '#8b5cf6', height: '5px' }}
+            />
+          </div>
+
+          {/* 4. Bevel Thickness */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
+              }}
+            >
+              <span>
+                {isAr ? '4. سُمك الحواف المشطوفة (Bevel Thickness)' : '4. Bevel Thickness'}
+              </span>
+              <span style={{ color: '#ddd6fe' }}>{config.bevelThickness}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={24}
+              value={config.bevelThickness}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, bevelThickness: Number(e.target.value) }))
+              }
+              style={{ width: '100%', accentColor: '#8b5cf6', height: '5px' }}
+            />
+          </div>
+
+          {/* 5. Shadow Strength */}
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: '10.5px',
+                fontWeight: 800,
+                color: '#cbd5e1',
+              }}
+            >
+              <span>{isAr ? '5. قوة الظل الطبيعي (Shadow Strength)' : '5. Shadow Strength'}</span>
+              <span style={{ color: '#c4b5fd' }}>{config.shadowStrength}%</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={config.shadowStrength}
+              onChange={(e) =>
+                setConfig((prev) => ({ ...prev, shadowStrength: Number(e.target.value) }))
+              }
+              style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+            />
+          </div>
+
+          {/* 6. Text Size Scale & 7. Letter Spacing */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+            <div>
+              <div
                 style={{
-                  padding: '3px 9px',
-                  borderRadius: '6px',
-                  border: '1px solid rgba(255, 255, 255, 0.14)',
-                  background: 'rgba(255, 255, 255, 0.05)',
-                  color: '#cbd5e1',
+                  display: 'flex',
+                  justifyContent: 'space-between',
                   fontSize: '10px',
                   fontWeight: 800,
-                  cursor: 'pointer',
+                  color: '#cbd5e1',
                 }}
               >
-                {isAr ? 'إعادة ضبط الكل' : 'Reset All'}
-              </button>
+                <span>{isAr ? '6. حجم النص' : '6. Text Size'}</span>
+                <span style={{ color: '#c4b5fd' }}>{config.textSizeScale}%</span>
+              </div>
+              <input
+                type="range"
+                min={45}
+                max={150}
+                value={config.textSizeScale}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, textSizeScale: Number(e.target.value) }))
+                }
+                style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+              />
             </div>
 
-            {/* Font Selector */}
             <div>
-              <label
+              <div
                 style={{
-                  display: 'block',
-                  fontSize: '11px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '10px',
                   fontWeight: 800,
                   color: '#cbd5e1',
-                  marginBottom: '4px',
                 }}
               >
-                {isAr ? 'نمط الخط العريض (Typography Style):' : 'Arabic/Latin Font Style:'}
-              </label>
-              <select
-                id="goldFontSelect"
-                value={config.fontId}
+                <span>{isAr ? '7. تباعد الحروف' : '7. Spacing'}</span>
+                <span style={{ color: '#c4b5fd' }}>{config.letterSpacing}px</span>
+              </div>
+              <input
+                type="range"
+                min={-5}
+                max={30}
+                value={config.letterSpacing}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, letterSpacing: Number(e.target.value) }))
+                }
+                style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+              />
+            </div>
+          </div>
+
+          {/* 8. Horizontal & Vertical Positioning */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  color: '#cbd5e1',
+                }}
+              >
+                <span>{isAr ? 'موضع أفقي (X)' : 'Position X'}</span>
+                <span style={{ color: '#a78bfa' }}>{config.offsetX}%</span>
+              </div>
+              <input
+                type="range"
+                min={-35}
+                max={35}
+                value={config.offsetX}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, offsetX: Number(e.target.value) }))
+                }
+                style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+              />
+            </div>
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  color: '#cbd5e1',
+                }}
+              >
+                <span>{isAr ? 'موضع عمودي (Y)' : 'Position Y'}</span>
+                <span style={{ color: '#a78bfa' }}>{config.offsetY}%</span>
+              </div>
+              <input
+                type="range"
+                min={-35}
+                max={35}
+                value={config.offsetY}
+                onChange={(e) =>
+                  setConfig((prev) => ({ ...prev, offsetY: Number(e.target.value) }))
+                }
+                style={{ width: '100%', accentColor: '#7c5cff', height: '5px' }}
+              />
+            </div>
+          </div>
+
+          {/* 9. Sparkle Glints Toggle */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingTop: '5px',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+            }}
+          >
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '11px',
+                fontWeight: 800,
+                color: '#ddd6fe',
+                cursor: 'pointer',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={config.addSparkleGlints}
                 onChange={(e) =>
                   setConfig((prev) => ({
                     ...prev,
-                    fontId: e.target.value,
+                    addSparkleGlints: e.target.checked,
                   }))
                 }
-                style={{
-                  width: '100%',
-                  padding: '8px 10px',
-                  borderRadius: '9px',
-                  border: '1px solid rgba(255, 255, 255, 0.14)',
-                  background: '#090a10',
-                  color: '#f8fafc',
-                  fontSize: '11.5px',
-                  fontWeight: 800,
-                }}
-              >
-                {GOLD_FONT_OPTIONS.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {isAr ? f.labelAr : f.labelEn}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* 1. Color / Gold Intensity */}
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  color: '#cbd5e1',
-                }}
-              >
-                <span>{isAr ? '1. تشبع وكثافة اللون المعدني' : '1. Metallic Color Intensity'}</span>
-                <span style={{ color: '#a78bfa' }}>{config.goldIntensity}%</span>
-              </div>
-              <input
-                type="range"
-                min={50}
-                max={150}
-                value={config.goldIntensity}
-                onChange={(e) =>
-                  setConfig((prev) => ({ ...prev, goldIntensity: Number(e.target.value) }))
-                }
-                style={{ width: '100%', accentColor: '#7c5cff' }}
+                style={{ accentColor: '#7c5cff' }}
               />
-            </div>
-
-            {/* 2. Brightness & Reflections */}
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  color: '#cbd5e1',
-                }}
-              >
-                <span>
-                  {isAr ? '2. السطوع ولمعة الانعكاسات (Brightness)' : '2. Brightness & Reflections'}
-                </span>
-                <span style={{ color: '#a78bfa' }}>{config.brightness}%</span>
-              </div>
-              <input
-                type="range"
-                min={60}
-                max={140}
-                value={config.brightness}
-                onChange={(e) =>
-                  setConfig((prev) => ({ ...prev, brightness: Number(e.target.value) }))
-                }
-                style={{ width: '100%', accentColor: '#7c5cff' }}
-              />
-            </div>
-
-            {/* 3. 3D Extrusion Depth */}
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  color: '#cbd5e1',
-                }}
-              >
-                <span>{isAr ? '3. العمق ثلاثي الأبعاد (3D Depth)' : '3. 3D Extrusion Depth'}</span>
-                <span style={{ color: '#fbbf24' }}>{config.extrusionDepth}</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={60}
-                value={config.extrusionDepth}
-                onChange={(e) =>
-                  setConfig((prev) => ({ ...prev, extrusionDepth: Number(e.target.value) }))
-                }
-                style={{ width: '100%', accentColor: '#f59e0b' }}
-              />
-            </div>
-
-            {/* 4. Bevel Thickness */}
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  color: '#cbd5e1',
-                }}
-              >
-                <span>
-                  {isAr ? '4. سُمك الحواف المشطوفة (Bevel Thickness)' : '4. Bevel Thickness'}
-                </span>
-                <span style={{ color: '#fbbf24' }}>{config.bevelThickness}</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={24}
-                value={config.bevelThickness}
-                onChange={(e) =>
-                  setConfig((prev) => ({ ...prev, bevelThickness: Number(e.target.value) }))
-                }
-                style={{ width: '100%', accentColor: '#f59e0b' }}
-              />
-            </div>
-
-            {/* 5. Shadow Strength */}
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: '11px',
-                  fontWeight: 800,
-                  color: '#cbd5e1',
-                }}
-              >
-                <span>{isAr ? '5. قوة الظل الطبيعي (Shadow Strength)' : '5. Shadow Strength'}</span>
-                <span style={{ color: '#a78bfa' }}>{config.shadowStrength}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={config.shadowStrength}
-                onChange={(e) =>
-                  setConfig((prev) => ({ ...prev, shadowStrength: Number(e.target.value) }))
-                }
-                style={{ width: '100%', accentColor: '#7c5cff' }}
-              />
-            </div>
-
-            {/* 6. Text Size Scale & 7. Letter Spacing */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '10.5px',
-                    fontWeight: 800,
-                    color: '#cbd5e1',
-                  }}
-                >
-                  <span>{isAr ? '6. حجم النص' : '6. Text Size'}</span>
-                  <span style={{ color: '#38bdf8' }}>{config.textSizeScale}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={45}
-                  max={150}
-                  value={config.textSizeScale}
-                  onChange={(e) =>
-                    setConfig((prev) => ({ ...prev, textSizeScale: Number(e.target.value) }))
-                  }
-                  style={{ width: '100%', accentColor: '#38bdf8' }}
-                />
-              </div>
-
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '10.5px',
-                    fontWeight: 800,
-                    color: '#cbd5e1',
-                  }}
-                >
-                  <span>{isAr ? '7. تباعد الحروف' : '7. Spacing'}</span>
-                  <span style={{ color: '#38bdf8' }}>{config.letterSpacing}px</span>
-                </div>
-                <input
-                  type="range"
-                  min={-5}
-                  max={30}
-                  value={config.letterSpacing}
-                  onChange={(e) =>
-                    setConfig((prev) => ({ ...prev, letterSpacing: Number(e.target.value) }))
-                  }
-                  style={{ width: '100%', accentColor: '#38bdf8' }}
-                />
-              </div>
-            </div>
-
-            {/* 8. Horizontal & Vertical Positioning */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '10.5px',
-                    fontWeight: 800,
-                    color: '#cbd5e1',
-                  }}
-                >
-                  <span>{isAr ? 'موضع أفقي (X)' : 'Position X'}</span>
-                  <span style={{ color: '#a78bfa' }}>{config.offsetX}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={-35}
-                  max={35}
-                  value={config.offsetX}
-                  onChange={(e) =>
-                    setConfig((prev) => ({ ...prev, offsetX: Number(e.target.value) }))
-                  }
-                  style={{ width: '100%', accentColor: '#7c5cff' }}
-                />
-              </div>
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '10.5px',
-                    fontWeight: 800,
-                    color: '#cbd5e1',
-                  }}
-                >
-                  <span>{isAr ? 'موضع عمودي (Y)' : 'Position Y'}</span>
-                  <span style={{ color: '#a78bfa' }}>{config.offsetY}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={-35}
-                  max={35}
-                  value={config.offsetY}
-                  onChange={(e) =>
-                    setConfig((prev) => ({ ...prev, offsetY: Number(e.target.value) }))
-                  }
-                  style={{ width: '100%', accentColor: '#7c5cff' }}
-                />
-              </div>
-            </div>
-
-            {/* 9. Sparkle Glints Toggle */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingTop: '6px',
-                borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-              }}
-            >
-              <label
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '11.5px',
-                  fontWeight: 800,
-                  color: '#fbbf24',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={config.addSparkleGlints}
-                  onChange={(e) =>
-                    setConfig((prev) => ({
-                      ...prev,
-                      addSparkleGlints: e.target.checked,
-                    }))
-                  }
-                  style={{ accentColor: '#f59e0b' }}
-                />
-                <span>{isAr ? 'إظهار لمعات النجوم البراقة ✨' : 'Show Jewelry Sparkle Glints ✨'}</span>
-              </label>
-            </div>
+              <span>{isAr ? 'إظهار لمعات النجوم البراقة ✨' : 'Show Jewelry Sparkle Glints ✨'}</span>
+            </label>
           </div>
         </div>
       </div>
     </div>
   );
 }
+

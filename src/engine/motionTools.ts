@@ -657,6 +657,7 @@ export function initMotionToolsFixed() {
   };
   load = async function (f) {
     cur = f;
+    (window as any).__currentMotionFile = f;
     if (window.SVP) {
       try {
         window.SVP.pauseAnimation?.();
@@ -2242,6 +2243,7 @@ export function initMotionToolsFixed() {
 
   function prep(f) {
     cur = f;
+    (window as any).__currentMotionFile = f;
     origPreChromaAssets = {};
     if (window.SVP) {
       try {
@@ -2697,6 +2699,11 @@ export function initMotionToolsFixed() {
       c.globalAlpha = Math.min(1, f.a);
       c.save();
       c.transform(...f.t);
+      if (f.clipPath) {
+        try {
+          c.clip(new Path2D(f.clipPath), 'evenodd');
+        } catch {}
+      }
       c.drawImage(b, f.x, f.y, f.w || b.width, f.h || b.height);
       c.restore();
     }
@@ -4024,6 +4031,91 @@ export function initMotionToolsFixed() {
         $('#fmt').value = 'svga';
       }
       return prevS();
+    };
+
+    (window as any).__exportCurrentMotionToSvgaEditorFile = async (): Promise<File | null> => {
+      const activeFile = cur || (window as any).__currentMotionFile;
+      if (!activeFile) return null;
+      const activeExt = (activeFile.name.split('.').pop() || '').toLowerCase();
+
+      if (activeExt === 'svga') {
+        const hasEdits =
+          AU.dirty ||
+          Object.keys(window.EDIT || {}).length > 0 ||
+          Boolean((window as any).__WATERMARK_LAYERS?.length);
+        if (hasEdits && S) {
+          try {
+            let audio = null;
+            if (AU.dirty) {
+              if (AU.del) audio = { del: 1 };
+              else if (AU.add || AU.vol !== 1) {
+                const a = finalAudio();
+                audio = a ? { set: await mp3For(a), dur: a.buf.duration } : { del: 1 };
+              }
+            }
+            const eb: Record<string, Blob> = {};
+            for (const k in window.EDIT) eb[k] = await (await fetch(window.EDIT[k])).blob();
+            const patchedBlob = await svgaPatch(activeFile, {
+              edits: eb,
+              comp: false,
+              audio,
+              fps: S.fps,
+              n: S.n,
+            });
+            return new File([patchedBlob], activeFile.name, {
+              type: 'application/octet-stream',
+              lastModified: Date.now(),
+            });
+          } catch (err) {
+            console.warn('Fallback to raw SVGA file for editor:', err);
+          }
+        }
+        const buf = await activeFile.arrayBuffer();
+        return new File([buf], activeFile.name, {
+          type: 'application/octet-stream',
+          lastModified: Date.now(),
+        });
+      }
+
+      if (S && typeof (window as any).__svgaEnc === 'function') {
+        const W = +$('#w')?.value || S.w || 500;
+        const H = +$('#h')?.value || S.h || 500;
+        const fps = Math.max(1, +$('#fps')?.value || S.fps || 15);
+        const base = activeFile.name.replace(/\.\w+$/, '') || 'project';
+        const wasPaused = S.paused;
+        S.stop?.();
+        try {
+          toast('⏳ جاري تحويل المشروع وفتحه في محرر SVGA / After Effects...');
+          const fr: Blob[] = [];
+          await render(W, H, fps, async (c: HTMLCanvasElement) => {
+            fr.push(await window.pngQ(c, true, true));
+          });
+          if (fr.length > 0) {
+            const audioPayload =
+              typeof (window as any).svgaPrepareAudioPayload === 'function'
+                ? await (window as any).svgaPrepareAudioPayload(fps, fr.length)
+                : null;
+            let svBlob = await (window as any).__svgaEnc(fr, W, H, fps, audioPayload);
+            if (typeof (window as any).svgaAddAudio === 'function') {
+              svBlob = await (window as any).svgaAddAudio(svBlob, fps, fr.length);
+            }
+            return new File([svBlob], `${base}.svga`, {
+              type: 'application/octet-stream',
+              lastModified: Date.now(),
+            });
+          }
+        } catch (err) {
+          console.warn('Auto-convert non-SVGA to SVGA for editor failed:', err);
+        } finally {
+          if (!wasPaused) S.go?.();
+        }
+      }
+
+      const buf = await activeFile.arrayBuffer();
+      return new File([buf], activeFile.name, {
+        type: activeFile.type || 'application/octet-stream',
+        lastModified: Date.now(),
+      });
     };
     document.head.insertAdjacentHTML(
       'beforeend',

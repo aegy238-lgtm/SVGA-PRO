@@ -43,6 +43,8 @@ import {
   CopyPlus,
   FlipHorizontal2,
   Clapperboard,
+  Scaling,
+  Maximize2,
 } from 'lucide-react';
 import { parseMovie, pako, SvgaFrame, SvgaMovie } from '../utils/codecs';
 import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
@@ -91,8 +93,10 @@ import {
   buildShineKeyframesFromMotionPoints,
   buildClippedShineSvgaFrames,
   renderProceduralShineBitmapAndBytes,
+  renderProceduralShineCanvasSync,
   featherCustomShineBitmap,
   extractShineConfigFromExistingSprite,
+  applySmartSoftFeatherMatteToMaskCanvas,
 } from '../utils/svgaShineEngine';
 import { SvgaShineStudioPanel, ShineTargetOption } from './SvgaShineStudioPanel';
 import { SvgaTimelinePanel } from './SvgaTimelinePanel';
@@ -106,8 +110,8 @@ interface AddedLayer {
   id: string;
   assetKey: string;
   name: string;
-  bitmap: ImageBitmap;
-  originalBitmap?: ImageBitmap;
+  bitmap: ImageBitmap | HTMLCanvasElement;
+  originalBitmap?: ImageBitmap | HTMLCanvasElement;
   originalWidth?: number;
   originalHeight?: number;
   pngBytes: Uint8Array;
@@ -323,6 +327,12 @@ export default function SvgaAeEditor({
   const [currentFrame, setCurrentFrame] = useState<number>(0);
   const [zoom, setZoom] = useState<number>(100);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [timelineCollapsed, setTimelineCollapsed] = useState<boolean>(false);
+  const stageContainerRef = useRef<HTMLDivElement | null>(null);
+  const [stageViewportSize, setStageViewportSize] = useState<{ w: number; h: number }>({
+    w: 1020,
+    h: 680,
+  });
 
   const [docTrackExpanded, setDocTrackExpanded] = useState<boolean>(true);
   const [expandedTimelineLayerIds, setExpandedTimelineLayerIds] = useState<Set<string>>(
@@ -377,9 +387,17 @@ export default function SvgaAeEditor({
   const [copyMotionModalLayerId, setCopyMotionModalLayerId] = useState<string | null>(null);
   const [copyMotionSearch, setCopyMotionSearch] = useState<string>('');
 
+  // Modal & File input for customizing Project Dimensions & importing image with original dimensions
+  const [projectSizeModalOpen, setProjectSizeModalOpen] = useState<boolean>(false);
+  const [customCanvasW, setCustomCanvasW] = useState<number>(750);
+  const [customCanvasH, setCustomCanvasH] = useState<number>(1334);
+  const projectSizeFileInputRef = useRef<HTMLInputElement | null>(null);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const shineCompCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const shineMaskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const shineScratchCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const shineBakeTimerRef = useRef<number | null>(null);
   const activeHandlesRef = useRef<
     Array<{
       handle: 'tl' | 'tr' | 'br' | 'bl' | 'tm' | 'mr' | 'bm' | 'ml';
@@ -565,15 +583,133 @@ export default function SvgaAeEditor({
           },
         ]);
         setHistoryIdx(0);
+        setZoom(100);
+        setPan({ x: 0, y: 0 });
         setLastAction(
           `Loaded ${name} (${m.sp.length} layers, ${Object.keys(m.im).length} assets)`
         );
       } catch (err: any) {
-        setLastAction(`Error: ${err?.message || 'Could not decode SVGA'}`);
+        // Fallback: If not standard SVGA 2.0 (e.g. PNG, JPG, WEBP, GIF, Lottie, etc.), load as decomposed image layer
+        try {
+          const blob = new Blob([buf], { type: 'image/png' });
+          const bm = await createImageBitmap(blob);
+          const canvas = document.createElement('canvas');
+          canvas.width = bm.width;
+          canvas.height = bm.height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(bm, 0, 0);
+          const dataUrl = canvas.toDataURL('image/png');
+
+          const newLayer: AddedLayer = {
+            id: `layer_img_${Date.now()}`,
+            assetKey: `img_decomposed_${Date.now()}`,
+            name: name || 'Decomposed Image Layer',
+            bitmap: bm,
+            originalBitmap: bm,
+            originalWidth: bm.width,
+            originalHeight: bm.height,
+            pngBytes: new Uint8Array(buf),
+            dataUrl,
+            width: bm.width,
+            height: bm.height,
+            bytes: buf.byteLength,
+            transform: { ...DEFAULT_TRANSFORM },
+            inFrame: 0,
+            outFrame: 39,
+          };
+
+          const emptyM: SvgaMovie = {
+            w: bm.width,
+            h: bm.height,
+            fps: 20,
+            n: 40,
+            im: {},
+            sp: [],
+          };
+
+          setMovie(emptyM);
+          setBitmaps({});
+          setThumbs({});
+          setDocName(name);
+          setFileSize(reportedSize ?? buf.byteLength);
+          setCurrentFrame(0);
+          setAddedLayers([newLayer]);
+          setShapes([]);
+          setSelectedTarget(newLayer.id);
+          setSelectedAssetKey(null);
+          setDocTransform({ ...DEFAULT_TRANSFORM });
+          setLayerTransforms({});
+          setLayerKeyframes({});
+          setSpriteFrameRanges({});
+          setHiddenLayerIds(new Set());
+          setDeletedSpriteIndices(new Set());
+          setExpandedTimelineLayerIds(new Set());
+          setMergedGroups([]);
+          setLayerOrder([newLayer.id]);
+          setHistory([
+            {
+              docTransform: { ...DEFAULT_TRANSFORM },
+              layerTransforms: {},
+              layerKeyframes: {},
+              spriteFrameRanges: {},
+              hiddenLayerIds: [],
+              deletedSpriteIndices: [],
+              addedLayers: [newLayer],
+              shapes: [],
+              mergedGroups: [],
+              layerOrder: [newLayer.id],
+            },
+          ]);
+          setHistoryIdx(0);
+          setZoom(100);
+          setPan({ x: 0, y: 0 });
+          setLastAction(`✨ تم استدعاء وتفكيك ملف ${name} (${bm.width}×${bm.height}px) بمحرر SVGA بنجاح`);
+        } catch (_) {
+          setLastAction(`Error: ${err?.message || 'Could not decode file'}`);
+        }
       }
     },
     []
   );
+
+  useEffect(() => {
+    const el = stageContainerRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      const cw = el.clientWidth;
+      const ch = el.clientHeight;
+      if (cw > 100 && ch > 100) {
+        setStageViewportSize((prev) =>
+          Math.abs(prev.w - cw) > 2 || Math.abs(prev.h - ch) > 2 ? { w: cw, h: ch } : prev
+        );
+      }
+    };
+    updateSize();
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => updateSize());
+      ro.observe(el);
+    }
+    window.addEventListener('resize', updateSize);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [timelineCollapsed]);
+
+  const handleFitCanvasToCenter = useCallback(() => {
+    const el = stageContainerRef.current;
+    if (el && el.clientWidth > 100 && el.clientHeight > 100) {
+      setStageViewportSize({ w: el.clientWidth, h: el.clientHeight });
+    }
+    setPan({ x: 0, y: 0 });
+    const W = movie.w || 500;
+    const H = movie.h || 500;
+    setZoom(100);
+    setLastAction(
+      `🎯 تم ضبط وتكبير مقاس العرض بمنتصف الشاشة بوضوح كامل (${W}×${H}px — 100%)`
+    );
+  }, [movie.w, movie.h]);
 
   useEffect(() => {
     if (externalSvgaFile) {
@@ -582,6 +718,13 @@ export default function SvgaAeEditor({
       });
     }
   }, [externalSvgaFile, loadSvgaBuffer]);
+
+  useEffect(() => {
+    if (movie.w) setCustomCanvasW(movie.w);
+    if (movie.h) setCustomCanvasH(movie.h);
+    setZoom(100);
+    setPan({ x: 0, y: 0 });
+  }, [movie.w, movie.h]);
 
   // Active (non-deleted) movie view for asset usage stats
   const activeMovieForStats = useMemo<SvgaMovie>(() => {
@@ -770,6 +913,42 @@ export default function SvgaAeEditor({
   const canvasW = Math.max(1, Math.round(movie.w || 500));
   const canvasH = Math.max(1, Math.round(movie.h || 500));
 
+  const baseStageDisplayDims = useMemo(() => {
+    const availW = Math.max(420, stageViewportSize.w - 32);
+    const availH = Math.max(380, stageViewportSize.h - 20);
+    const aspect = canvasW / Math.max(1, canvasH);
+
+    // Tall portrait compositions (e.g., 750x1624, 750x1334, 1080x1920):
+    // Fill 96% of the stage vertical height and ensure a generous, comfortable width in the center stage
+    if (canvasH > canvasW * 1.2) {
+      const dispH = Math.round(availH * 0.96);
+      const naturalW = dispH * aspect;
+      const comfortableMinW = Math.min(availW * 0.56, dispH * 0.58);
+      const dispW = Math.round(Math.min(availW * 0.82, Math.max(naturalW, comfortableMinW)));
+      return { w: Math.max(220, dispW), h: Math.max(260, dispH) };
+    }
+
+    // Wide banner compositions (e.g., 800x200, 643x180):
+    if (canvasW > canvasH * 1.35) {
+      const fitScale = Math.min((availW * 0.88) / canvasW, (availH * 0.92) / canvasH);
+      const dispW = Math.round(Math.max(Math.min(availW * 0.86, 680), canvasW * fitScale));
+      const naturalH = dispW / Math.max(0.1, aspect);
+      const dispH = Math.round(
+        Math.min(availH * 0.92, Math.max(naturalH, Math.min(availH * 0.42, dispW * 0.3)))
+      );
+      return { w: Math.max(260, dispW), h: Math.max(160, dispH) };
+    }
+
+    // Square or near-square compositions (e.g., 500x500, 800x800):
+    const fitScale = Math.min((availW * 0.88) / canvasW, (availH * 0.95) / canvasH);
+    const dispW = Math.round(canvasW * fitScale);
+    const dispH = Math.round(canvasH * fitScale);
+    return {
+      w: Math.max(260, dispW),
+      h: Math.max(260, dispH),
+    };
+  }, [canvasW, canvasH, stageViewportSize.w, stageViewportSize.h]);
+
   const rulerMarks = useMemo(
     () => generateTimeRulerMarks(durationSec, totalFrames, fps),
     [durationSec, totalFrames, fps]
@@ -928,7 +1107,7 @@ export default function SvgaAeEditor({
       if (f.clipPath) {
         try {
           const clipP = new Path2D(f.clipPath);
-          ctx.clip(clipP);
+          ctx.clip(clipP, 'evenodd');
         } catch {}
       }
 
@@ -1088,7 +1267,7 @@ export default function SvgaAeEditor({
         maskCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
         if (f.clipPath) {
           try {
-            maskCtx.clip(new Path2D(f.clipPath));
+            maskCtx.clip(new Path2D(f.clipPath), 'evenodd');
           } catch {}
         }
         if (bm) {
@@ -1311,51 +1490,49 @@ export default function SvgaAeEditor({
             compCtx.clearRect(0, 0, W, H);
             compCtx.save();
             compCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-
-            const useExactAlpha = al.shineConfig.exactLayerAlphaMask !== false;
-            const applyPolygonClip =
-              al.shineConfig.maskContours.length > 0 &&
-              (!useExactAlpha || al.shineConfig.maskMode !== 'auto_layer_contour');
-
-            if (applyPolygonClip) {
-              const dynamicClipD = projectWorldContoursToLocalClipPath(
-                al.shineConfig.maskContours,
-                mat,
-                shineTargetDelta,
-                { smoothCurve: al.shineConfig.maskMode !== 'rect_box' }
-              );
-              if (dynamicClipD) {
-                try {
-                  const clipP = new Path2D(dynamicClipD);
-                  compCtx.clip(clipP, 'evenodd');
-                } catch {}
-              }
-            }
-
             compCtx.drawImage(al.originalBitmap || al.bitmap, 0, 0, al.width, al.height);
             compCtx.restore();
 
-            if (useExactAlpha) {
-              if (!shineMaskCanvasRef.current) {
-                shineMaskCanvasRef.current = document.createElement('canvas');
-              }
-              const maskC = shineMaskCanvasRef.current;
-              if (maskC.width !== W || maskC.height !== H) {
-                maskC.width = W;
-                maskC.height = H;
-              }
-              const maskCtx = maskC.getContext('2d');
-              if (maskCtx) {
-                const hasMaskPixels = drawTargetAlphaMaskAtCurrentFrame(
+            if (!shineMaskCanvasRef.current) {
+              shineMaskCanvasRef.current = document.createElement('canvas');
+            }
+            if (!shineScratchCanvasRef.current) {
+              shineScratchCanvasRef.current = document.createElement('canvas');
+            }
+            const maskC = shineMaskCanvasRef.current;
+            if (maskC.width !== W || maskC.height !== H) {
+              maskC.width = W;
+              maskC.height = H;
+            }
+            const maskCtx = maskC.getContext('2d');
+            if (maskCtx) {
+              const useExactAlpha = al.shineConfig.exactLayerAlphaMask !== false;
+              let hasMaskPixels = false;
+              if (useExactAlpha) {
+                hasMaskPixels = drawTargetAlphaMaskAtCurrentFrame(
                   maskCtx,
                   al.shineConfig.targetLayerId
                 );
-                if (hasMaskPixels) {
-                  compCtx.save();
-                  compCtx.globalCompositeOperation = 'destination-in';
-                  compCtx.drawImage(maskC, 0, 0);
-                  compCtx.restore();
-                }
+              } else {
+                maskCtx.clearRect(0, 0, W, H);
+              }
+
+              const hasFinalMatte = applySmartSoftFeatherMatteToMaskCanvas({
+                maskCanvas: maskC,
+                maskCtx,
+                scratchCanvas: shineScratchCanvasRef.current,
+                config: al.shineConfig,
+                targetDeltaMatrix: shineTargetDelta,
+                hasTargetMaskPixels: hasMaskPixels,
+                shineCanvas: compC,
+                shineCtx: compCtx,
+              });
+
+              if (hasFinalMatte) {
+                compCtx.save();
+                compCtx.globalCompositeOperation = 'destination-in';
+                compCtx.drawImage(maskC, 0, 0);
+                compCtx.restore();
               }
             }
 
@@ -1597,7 +1774,7 @@ export default function SvgaAeEditor({
           if (idx === 0) ctx.moveTo(pt.x, pt.y);
           else ctx.lineTo(pt.x, pt.y);
         });
-        ctx.strokeStyle = '#fbbf24';
+        ctx.strokeStyle = '#a78bfa';
         ctx.lineWidth = 2.2;
         ctx.setLineDash([5, 3]);
         ctx.stroke();
@@ -1618,7 +1795,7 @@ export default function SvgaAeEditor({
           ctx.lineTo(-5, -4.5);
           ctx.lineTo(-5, 4.5);
           ctx.closePath();
-          ctx.fillStyle = '#fde047';
+          ctx.fillStyle = '#c084fc';
           ctx.fill();
           ctx.restore();
         }
@@ -1636,7 +1813,7 @@ export default function SvgaAeEditor({
           const r = 7;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-          ctx.fillStyle = isStart ? '#10b981' : isEnd ? '#f43f5e' : '#f59e0b';
+          ctx.fillStyle = isStart ? '#8b5cf6' : isEnd ? '#f43f5e' : '#a78bfa';
           ctx.fill();
           ctx.lineWidth = 2;
           ctx.strokeStyle = '#ffffff';
@@ -1788,7 +1965,7 @@ export default function SvgaAeEditor({
       activeCenterRef.current = center;
 
       ctx.save();
-      ctx.strokeStyle = '#f59e0b';
+      ctx.strokeStyle = '#7c5cff';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       corners.forEach((pt, i) => {
@@ -1804,10 +1981,10 @@ export default function SvgaAeEditor({
       ctx.shadowOffsetX = 1;
       ctx.shadowOffsetY = 1;
 
-      // Draw 4 corner handles (prominent white squares with gold border)
+      // Draw 4 corner handles
       for (const pt of corners) {
         ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#f59e0b';
+        ctx.strokeStyle = '#7c5cff';
         ctx.lineWidth = 2;
         ctx.fillRect(pt.x - 5, pt.y - 5, 10, 10);
         ctx.strokeRect(pt.x - 5, pt.y - 5, 10, 10);
@@ -1816,8 +1993,8 @@ export default function SvgaAeEditor({
       // Draw 4 edge midpoints
       ctx.shadowBlur = 0;
       for (const pt of midpoints) {
-        ctx.fillStyle = '#fef3c7';
-        ctx.strokeStyle = '#d97706';
+        ctx.fillStyle = '#f3e8ff';
+        ctx.strokeStyle = '#8b5cf6';
         ctx.lineWidth = 1.5;
         ctx.fillRect(pt.x - 3.5, pt.y - 3.5, 7, 7);
         ctx.strokeRect(pt.x - 3.5, pt.y - 3.5, 7, 7);
@@ -1832,8 +2009,8 @@ export default function SvgaAeEditor({
     // 6. Render mouse-dragged Crop / Cut selection marquee overlay
     if (cropRect && cropRect.w >= 2 && cropRect.h >= 2) {
       ctx.save();
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.16)';
-      ctx.strokeStyle = '#fde047';
+      ctx.fillStyle = 'rgba(124, 92, 255, 0.16)';
+      ctx.strokeStyle = '#a78bfa';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.fillRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
@@ -1841,7 +2018,7 @@ export default function SvgaAeEditor({
       ctx.setLineDash([]);
       ctx.fillStyle = '#09090d';
       ctx.fillRect(cropRect.x, Math.max(0, cropRect.y - 18), 86, 17);
-      ctx.fillStyle = '#fde047';
+      ctx.fillStyle = '#c084fc';
       ctx.font = 'bold 10px Inter, sans-serif';
       ctx.fillText(
         `✂ ${Math.round(cropRect.w)}×${Math.round(cropRect.h)}`,
@@ -1985,7 +2162,16 @@ export default function SvgaAeEditor({
       if (addedIdx >= 0) {
         const updatedTransform = { ...addedLayers[addedIdx].transform, ...patch };
         const nextAdded = addedLayers.map((l, i) =>
-          i === addedIdx ? { ...l, transform: updatedTransform } : l
+          i === addedIdx
+            ? {
+                ...l,
+                transform: updatedTransform,
+                shineConfig:
+                  l.shineConfig && patch.opacity !== undefined
+                    ? { ...l.shineConfig, shineOpacity: patch.opacity }
+                    : l.shineConfig,
+              }
+            : l
         );
         const nextLayerMap = { ...layerTransforms, [targetId]: updatedTransform };
         setAddedLayers(nextAdded);
@@ -2055,6 +2241,114 @@ export default function SvgaAeEditor({
       syncKeyframePatch,
     ]
   );
+
+  // Import image and automatically adjust project canvas dimensions (W x H) to original image size
+  const handleImportImageWithOriginalDimensions = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+      const file = files[0];
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const rawBlob = new Blob([arrayBuffer], { type: file.type || 'image/png' });
+        const bitmap = await createImageBitmap(rawBlob);
+        const origW = bitmap.width;
+        const origH = bitmap.height;
+
+        // 1. Update project canvas dimensions to match original image size
+        setMovie((m) => ({
+          ...m,
+          w: origW,
+          h: origH,
+        }));
+        setCustomCanvasW(origW);
+        setCustomCanvasH(origH);
+
+        // 2. Create canvas PNG blob & dataUrl
+        const canvas = document.createElement('canvas');
+        canvas.width = origW;
+        canvas.height = origH;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(bitmap, 0, 0);
+        }
+        const pngBlob: Blob | null = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        const pngBytes = pngBlob
+          ? new Uint8Array(await pngBlob.arrayBuffer())
+          : new Uint8Array(arrayBuffer);
+        const dataUrl = canvas.toDataURL('image/png');
+
+        // 3. Add as new layer at 100% scale (0,0)
+        const newId = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newAssetKey = `user_img_${Date.now().toString(36)}`;
+        const newLayer: AddedLayer = {
+          id: newId,
+          assetKey: newAssetKey,
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          bitmap,
+          originalBitmap: bitmap,
+          originalWidth: origW,
+          originalHeight: origH,
+          pngBytes,
+          dataUrl,
+          width: origW,
+          height: origH,
+          bytes: pngBytes.byteLength,
+          transform: {
+            x: 0,
+            y: 0,
+            sx: 100,
+            sy: 100,
+            rotation: 0,
+            opacity: 100,
+            zoom: 100,
+          },
+          inFrame: 0,
+          outFrame: Math.max(0, totalFrames - 1),
+        };
+
+        const nextAdded = [...addedLayers, newLayer];
+        setAddedLayers(nextAdded);
+        setSelectedTarget(newId);
+        setSelectedAssetKey(null);
+
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          addedLayers: nextAdded,
+        });
+
+        setLastAction(`📐 تم استدعاء الصورة (${file.name}) وتحديد مقاسات المشروع عليها تلقائياً (${origW} × ${origH}px)`);
+        setProjectSizeModalOpen(false);
+      } catch (err) {
+        console.error('Failed to import image with original dimensions:', err);
+        setLastAction('خطأ أثناء استدعاء الصورة للقياسات الأصلية');
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    },
+    [totalFrames, addedLayers, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+  );
+
+  // Apply original image dimensions of currently selected layer to project canvas
+  const handleSetCanvasToSelectedImageOriginalDimensions = useCallback(() => {
+    const selLayer = addedLayers.find((l) => l.id === selectedTarget);
+    if (!selLayer) {
+      setLastAction('يرجى تحديد طبقة صورة أولاً لتطبيق مقاساتها الأصلية');
+      return;
+    }
+    const targetW = selLayer.originalWidth || selLayer.width;
+    const targetH = selLayer.originalHeight || selLayer.height;
+
+    setMovie((m) => ({
+      ...m,
+      w: targetW,
+      h: targetH,
+    }));
+    setCustomCanvasW(targetW);
+    setCustomCanvasH(targetH);
+
+    setLastAction(`📐 تم تطبيق المقاسات الأصلية للصورة (${selLayer.name}) على المشروع (${targetW} × ${targetH}px)`);
+    setProjectSizeModalOpen(false);
+  }, [addedLayers, selectedTarget]);
 
   const updateActiveTransform = (patch: Partial<LayerTransform>, actionDesc?: string) => {
     updateLayerTransformById(selectedTarget, selectedAssetKey, patch, actionDesc);
@@ -3676,7 +3970,7 @@ export default function SvgaAeEditor({
       targetId: string,
       frameIdx: number
     ): {
-      bitmap: ImageBitmap | null;
+      bitmap: ImageBitmap | HTMLCanvasElement | null;
       width: number;
       height: number;
       fx?: number;
@@ -3859,8 +4153,8 @@ export default function SvgaAeEditor({
       const info = getTargetLayerBoundsAndBitmapAtFrame(targetId, currentFrame);
       if (info.bitmap) {
         try {
-          const sampleW = Math.min(256, Math.max(16, info.bitmap.width));
-          const sampleH = Math.min(256, Math.max(16, info.bitmap.height));
+          const sampleW = Math.min(384, Math.max(16, info.bitmap.width));
+          const sampleH = Math.min(384, Math.max(16, info.bitmap.height));
           const c = document.createElement('canvas');
           c.width = sampleW;
           c.height = sampleH;
@@ -3886,10 +4180,10 @@ export default function SvgaAeEditor({
               sampleH,
               adjMat,
               {
-                alphaThreshold: 14,
+                alphaThreshold: 45,
                 detectInnerHole: includeInnerHole,
                 contourMethod: 'moore',
-                rdpEpsilon: 1.1,
+                rdpEpsilon: 1.0,
               }
             );
             if (traced.length > 0 && traced[0].length >= 3) {
@@ -3939,31 +4233,50 @@ export default function SvgaAeEditor({
       const { contours, bounds } = traceContoursFromLayerTarget(resolvedTargetId, true, 28);
       const spanW = Math.max(60, bounds.maxX - bounds.minX);
       const spanH = Math.max(60, bounds.maxY - bounds.minY);
-      const shineW = Math.max(180, Math.min(900, Math.round(Math.max(spanW, spanH) * 1.55)));
+      const isWideBanner = spanW > spanH * 1.45;
+      const diagSpan = Math.hypot(spanW, spanH);
+      const shineW = isWideBanner
+        ? Math.max(240, Math.min(720, Math.round(Math.max(spanH * 2.6, spanW * 0.65))))
+        : Math.max(280, Math.min(880, Math.round(diagSpan * 1.35)));
       const shineH = shineW;
 
-      const motionPoints: Point2D[] = [
-        {
-          x: Number((bounds.cx - spanW * 0.65).toFixed(1)),
-          y: Number((bounds.cy - spanH * 0.55).toFixed(1)),
-        },
-        {
-          x: Number(bounds.cx.toFixed(1)),
-          y: Number(bounds.cy.toFixed(1)),
-        },
-        {
-          x: Number((bounds.cx + spanW * 0.65).toFixed(1)),
-          y: Number((bounds.cy + spanH * 0.55).toFixed(1)),
-        },
-      ];
+      const motionPoints: Point2D[] = isWideBanner
+        ? [
+            {
+              x: Number((bounds.cx - spanW * 0.78).toFixed(1)),
+              y: Number((bounds.cy - spanH * 0.18).toFixed(1)),
+            },
+            {
+              x: Number(bounds.cx.toFixed(1)),
+              y: Number(bounds.cy.toFixed(1)),
+            },
+            {
+              x: Number((bounds.cx + spanW * 0.78).toFixed(1)),
+              y: Number((bounds.cy + spanH * 0.18).toFixed(1)),
+            },
+          ]
+        : [
+            {
+              x: Number((bounds.cx - spanW * 0.76).toFixed(1)),
+              y: Number((bounds.cy - spanH * 0.68).toFixed(1)),
+            },
+            {
+              x: Number(bounds.cx.toFixed(1)),
+              y: Number(bounds.cy.toFixed(1)),
+            },
+            {
+              x: Number((bounds.cx + spanW * 0.76).toFixed(1)),
+              y: Number((bounds.cy + spanH * 0.68).toFixed(1)),
+            },
+          ];
 
       const sweepStart = 0;
       const sweepEnd = Math.max(1, totalFrames - 1);
       const presetId: ShineLayerConfig['presetId'] = 'royal_gold';
-      const beamAngleDeg = -32;
-      const beamWidthRatio = 0.28;
+      const beamAngleDeg = isWideBanner ? -28 : -32;
+      const beamWidthRatio = 0.22;
       const beamSoftness = 0.85;
-      const colorPrimary = '#fde047';
+      const colorPrimary = '#fbbf24';
       const colorSecondary = '#ffffff';
 
       const rendered = await renderProceduralShineBitmapAndBytes({
@@ -3987,6 +4300,9 @@ export default function SvgaAeEditor({
         targetLayerId: resolvedTargetId,
         followTargetLayerTransform: true,
         exactLayerAlphaMask: true,
+        metallicSurfaceRelief: true,
+        edgeFeather: 2,
+        shineOpacity: 100,
         blendMode: 'screen',
         maskMode: 'auto_layer_contour',
         maskContours: contours,
@@ -4103,7 +4419,7 @@ export default function SvgaAeEditor({
   );
 
   const handleUpdateShineConfig = useCallback(
-    async (
+    (
       shineLayerId: string,
       patch: Partial<ShineLayerConfig>,
       options?: {
@@ -4120,47 +4436,120 @@ export default function SvgaAeEditor({
         ...patch,
       };
 
-      let nextBitmap = targetLayer.bitmap;
-      let nextPngBytes = targetLayer.pngBytes;
-      let nextDataUrl = targetLayer.dataUrl;
+      let nextBitmap: ImageBitmap | HTMLCanvasElement = targetLayer.bitmap;
+      const nextPngBytes = targetLayer.pngBytes;
+      const nextDataUrl = targetLayer.dataUrl;
       let nextW = targetLayer.width;
       let nextH = targetLayer.height;
 
-      if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
-        const rendered = await renderProceduralShineBitmapAndBytes({
-          presetId: nextConfig.presetId,
-          width: nextConfig.shineWidth || targetLayer.width,
-          height: nextConfig.shineHeight || targetLayer.height,
-          colorPrimary: nextConfig.colorPrimary || '#fde047',
-          colorSecondary: nextConfig.colorSecondary || '#ffffff',
-          beamAngleDeg: nextConfig.beamAngleDeg ?? -32,
-          beamWidthRatio: nextConfig.beamWidthRatio ?? 0.28,
-          beamSoftness: nextConfig.beamSoftness ?? 0.85,
-        });
-        nextBitmap = rendered.bitmap;
-        nextPngBytes = rendered.pngBytes;
-        nextDataUrl = rendered.dataUrl;
-        nextW = rendered.width;
-        nextH = rendered.height;
+      // If user adjusts procedural beam sliders while on custom_image, automatically switch to royal_gold procedural SVGA beam
+      if (
+        options?.regenerateBitmap &&
+        nextConfig.presetId === 'custom_image' &&
+        (patch.beamAngleDeg !== undefined ||
+          patch.beamWidthRatio !== undefined ||
+          patch.colorPrimary !== undefined ||
+          patch.colorSecondary !== undefined)
+      ) {
+        nextConfig.presetId = 'royal_gold';
       }
 
-      let nextTransform = targetLayer.transform;
+      // Ensure procedural shine bitmap is always a well-proportioned square canvas
+      if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
+        const curSide = Math.max(nextConfig.shineWidth || 0, nextConfig.shineHeight || 0, targetLayer.width, targetLayer.height);
+        const procSide =
+          nextConfig.shineWidth === nextConfig.shineHeight && (nextConfig.shineWidth || 0) >= 180
+            ? nextConfig.shineWidth!
+            : Math.max(220, Math.min(640, Math.round(curSide * 0.85)));
+        const syncCanvas = renderProceduralShineCanvasSync({
+          presetId: nextConfig.presetId,
+          width: procSide,
+          height: procSide,
+          colorPrimary: nextConfig.colorPrimary || '#fbbf24',
+          colorSecondary: nextConfig.colorSecondary || '#ffffff',
+          beamAngleDeg: nextConfig.beamAngleDeg ?? -30,
+          beamWidthRatio: nextConfig.beamWidthRatio ?? 0.18,
+          beamSoftness: nextConfig.beamSoftness ?? 0.85,
+        });
+        nextBitmap = syncCanvas;
+        nextW = syncCanvas.width;
+        nextH = syncCanvas.height;
+
+        // Debounce PNG encoding + thumbnail update 200ms after slider drag stops
+        if (shineBakeTimerRef.current !== null) {
+          window.clearTimeout(shineBakeTimerRef.current);
+        }
+        shineBakeTimerRef.current = window.setTimeout(async () => {
+          shineBakeTimerRef.current = null;
+          try {
+            const dataUrl = syncCanvas.toDataURL('image/png');
+            const blob: Blob = await new Promise((resolve) =>
+              syncCanvas.toBlob((b) => resolve(b || new Blob()), 'image/png')
+            );
+            const pngBytes = new Uint8Array(await blob.arrayBuffer());
+            const bm = await createImageBitmap(blob);
+            setAddedLayers((prev) =>
+              prev.map((l) =>
+                l.id === shineLayerId
+                  ? {
+                      ...l,
+                      bitmap: bm,
+                      originalBitmap: bm,
+                      pngBytes,
+                      dataUrl,
+                      bytes: pngBytes.byteLength,
+                    }
+                  : l
+              )
+            );
+          } catch {}
+        }, 200);
+      }
+
+      let nextTransform = { ...targetLayer.transform };
+      if (patch.shineOpacity !== undefined) {
+        const clampedOpa = Math.max(0, Math.min(100, Math.round(patch.shineOpacity)));
+        nextTransform = {
+          ...nextTransform,
+          opacity: clampedOpa,
+        };
+        setLayerTransforms((prev) => ({
+          ...prev,
+          [shineLayerId]: nextTransform,
+        }));
+        setLayerKeyframes((prev) => {
+          const existing = prev[shineLayerId];
+          if (!existing?.opacity || Object.keys(existing.opacity).length === 0) return prev;
+          const updatedOpa: Record<number, number> = {};
+          for (const [fKey, val] of Object.entries(existing.opacity)) {
+            updatedOpa[Number(fKey)] = val > 0 ? clampedOpa : 0;
+          }
+          return {
+            ...prev,
+            [shineLayerId]: {
+              ...existing,
+              opacity: updatedOpa,
+            },
+          };
+        });
+      }
+
       if (options?.regenerateKeyframes && nextConfig.motionPoints.length >= 1) {
         const kfs = buildShineKeyframesFromMotionPoints(
           nextConfig,
           totalFrames,
           canvasW,
           canvasH,
-          targetLayer.transform.opacity || 100
+          nextConfig.shineOpacity ?? nextTransform.opacity ?? 100
         );
         const posAtCur =
           kfs.position?.[currentFrame] ||
           kfs.position?.[nextConfig.startFrame] || {
-            x: targetLayer.transform.x,
-            y: targetLayer.transform.y,
+            x: nextTransform.x,
+            y: nextTransform.y,
           };
         nextTransform = {
-          ...targetLayer.transform,
+          ...nextTransform,
           x: posAtCur.x,
           y: posAtCur.y,
         };
@@ -4337,39 +4726,39 @@ export default function SvgaAeEditor({
 
       if (dir === 'diag_tl_br') {
         nextPts = [
-          { x: Number((bounds.cx - spanW * 0.65).toFixed(1)), y: Number((bounds.cy - spanH * 0.55).toFixed(1)) },
+          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number((bounds.cy - spanH * 0.58).toFixed(1)) },
           { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx + spanW * 0.65).toFixed(1)), y: Number((bounds.cy + spanH * 0.55).toFixed(1)) },
+          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number((bounds.cy + spanH * 0.58).toFixed(1)) },
         ];
-        nextAngle = 135;
+        nextAngle = -32;
       } else if (dir === 'diag_tr_bl') {
         nextPts = [
-          { x: Number((bounds.cx + spanW * 0.65).toFixed(1)), y: Number((bounds.cy - spanH * 0.55).toFixed(1)) },
+          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number((bounds.cy - spanH * 0.58).toFixed(1)) },
           { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx - spanW * 0.65).toFixed(1)), y: Number((bounds.cy + spanH * 0.55).toFixed(1)) },
+          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number((bounds.cy + spanH * 0.58).toFixed(1)) },
         ];
-        nextAngle = 45;
+        nextAngle = 32;
       } else if (dir === 'horiz_lr') {
         nextPts = [
-          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.cx - spanW * 0.74).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
           { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.cx + spanW * 0.74).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
         ];
-        nextAngle = 115;
+        nextAngle = -26;
       } else if (dir === 'vert_tb') {
         nextPts = [
-          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy - spanH * 0.7).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy - spanH * 0.72).toFixed(1)) },
           { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy + spanH * 0.7).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy + spanH * 0.72).toFixed(1)) },
         ];
-        nextAngle = 25;
+        nextAngle = -68;
       }
 
       handleUpdateShineConfig(
         shineLayerId,
         { motionPoints: nextPts, beamAngleDeg: nextAngle },
         {
-          regenerateBitmap: sc.presetId !== 'custom_image',
+          regenerateBitmap: true,
           regenerateKeyframes: true,
           actionLabel: '🧭 تم تحديث مسار حركة اللمعة وزاوية الشعاع تلقائياً',
         }
@@ -6028,6 +6417,12 @@ export default function SvgaAeEditor({
       const sourceBm = al.originalBitmap || al.bitmap;
 
       if (isShineLayer && al.shineConfig) {
+        if (sourceBm instanceof HTMLCanvasElement) {
+          const blob: Blob | null = await new Promise((r) => sourceBm.toBlob(r, 'image/png'));
+          if (blob) {
+            exportPngBytes = new Uint8Array(await blob.arrayBuffer());
+          }
+        }
         const refFrame = al.shineConfig.referenceFrame ?? 0;
         const refTargetMat =
           al.shineConfig.followTargetLayerTransform &&
@@ -6087,8 +6482,12 @@ export default function SvgaAeEditor({
             }
           }
         }
-      } else if (exportPngBytes && exportPngBytes.byteLength > 0) {
-        exportPngBytes = compressPngBufferLikeReference(exportPngBytes, 100, 'png8_only').bytes;
+      } else if (!isShineLayer && exportPngBytes && exportPngBytes.byteLength > 0) {
+        try {
+          exportPngBytes = compressPngBufferLikeReference(exportPngBytes, 100, 'png8_only').bytes;
+        } catch (err) {
+          console.warn('Skipped PNG quantization for layer:', al.name, err);
+        }
       }
 
       extraLayers.push({
@@ -6338,6 +6737,13 @@ export default function SvgaAeEditor({
         accept="image/*"
         hidden
         onChange={handleReplaceImage}
+      />
+      <input
+        ref={projectSizeFileInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={handleImportImageWithOriginalDimensions}
       />
 
       {/* 1. SUB-HEADER TOOLBAR */}
@@ -6746,15 +7152,19 @@ export default function SvgaAeEditor({
             </button>
             <button
               type="button"
-              id="edAddShineLayerBtn"
-              onClick={() => handleCreateShineLayer()}
-              title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
+              id="edProjectSizeBtn"
+              onClick={() => {
+                setCustomCanvasW(canvasW);
+                setCustomCanvasH(canvasH);
+                setProjectSizeModalOpen(true);
+              }}
+              title="تحديد مقاسات مشروع العمل أو استدعاء صورة وتعديل مقاسات المشروع تلقائياً على مقاساتها الأصلية"
               style={{
                 padding: '5px 10px',
                 borderRadius: '6px',
-                border: '1px solid rgba(245, 158, 11, 0.45)',
-                background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.12))',
-                color: '#fde68a',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.22), rgba(99, 102, 241, 0.14))',
+                color: '#f3e8ff',
                 fontWeight: 700,
                 cursor: 'pointer',
                 display: 'inline-flex',
@@ -6764,7 +7174,30 @@ export default function SvgaAeEditor({
                 whiteSpace: 'nowrap',
               }}
             >
-              <Sparkles size={13} color="#fbbf24" />
+              <Scaling size={13} color="#c084fc" />
+              <span>📐 مقاسات المشروع والصورة</span>
+            </button>
+            <button
+              type="button"
+              id="edAddShineLayerBtn"
+              onClick={() => handleCreateShineLayer()}
+              title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
+              style={{
+                padding: '5px 10px',
+                borderRadius: '6px',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(99, 102, 241, 0.16))',
+                color: '#f3e8ff',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11.5px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Sparkles size={13} color="#c084fc" />
               <span>✨ إضافة لمعة (Shine)</span>
             </button>
             <button
@@ -7634,11 +8067,11 @@ export default function SvgaAeEditor({
                             cursor: 'pointer',
                             marginTop: '3px',
                             background: isSel
-                              ? (isShine ? 'rgba(245, 158, 11, 0.12)' : '#1d1d2d')
-                              : (isShine ? 'rgba(245, 158, 11, 0.04)' : 'rgba(255,255,255,0.02)'),
+                              ? (isShine ? 'rgba(124, 92, 255, 0.22)' : '#1d1d2d')
+                              : (isShine ? 'rgba(124, 92, 255, 0.08)' : 'rgba(255,255,255,0.02)'),
                             border: isSel
-                              ? (isShine ? '1px solid #f59e0b' : '1px solid #7c5cff')
-                              : (isShine ? '1px solid rgba(245, 158, 11, 0.3)' : '1px solid #222230'),
+                              ? (isShine ? '1px solid #a78bfa' : '1px solid #7c5cff')
+                              : (isShine ? '1px solid rgba(124, 92, 255, 0.35)' : '1px solid #222230'),
                             opacity: isHidden ? 0.45 : 1,
                           }}
                         >
@@ -7663,7 +8096,7 @@ export default function SvgaAeEditor({
                               {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
                             </button>
                             {isShine ? (
-                              <Sparkles size={13} color="#fcd34d" style={{ flexShrink: 0 }} />
+                              <Sparkles size={13} color="#c084fc" style={{ flexShrink: 0 }} />
                             ) : (
                               <ImageIcon size={12} color="#a78bfa" style={{ flexShrink: 0 }} />
                             )}
@@ -7672,7 +8105,7 @@ export default function SvgaAeEditor({
                                 <span
                                   style={{
                                     fontWeight: 600,
-                                    color: isShine ? '#fde68a' : '#e8e8ee',
+                                    color: isShine ? '#e9d5ff' : '#e8e8ee',
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap',
@@ -7686,8 +8119,8 @@ export default function SvgaAeEditor({
                                       fontSize: '9px',
                                       padding: '1px 4px',
                                       borderRadius: '3px',
-                                      background: 'rgba(245, 158, 11, 0.25)',
-                                      color: '#fef08a',
+                                      background: 'rgba(124, 92, 255, 0.3)',
+                                      color: '#f3e8ff',
                                       fontWeight: 700,
                                       whiteSpace: 'nowrap',
                                       flexShrink: 0,
@@ -7700,7 +8133,7 @@ export default function SvgaAeEditor({
                               <span
                                 style={{
                                   fontSize: '9.5px',
-                                  color: isShine ? '#fbbf24' : (al.copiedFromKey ? '#34d399' : '#727284'),
+                                  color: isShine ? '#c084fc' : (al.copiedFromKey ? '#34d399' : '#727284'),
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
@@ -7723,12 +8156,12 @@ export default function SvgaAeEditor({
                                 title="نقل وترتيب الطبقة في المشروع (Move Layer)"
                                 style={{
                                   background: isShine
-                                    ? 'rgba(245, 158, 11, 0.16)'
+                                    ? 'rgba(124, 92, 255, 0.2)'
                                     : (moveMenuLayerId === al.id ? 'rgba(124, 92, 255, 0.28)' : 'rgba(255,255,255,0.05)'),
                                   border: isShine
-                                    ? '1px solid rgba(245, 158, 11, 0.45)'
+                                    ? '1px solid rgba(167, 139, 250, 0.45)'
                                     : (moveMenuLayerId === al.id ? '1px solid #8b5cf6' : '1px solid #28283a'),
-                                  color: isShine ? '#fde68a' : (moveMenuLayerId === al.id ? '#f3e8ff' : '#c4b5fd'),
+                                  color: isShine ? '#e9d5ff' : (moveMenuLayerId === al.id ? '#f3e8ff' : '#c4b5fd'),
                                   borderRadius: '6px',
                                   padding: '3px 8px',
                                   fontSize: '10.5px',
@@ -7739,7 +8172,7 @@ export default function SvgaAeEditor({
                                   gap: '4px',
                                 }}
                               >
-                                <ArrowUpDown size={11} color={isShine ? '#fbbf24' : '#a78bfa'} />
+                                <ArrowUpDown size={11} color={isShine ? '#c084fc' : '#a78bfa'} />
                                 <span>نقل</span>
                               </button>
                               <button
@@ -7750,9 +8183,9 @@ export default function SvgaAeEditor({
                                 }}
                                 title="رفع الطبقة للأعلى (Move Up)"
                                 style={{
-                                  background: isShine ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255,255,255,0.04)',
-                                  border: isShine ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #28283a',
-                                  color: isShine ? '#fde68a' : '#a78bfa',
+                                  background: isShine ? 'rgba(124, 92, 255, 0.16)' : 'rgba(255,255,255,0.04)',
+                                  border: isShine ? '1px solid rgba(167, 139, 250, 0.4)' : '1px solid #28283a',
+                                  color: isShine ? '#e9d5ff' : '#a78bfa',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '5px',
@@ -7768,9 +8201,9 @@ export default function SvgaAeEditor({
                                 }}
                                 title="خفض الطبقة للأسفل (Move Down)"
                                 style={{
-                                  background: isShine ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255,255,255,0.04)',
-                                  border: isShine ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #28283a',
-                                  color: isShine ? '#fde68a' : '#a78bfa',
+                                  background: isShine ? 'rgba(124, 92, 255, 0.16)' : 'rgba(255,255,255,0.04)',
+                                  border: isShine ? '1px solid rgba(167, 139, 250, 0.4)' : '1px solid #28283a',
+                                  color: isShine ? '#e9d5ff' : '#a78bfa',
                                   cursor: 'pointer',
                                   padding: '2px 4px',
                                   borderRadius: '5px',
@@ -9140,6 +9573,7 @@ export default function SvgaAeEditor({
 
         {/* CENTER CANVAS STAGE */}
         <div
+          ref={stageContainerRef}
           style={{
             flex: 1,
             position: 'relative',
@@ -9151,16 +9585,18 @@ export default function SvgaAeEditor({
         >
           <div
             style={{
-              width: `${Math.round(Math.min(540, canvasW * 1.15) * (zoom / 100))}px`,
-              height: `${Math.round(Math.min(540, canvasH * 1.15) * (zoom / 100))}px`,
+              width: `${Math.round(baseStageDisplayDims.w * (zoom / 100))}px`,
+              height: `${Math.round(baseStageDisplayDims.h * (zoom / 100))}px`,
               transform: `translate(${pan.x}px, ${pan.y}px)`,
               background:
                 'repeating-conic-gradient(#17171e 0 25%, #101015 0 50%) 0 0 / 28px 28px',
-              border: '1px solid #1e1e2a',
+              border: '1px solid rgba(139, 92, 246, 0.38)',
+              borderRadius: '6px',
               display: 'grid',
               placeItems: 'center',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.65)',
+              boxShadow: '0 20px 55px rgba(0,0,0,0.75)',
               position: 'relative',
+              transition: 'width 0.12s ease-out, height 0.12s ease-out',
             }}
           >
             <canvas
@@ -9171,7 +9607,7 @@ export default function SvgaAeEditor({
               style={{
                 width: '100%',
                 height: '100%',
-                objectFit: 'contain',
+                display: 'block',
                 cursor:
                   activeTool === 'Hand'
                     ? 'grab'
@@ -9253,6 +9689,7 @@ export default function SvgaAeEditor({
             }}
           />
 
+          {/* Enhanced Zoom & Fit-To-Center Floating Control Widget */}
           <div
             style={{
               position: 'absolute',
@@ -9260,47 +9697,116 @@ export default function SvgaAeEditor({
               bottom: '14px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '8px',
-              background: '#12121a',
-              border: '1px solid #242434',
+              gap: '6px',
+              background: '#111119',
+              border: '1px solid rgba(167, 139, 250, 0.45)',
               borderRadius: '99px',
               padding: '4px 10px',
-              fontSize: '11px',
-              color: '#c8c8d8',
+              fontSize: '11.5px',
+              color: '#e2e8f0',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.65)',
+              zIndex: 30,
+              direction: 'rtl',
             }}
           >
             <button
               type="button"
+              id="edZoomOutBtn"
               onClick={() => setZoom((z) => Math.max(25, z - 25))}
-              style={{ background: 0, border: 0, color: 'inherit', cursor: 'pointer' }}
+              title="تصغير الكانفاس (-25%)"
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid #2d2d42',
+                borderRadius: '50%',
+                width: '24px',
+                height: '24px',
+                color: '#fff',
+                cursor: 'pointer',
+                fontWeight: 800,
+                display: 'grid',
+                placeItems: 'center',
+                lineHeight: 1,
+              }}
             >
               −
             </button>
-            <span style={{ minWidth: '34px', textAlign: 'center', fontWeight: 600 }}>{zoom}%</span>
+            <span
+              style={{
+                minWidth: '38px',
+                textAlign: 'center',
+                fontWeight: 800,
+                color: '#f3e8ff',
+                fontSize: '11px',
+              }}
+            >
+              {zoom}%
+            </span>
             <button
               type="button"
-              onClick={() => setZoom((z) => Math.min(300, z + 25))}
-              style={{ background: 0, border: 0, color: 'inherit', cursor: 'pointer' }}
+              id="edZoomInBtn"
+              onClick={() => setZoom((z) => Math.min(400, z + 25))}
+              title="تكبير الكانفاس (+25%)"
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid #2d2d42',
+                borderRadius: '50%',
+                width: '24px',
+                height: '24px',
+                color: '#fff',
+                cursor: 'pointer',
+                fontWeight: 800,
+                display: 'grid',
+                placeItems: 'center',
+                lineHeight: 1,
+              }}
             >
               +
             </button>
+
             <button
               type="button"
-              title="Reset zoom & pan"
+              id="edFitStageToCenterBtn"
+              onClick={handleFitCanvasToCenter}
+              title="توسط وتكبير الكانفاس تلقائياً بمنتصف الشاشة مهما كان مقاس المشروع"
+              style={{
+                background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
+                border: '1px solid #8b5cf6',
+                borderRadius: '99px',
+                padding: '3px 10px',
+                color: '#ffffff',
+                fontWeight: 800,
+                fontSize: '10.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 2px 8px rgba(124, 92, 255, 0.4)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Maximize2 size={11} color="#ffffff" />
+              <span>🎯 Fit / التوسط</span>
+            </button>
+
+            <button
+              type="button"
+              id="edZoomResetBtn"
+              title="إعادة تعيين التكبير والموقع الاصلي (100%)"
               onClick={() => {
                 setZoom(100);
                 setPan({ x: 0, y: 0 });
               }}
               style={{
-                background: 0,
+                background: 'transparent',
                 border: 0,
-                color: 'inherit',
+                color: '#a78bfa',
                 cursor: 'pointer',
                 display: 'grid',
                 placeItems: 'center',
+                padding: '2px',
               }}
             >
-              <RotateCcw size={12} />
+              <RotateCcw size={13} />
             </button>
           </div>
         </div>
@@ -9601,12 +10107,12 @@ export default function SvgaAeEditor({
                           padding: '7px 8px',
                           borderRadius: '7px',
                           border: selectedAddedLayer?.shineConfig?.enabled
-                            ? '1px solid rgba(245, 158, 11, 0.5)'
+                            ? '1px solid rgba(167, 139, 250, 0.5)'
                             : '1px solid #28283a',
                           background: selectedAddedLayer?.shineConfig?.enabled
-                            ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                            ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(99, 102, 241, 0.18))'
                             : '#14141e',
-                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#e9d5ff' : '#e8e8ee',
                           fontWeight: 700,
                           fontSize: '10.5px',
                           cursor: 'pointer',
@@ -9616,7 +10122,7 @@ export default function SvgaAeEditor({
                           gap: '5px',
                         }}
                       >
-                        <CopyPlus size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
+                        <CopyPlus size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#c084fc' : '#e8e8ee'} />
                         <span>نسخ طبقة ثانية</span>
                       </button>
 
@@ -9629,12 +10135,12 @@ export default function SvgaAeEditor({
                           padding: '7px 8px',
                           borderRadius: '7px',
                           border: selectedAddedLayer?.shineConfig?.enabled
-                            ? '1px solid rgba(245, 158, 11, 0.5)'
+                            ? '1px solid rgba(167, 139, 250, 0.5)'
                             : '1px solid #28283a',
                           background: selectedAddedLayer?.shineConfig?.enabled
-                            ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                            ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(99, 102, 241, 0.18))'
                             : '#14141e',
-                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#e9d5ff' : '#e8e8ee',
                           fontWeight: 700,
                           fontSize: '10.5px',
                           cursor: 'pointer',
@@ -9644,7 +10150,7 @@ export default function SvgaAeEditor({
                           gap: '5px',
                         }}
                       >
-                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
+                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#c084fc' : '#e8e8ee'} />
                         <span>نسخ وعكس (شمال↔يمين)</span>
                       </button>
                     </div>
@@ -9659,12 +10165,12 @@ export default function SvgaAeEditor({
                           padding: '6px 8px',
                           borderRadius: '7px',
                           border: selectedAddedLayer?.shineConfig?.enabled
-                            ? '1px solid rgba(245, 158, 11, 0.4)'
+                            ? '1px solid rgba(167, 139, 250, 0.4)'
                             : '1px solid #28283a',
                           background: selectedAddedLayer?.shineConfig?.enabled
-                            ? 'rgba(245, 158, 11, 0.12)'
+                            ? 'rgba(124, 92, 255, 0.16)'
                             : '#14141e',
-                          color: selectedAddedLayer?.shineConfig?.enabled ? '#fde68a' : '#e8e8ee',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#e9d5ff' : '#e8e8ee',
                           fontWeight: 600,
                           fontSize: '10.5px',
                           cursor: 'pointer',
@@ -9674,7 +10180,7 @@ export default function SvgaAeEditor({
                           gap: '5px',
                         }}
                       >
-                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#fbbf24' : '#e8e8ee'} />
+                        <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#c084fc' : '#e8e8ee'} />
                         <span>↔️ عكس الطبقة الحالية من الشمال لليمين</span>
                       </button>
 
@@ -9690,9 +10196,9 @@ export default function SvgaAeEditor({
                               width: '100%',
                               padding: '8px 10px',
                               borderRadius: '8px',
-                              border: '1px solid rgba(251, 191, 36, 0.65)',
-                              background: 'linear-gradient(135deg, rgba(245,158,11,0.28), rgba(217,119,6,0.18))',
-                              color: '#fef08a',
+                              border: '1px solid rgba(167, 139, 250, 0.65)',
+                              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.32), rgba(99, 102, 241, 0.22))',
+                              color: '#f3e8ff',
                               fontWeight: 800,
                               fontSize: '11px',
                               cursor: 'pointer',
@@ -9700,10 +10206,10 @@ export default function SvgaAeEditor({
                               alignItems: 'center',
                               justifyContent: 'center',
                               gap: '6px',
-                              boxShadow: '0 2px 10px rgba(245, 158, 11, 0.16)',
+                              boxShadow: '0 2px 10px rgba(124, 92, 255, 0.2)',
                             }}
                           >
-                            <Sparkles size={13} color="#fbbf24" />
+                            <Sparkles size={13} color="#c084fc" />
                             <span>✨ إضافة طبقة لمعة احترافية على هذه الطبقة (Shine)</span>
                           </button>
 
@@ -10785,6 +11291,34 @@ export default function SvgaAeEditor({
                   Scene (Editable)
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomCanvasW(canvasW);
+                      setCustomCanvasH(canvasH);
+                      setProjectSizeModalOpen(true);
+                    }}
+                    title="فتح نافذة مقاسات المشروع واستدعاء الصورة بالمقاس الأصلي"
+                    style={{
+                      width: '100%',
+                      padding: '6px 8px',
+                      borderRadius: '7px',
+                      border: '1px solid rgba(167, 139, 250, 0.45)',
+                      background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.2), rgba(99, 102, 241, 0.12))',
+                      color: '#f3e8ff',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '5px',
+                      marginBottom: '4px',
+                    }}
+                  >
+                    <Scaling size={12} color="#c084fc" />
+                    <span>📐 مقاسات المشروع والصورة الأصلية</span>
+                  </button>
                   <div
                     style={{
                       display: 'flex',
@@ -10798,21 +11332,32 @@ export default function SvgaAeEditor({
                         type="number"
                         min="16"
                         max="4096"
-                        value={canvasW}
+                        value={customCanvasW || ''}
                         aria-label="Canvas width"
                         onChange={(e) =>
-                          setMovie((m) => ({
-                            ...m,
-                            w: Math.max(16, Number(e.target.value) || 300),
-                          }))
+                          setCustomCanvasW(e.target.value === '' ? 0 : Number(e.target.value))
                         }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const finalW = Math.max(16, customCanvasW || 300);
+                            const finalH = Math.max(16, customCanvasH || 300);
+                            setCustomCanvasW(finalW);
+                            setCustomCanvasH(finalH);
+                            setMovie((m) => ({ ...m, w: finalW, h: finalH }));
+                            pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices);
+                            setLastAction(`📐 تم تأكيد وتطبيق مقاسات المشروع: ${finalW} × ${finalH}px`);
+                          }
+                        }}
                         style={{
-                          width: '54px',
+                          width: '52px',
                           background: '#14141e',
                           border: '1px solid #242434',
                           borderRadius: '5px',
-                          padding: '2px 5px',
-                          textAlign: 'right',
+                          padding: '2px 4px',
+                          textAlign: 'center',
+                          color: '#fff',
+                          fontSize: '11px',
+                          fontWeight: 700,
                         }}
                       />
                       <span style={{ color: '#6e6e80' }}>×</span>
@@ -10820,23 +11365,60 @@ export default function SvgaAeEditor({
                         type="number"
                         min="16"
                         max="4096"
-                        value={canvasH}
+                        value={customCanvasH || ''}
                         aria-label="Canvas height"
                         onChange={(e) =>
-                          setMovie((m) => ({
-                            ...m,
-                            h: Math.max(16, Number(e.target.value) || 300),
-                          }))
+                          setCustomCanvasH(e.target.value === '' ? 0 : Number(e.target.value))
                         }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const finalW = Math.max(16, customCanvasW || 300);
+                            const finalH = Math.max(16, customCanvasH || 300);
+                            setCustomCanvasW(finalW);
+                            setCustomCanvasH(finalH);
+                            setMovie((m) => ({ ...m, w: finalW, h: finalH }));
+                            pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices);
+                            setLastAction(`📐 تم تأكيد وتطبيق مقاسات المشروع: ${finalW} × ${finalH}px`);
+                          }
+                        }}
                         style={{
-                          width: '54px',
+                          width: '52px',
                           background: '#14141e',
                           border: '1px solid #242434',
                           borderRadius: '5px',
-                          padding: '2px 5px',
-                          textAlign: 'right',
+                          padding: '2px 4px',
+                          textAlign: 'center',
+                          color: '#fff',
+                          fontSize: '11px',
+                          fontWeight: 700,
                         }}
                       />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const finalW = Math.max(16, customCanvasW || 300);
+                          const finalH = Math.max(16, customCanvasH || 300);
+                          setCustomCanvasW(finalW);
+                          setCustomCanvasH(finalH);
+                          setMovie((m) => ({ ...m, w: finalW, h: finalH }));
+                          pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices);
+                          setLastAction(`📐 تم تأكيد وتطبيق مقاسات المشروع: ${finalW} × ${finalH}px`);
+                        }}
+                        title="تأكيد وتطبيق مقاسات المشروع الإدخالية"
+                        style={{
+                          padding: '3px 7px',
+                          borderRadius: '5px',
+                          border: '1px solid #8b5cf6',
+                          background: 'rgba(124, 92, 255, 0.35)',
+                          color: '#f3e8ff',
+                          fontSize: '10.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        تأكيد 📐
+                      </button>
                     </div>
                   </div>
                   <div
@@ -11015,6 +11597,8 @@ export default function SvgaAeEditor({
         onTogglePropertyKeyframe={handleTogglePropertyKeyframe}
         onStartLayerBarDrag={handleStartLayerBarDrag}
         onSplitOrTrimLayerAtCurrentFrame={handleSplitOrTrimLayerAtCurrentFrame}
+        collapsed={timelineCollapsed}
+        onToggleCollapse={() => setTimelineCollapsed((v) => !v)}
       />
 
       {/* NEW TEXT LAYER MODAL */}
@@ -11357,6 +11941,350 @@ export default function SvgaAeEditor({
         </div>
       )}
 
+      {/* 📐 PROJECT DIMENSIONS & ORIGINAL IMAGE IMPORT MODAL */}
+      {projectSizeModalOpen && (
+        <div
+          id="projectSizeModalBackdrop"
+          onClick={() => setProjectSizeModalOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 6, 12, 0.85)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 9999,
+            display: 'grid',
+            placeItems: 'center',
+            padding: '20px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '580px',
+              background: '#11111a',
+              border: '1px solid rgba(167, 139, 250, 0.45)',
+              borderRadius: '16px',
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.85)',
+              direction: 'rtl',
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #222234', paddingBottom: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '10px',
+                    background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    color: '#fff',
+                  }}
+                >
+                  <Scaling size={20} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: '15px', color: '#f3e8ff' }}>
+                    📐 مقاسات المشروع والصورة الأصلية
+                  </div>
+                  <div style={{ color: '#94a3b8', fontSize: '11px', marginTop: '2px' }}>
+                    تعديل أبعاد الكانفاس (العرض × الارتفاع) أو استدعاء صورة وضبط أبعاد الكانفاس عليها تلقائياً
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProjectSizeModalOpen(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '8px',
+                  width: '30px',
+                  height: '30px',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  display: 'grid',
+                  placeItems: 'center',
+                }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            {/* Feature 1: Hero Button for Importing Image with Original Dimensions */}
+            <div
+              style={{
+                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(99, 102, 241, 0.1))',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                borderRadius: '12px',
+                padding: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: '13px', color: '#e9d5ff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <ImagePlus size={16} color="#c084fc" />
+                <span>1. استدعاء صورة وتعديل مقاسات المشروع تلقائياً على مقاساتها الأصلية</span>
+              </div>
+              <div style={{ color: '#cbd5e1', fontSize: '11.5px', lineHeight: 1.4 }}>
+                اختر صورة من جهازك، وسيتم قراءة العرض والارتفاع الحقيقي للصورة واستبدال مقاسات كانفاس المشروع بها فوراً بدون أي مط أو تشويه.
+              </div>
+              <button
+                type="button"
+                id="edModalImportImageWithOrigSizeBtn"
+                onClick={() => projectSizeFileInputRef.current?.click()}
+                style={{
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: '9px',
+                  border: '1px solid #8b5cf6',
+                  background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
+                  color: '#ffffff',
+                  fontWeight: 800,
+                  fontSize: '12.5px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  boxShadow: '0 4px 16px rgba(124, 92, 255, 0.35)',
+                }}
+              >
+                <Upload size={16} />
+                <span>📁 استدعاء صورة وضبط مقاسات المشروع عليها تلقائياً</span>
+              </button>
+            </div>
+
+            {/* Feature 2: Apply original size of currently selected image layer (if available) */}
+            {selectedAddedLayer && (
+              <div
+                style={{
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid #2a2a3e',
+                  borderRadius: '10px',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#f3e8ff' }}>
+                    🖼️ الصورة المحددة حالياً: {selectedAddedLayer.name}
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#a78bfa' }}>
+                    المقاس الأصلي للصورة: {selectedAddedLayer.originalWidth || selectedAddedLayer.width} × {selectedAddedLayer.originalHeight || selectedAddedLayer.height}px
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSetCanvasToSelectedImageOriginalDimensions}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '7px',
+                    border: '1px solid #8b5cf6',
+                    background: 'rgba(124, 92, 255, 0.25)',
+                    color: '#e9d5ff',
+                    fontWeight: 700,
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  تطبيق مقاس هذه الصورة على المشروع
+                </button>
+              </div>
+            )}
+
+            {/* Feature 3: Manual W x H Custom Settings */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#e8e8ee' }}>
+                2. تحديد مقاسات المشروع يدويًا (بكسل):
+              </span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 28px 1fr 100px', alignItems: 'center', gap: '8px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '10.5px', color: '#94a3b8', marginBottom: '3px' }}>العرض (W)</label>
+                  <input
+                    type="number"
+                    min="16"
+                    max="4096"
+                    value={customCanvasW || ''}
+                    onChange={(e) => setCustomCanvasW(e.target.value === '' ? 0 : Number(e.target.value))}
+                    style={{
+                      width: '100%',
+                      padding: '7px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid #2d2d42',
+                      background: '#161622',
+                      color: '#fff',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      textAlign: 'center',
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const temp = customCanvasW;
+                    setCustomCanvasW(customCanvasH);
+                    setCustomCanvasH(temp);
+                  }}
+                  title="عكس العرض والارتفاع (Swap Width & Height)"
+                  style={{
+                    height: '34px',
+                    marginTop: '16px',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid #2d2d42',
+                    borderRadius: '7px',
+                    color: '#c084fc',
+                    cursor: 'pointer',
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  <ArrowLeftRight size={14} />
+                </button>
+                <div>
+                  <label style={{ display: 'block', fontSize: '10.5px', color: '#94a3b8', marginBottom: '3px' }}>الارتفاع (H)</label>
+                  <input
+                    type="number"
+                    min="16"
+                    max="4096"
+                    value={customCanvasH || ''}
+                    onChange={(e) => setCustomCanvasH(e.target.value === '' ? 0 : Number(e.target.value))}
+                    style={{
+                      width: '100%',
+                      padding: '7px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid #2d2d42',
+                      background: '#161622',
+                      color: '#fff',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      textAlign: 'center',
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  id="edConfirmCustomProjectSizeBtn"
+                  onClick={() => {
+                    const finalW = Math.max(16, customCanvasW || 300);
+                    const finalH = Math.max(16, customCanvasH || 300);
+                    setCustomCanvasW(finalW);
+                    setCustomCanvasH(finalH);
+                    setMovie((m) => ({
+                      ...m,
+                      w: finalW,
+                      h: finalH,
+                    }));
+                    pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices);
+                    setLastAction(`📐 تم تأكيد وتطبيق مقاسات المشروع: ${finalW} × ${finalH}px`);
+                    setProjectSizeModalOpen(false);
+                  }}
+                  style={{
+                    height: '34px',
+                    marginTop: '16px',
+                    padding: '0 10px',
+                    borderRadius: '8px',
+                    border: '1px solid #8b5cf6',
+                    background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
+                    color: '#ffffff',
+                    fontWeight: 800,
+                    fontSize: '11.5px',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    boxShadow: '0 2px 10px rgba(124, 92, 255, 0.3)',
+                  }}
+                >
+                  تأكيد المقاس 📐
+                </button>
+              </div>
+            </div>
+
+            {/* Feature 4: Presets Grid */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#e8e8ee' }}>
+                3. المقاسات القياسية والشائعة:
+              </span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                {[
+                  { label: '750 × 1334 (افتراضي SVGA)', w: 750, h: 1334 },
+                  { label: '1080 × 1920 (Full HD رأسي)', w: 1080, h: 1920 },
+                  { label: '1920 × 1080 (Full HD أفقي)', w: 1920, h: 1080 },
+                  { label: '1000 × 1000 (مربع كبير)', w: 1000, h: 1000 },
+                  { label: '500 × 500 (مربع قياسي)', w: 500, h: 500 },
+                  { label: '413 × 413 (أيقونات وهدايا)', w: 413, h: 413 },
+                ].map((preset) => {
+                  const isActive = canvasW === preset.w && canvasH === preset.h;
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setCustomCanvasW(preset.w);
+                        setCustomCanvasH(preset.h);
+                        setMovie((m) => ({
+                          ...m,
+                          w: preset.w,
+                          h: preset.h,
+                        }));
+                        setLastAction(`📐 تم تطبيق المقاس الجاهز: ${preset.label}`);
+                        setProjectSizeModalOpen(false);
+                      }}
+                      style={{
+                        padding: '8px 6px',
+                        borderRadius: '8px',
+                        border: isActive ? '1px solid #c084fc' : '1px solid #29293e',
+                        background: isActive ? 'rgba(124, 92, 255, 0.3)' : '#151522',
+                        color: isActive ? '#ffffff' : '#cbd5e1',
+                        fontSize: '10.5px',
+                        fontWeight: isActive ? 800 : 600,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid #222234', paddingTop: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setProjectSizeModalOpen(false)}
+                style={{
+                  padding: '7px 16px',
+                  borderRadius: '8px',
+                  border: '1px solid #2d2d42',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: '#e2e8f0',
+                  fontSize: '11.5px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* COPY MOTION / ANIMATION / FRAMES FROM SVGA SPRITE MODAL */}
       {copyMotionModalLayerId && (
         <div
@@ -11397,7 +12325,7 @@ export default function SvgaAeEditor({
                     width: '36px',
                     height: '36px',
                     borderRadius: '9px',
-                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
                     display: 'grid',
                     placeItems: 'center',
                     color: '#fff',

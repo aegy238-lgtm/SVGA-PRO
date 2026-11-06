@@ -955,7 +955,27 @@ export default function App() {
     aeModalOpen,
   ]);
 
-  const switchToEditor = () => {
+  const switchToEditor = async () => {
+    try {
+      let targetFile: File | null = null;
+      if (typeof (window as any).__exportCurrentMotionToSvgaEditorFile === 'function') {
+        targetFile = await (window as any).__exportCurrentMotionToSvgaEditorFile();
+      } else {
+        const raw = (window as any).__getCurrentFile?.() || (window as any).__currentMotionFile;
+        if (raw) {
+          const buf = await raw.arrayBuffer();
+          targetFile = new File([buf], raw.name, {
+            type: raw.type || 'application/octet-stream',
+            lastModified: Date.now(),
+          });
+        }
+      }
+      if (targetFile) {
+        setExternalSvgaFile(targetFile);
+      }
+    } catch (err) {
+      console.warn('Error preparing file for SVGA Editor:', err);
+    }
     document.querySelectorAll('.view').forEach((el) => {
       el.classList.toggle('on', el.id === 'editor');
     });

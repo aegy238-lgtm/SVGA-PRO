@@ -82,8 +82,8 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
     <div
       id="svgaShineStudioPanel"
       style={{
-        background: 'linear-gradient(180deg, rgba(245, 158, 11, 0.12) 0%, rgba(18, 18, 28, 0.96) 100%)',
-        border: '1px solid rgba(245, 158, 11, 0.45)',
+        background: 'linear-gradient(180deg, rgba(124, 92, 255, 0.14) 0%, rgba(18, 18, 28, 0.96) 100%)',
+        border: '1px solid rgba(124, 92, 255, 0.4)',
         borderRadius: '10px',
         padding: '11px',
         display: 'flex',
@@ -112,12 +112,12 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               width: '28px',
               height: '28px',
               borderRadius: '7px',
-              background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+              background: 'linear-gradient(135deg, #7c5cff, #6366f1)',
               display: 'grid',
               placeItems: 'center',
               color: '#fff',
               flexShrink: 0,
-              boxShadow: '0 2px 10px rgba(245, 158, 11, 0.35)',
+              boxShadow: '0 2px 10px rgba(124, 92, 255, 0.35)',
             }}
           >
             <Sparkles size={14} />
@@ -127,7 +127,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               style={{
                 fontWeight: 800,
                 fontSize: '11.5px',
-                color: '#fef3c7',
+                color: '#f1f5f9',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -135,7 +135,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             >
               ✨ استوديو الطبقة اللامعة (Shine)
             </div>
-            <div style={{ fontSize: '9.5px', color: '#fcd34d' }}>
+            <div style={{ fontSize: '9.5px', color: '#c084fc' }}>
               نقاط القناع + مسار اللمعة · حفظ SVGA أصلي
             </div>
           </div>
@@ -146,9 +146,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           onClick={onTriggerPlayPreview}
           title="معاينة حركة اللمعة على الكانفاس"
           style={{
-            background: 'rgba(16, 185, 129, 0.2)',
-            border: '1px solid rgba(16, 185, 129, 0.5)',
-            color: '#6ee7b7',
+            background: 'rgba(124, 92, 255, 0.2)',
+            border: '1px solid rgba(124, 92, 255, 0.5)',
+            color: '#e9d5ff',
             borderRadius: '6px',
             padding: '4px 8px',
             fontSize: '10px',
@@ -169,7 +169,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
       <div
         style={{
           background: 'rgba(12, 12, 20, 0.75)',
-          border: '1px solid #27273a',
+          border: '1px solid rgba(124, 92, 255, 0.25)',
           borderRadius: '8px',
           padding: '8px',
           display: 'flex',
@@ -179,7 +179,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Layers size={11} color="#fbbf24" />
+            <Layers size={11} color="#c084fc" />
             <span>1. استدعاء الطبقة المستهدفة للمعة:</span>
           </span>
         </div>
@@ -195,10 +195,10 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           style={{
             width: '100%',
             background: '#141420',
-            border: '1px solid rgba(245, 158, 11, 0.4)',
+            border: '1px solid rgba(124, 92, 255, 0.45)',
             borderRadius: '6px',
             padding: '5px 8px',
-            color: '#fef3c7',
+            color: '#f8fafc',
             fontSize: '11px',
             fontWeight: 600,
           }}
@@ -219,9 +219,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               flex: 1,
               padding: '5px 7px',
               borderRadius: '6px',
-              border: '1px solid rgba(56, 189, 248, 0.45)',
-              background: 'rgba(56, 189, 248, 0.15)',
-              color: '#bae6fd',
+              border: '1px solid rgba(124, 92, 255, 0.45)',
+              background: 'rgba(124, 92, 255, 0.16)',
+              color: '#e9d5ff',
               fontSize: '10px',
               fontWeight: 700,
               cursor: 'pointer',
@@ -236,17 +236,60 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           </button>
         </div>
 
+        {/* Hollow Center Cutout Status Indicator */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: hasInnerHole ? 'rgba(34, 197, 94, 0.15)' : 'rgba(124, 92, 255, 0.08)',
+            border: hasInnerHole ? '1px solid rgba(34, 197, 94, 0.4)' : '1px solid rgba(124, 92, 255, 0.25)',
+            borderRadius: '6px',
+            padding: '5px 8px',
+            fontSize: '10px',
+            color: hasInnerHole ? '#86efac' : '#cbd5e1',
+            fontWeight: 600,
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <CircleDot size={11} color={hasInnerHole ? '#4ade80' : '#c084fc'} />
+            <span>
+              {hasInnerHole
+                ? '⭕ تم تفريغ منتصف الإطار تلقائياً (100% شفافة بدون تسريب للمعة)'
+                : 'إطار كامل / مصمت (بدون تفريغ داخلي)'}
+            </span>
+          </span>
+          {!hasInnerHole && (
+            <button
+              type="button"
+              onClick={() => onApplyPresetMask('ring')}
+              style={{
+                background: 'rgba(124, 92, 255, 0.25)',
+                border: '1px solid rgba(124, 92, 255, 0.5)',
+                color: '#f3e8ff',
+                borderRadius: '4px',
+                padding: '2px 6px',
+                fontSize: '9.5px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              تفريغ إطار حقيقي
+            </button>
+          )}
+        </div>
+
         <label
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: '6px',
             fontSize: '10px',
-            color: '#6ee7b7',
+            color: '#e2e8f0',
             fontWeight: 700,
             cursor: 'pointer',
-            background: 'rgba(16, 185, 129, 0.12)',
-            border: '1px solid rgba(16, 185, 129, 0.35)',
+            background: 'rgba(124, 92, 255, 0.12)',
+            border: '1px solid rgba(124, 92, 255, 0.35)',
             borderRadius: '6px',
             padding: '5px 7px',
           }}
@@ -265,10 +308,91 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 }
               )
             }
-            style={{ width: 'auto', accentColor: '#10b981' }}
+            style={{ width: 'auto', accentColor: '#7c5cff' }}
           />
           <span>✨ دمج مطابق 100% لحواف وشكل الطبقة الأصلية (بدون آثار قص)</span>
         </label>
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '10px',
+            color: '#fde68a',
+            fontWeight: 700,
+            cursor: 'pointer',
+            background: 'rgba(245, 158, 11, 0.12)',
+            border: '1px solid rgba(245, 158, 11, 0.38)',
+            borderRadius: '6px',
+            padding: '5px 7px',
+          }}
+        >
+          <input
+            type="checkbox"
+            id="edShineMetallicReliefToggle"
+            checked={config.metallicSurfaceRelief !== false}
+            onChange={(e) =>
+              onUpdateConfig(
+                { metallicSurfaceRelief: e.target.checked },
+                {
+                  actionLabel: e.target.checked
+                    ? '👑 تم تفعيل عزل المعادن والذهب الأصلي (SVGA Specular) لمنع تغبيش الخلفيات الداكنة'
+                    : 'تم إيقاف عزل المعادن وتوزيع اللمعة بالتساوي على كامل السطح',
+                }
+              )
+            }
+            style={{ width: 'auto', accentColor: '#f59e0b' }}
+          />
+          <span>👑 عزل ذكي للمعادن والذهب (لمعة SVGA أصلية بدون تغبيش الخلفية الداكنة)</span>
+        </label>
+
+        {/* Automatic Soft Edge Feather Control (تنعيم وتلاشي حواف القص التلقائي) */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            background: 'rgba(124, 92, 255, 0.09)',
+            border: '1px solid rgba(124, 92, 255, 0.3)',
+            borderRadius: '6px',
+            padding: '5px 7px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#e9d5ff' }}>
+              🪶 نعومة وتلاشي حواف القص التلقائي (بدون حواف حادة):
+            </span>
+            <span
+              style={{
+                fontSize: '9.5px',
+                fontWeight: 800,
+                color: '#c084fc',
+                background: 'rgba(124, 92, 255, 0.2)',
+                padding: '1px 6px',
+                borderRadius: '4px',
+              }}
+            >
+              {config.edgeFeather ?? 5}px
+            </span>
+          </div>
+          <input
+            type="range"
+            id="edShineEdgeFeatherRange"
+            aria-label="نعومة وتلاشي حواف القص التلقائي"
+            min={0}
+            max={16}
+            step={0.5}
+            value={config.edgeFeather ?? 5}
+            onChange={(e) =>
+              onUpdateConfig(
+                { edgeFeather: Number(e.target.value) },
+                { actionLabel: `ضبط نعومة وتلاشي حواف قص اللمعة (${e.target.value}px)` }
+              )
+            }
+            style={{ width: '100%', accentColor: '#7c5cff', height: '4px', cursor: 'pointer' }}
+          />
+        </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
           <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
@@ -287,10 +411,10 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             style={{
               flex: 1,
               background: '#141420',
-              border: '1px solid #2b2b3e',
+              border: '1px solid rgba(124, 92, 255, 0.35)',
               borderRadius: '5px',
               padding: '3px 6px',
-              color: '#fde68a',
+              color: '#e9d5ff',
               fontSize: '9.5px',
               fontWeight: 600,
             }}
@@ -320,7 +444,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 { actionLabel: 'تحديث ارتباط قناع اللمعة بحركة الطبقة المستهدفة' }
               )
             }
-            style={{ width: 'auto', accentColor: '#f59e0b' }}
+            style={{ width: 'auto', accentColor: '#7c5cff' }}
           />
           <span>تتبع حركة ومقاس الطبقة المستهدفة تلقائياً عبر الفريمات</span>
         </label>
@@ -374,13 +498,13 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               borderRadius: '6px',
               border:
                 editSubmode === 'mask_points'
-                  ? '1.5px solid #38bdf8'
+                  ? '1.5px solid #a78bfa'
                   : '1px solid #2b2b3e',
               background:
                 editSubmode === 'mask_points'
-                  ? 'rgba(56, 189, 248, 0.22)'
+                  ? 'rgba(124, 92, 255, 0.25)'
                   : '#151522',
-              color: editSubmode === 'mask_points' ? '#7dd3fc' : '#94a3b8',
+              color: editSubmode === 'mask_points' ? '#f3e8ff' : '#94a3b8',
               fontSize: '10px',
               fontWeight: 700,
               cursor: 'pointer',
@@ -405,13 +529,13 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               borderRadius: '6px',
               border:
                 editSubmode === 'motion_points'
-                  ? '1.5px solid #f59e0b'
+                  ? '1.5px solid #8b5cf6'
                   : '1px solid #2b2b3e',
               background:
                 editSubmode === 'motion_points'
-                  ? 'rgba(245, 158, 11, 0.22)'
+                  ? 'rgba(139, 92, 246, 0.22)'
                   : '#151522',
-              color: editSubmode === 'motion_points' ? '#fde047' : '#94a3b8',
+              color: editSubmode === 'motion_points' ? '#ede9fe' : '#94a3b8',
               fontSize: '10px',
               fontWeight: 700,
               cursor: 'pointer',
@@ -434,12 +558,12 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               gap: '5px',
               padding: '6px',
               borderRadius: '6px',
-              background: 'rgba(56, 189, 248, 0.07)',
-              border: '1px solid rgba(56, 189, 248, 0.25)',
+              background: 'rgba(124, 92, 255, 0.08)',
+              border: '1px solid rgba(124, 92, 255, 0.28)',
             }}
           >
-            <div style={{ fontSize: '9.5px', color: '#bae6fd', lineHeight: 1.4 }}>
-              💡 <b>تعديل القناع بالماوس:</b> اسحب أي نقطة زرقاء لتعديل حدود اللمعة، أو اضغط في أي مكان على الكانفاس لإضافة نقطة تحرير جديدة، أو كليك يمين على نقطة لحذفها.
+            <div style={{ fontSize: '9.5px', color: '#e9d5ff', lineHeight: 1.4 }}>
+              💡 <b>تعديل القناع بالماوس:</b> اسحب أي نقطة لتعديل حدود اللمعة، أو اضغط في أي مكان على الكانفاس لإضافة نقطة تحرير جديدة، أو كليك يمين على نقطة لحذفها.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
               <button
@@ -449,9 +573,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 style={{
                   padding: '4px 6px',
                   borderRadius: '5px',
-                  border: '1px solid rgba(245, 158, 11, 0.4)',
-                  background: 'rgba(245, 158, 11, 0.14)',
-                  color: '#fde68a',
+                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  background: 'rgba(124, 92, 255, 0.14)',
+                  color: '#ddd6fe',
                   fontSize: '9.5px',
                   fontWeight: 700,
                   cursor: 'pointer',
@@ -493,9 +617,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 style={{
                   padding: '4px 6px',
                   borderRadius: '5px',
-                  border: '1px solid rgba(52, 211, 153, 0.4)',
-                  background: 'rgba(52, 211, 153, 0.14)',
-                  color: '#a7f3d0',
+                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  background: 'rgba(124, 92, 255, 0.14)',
+                  color: '#ddd6fe',
                   fontSize: '9.5px',
                   fontWeight: 700,
                   cursor: 'pointer',
@@ -531,7 +655,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               </button>
             </div>
             {hasInnerHole && (
-              <div style={{ fontSize: '9px', color: '#6ee7b7' }}>
+              <div style={{ fontSize: '9px', color: '#c084fc' }}>
                 ✓ القناع يحتوي على تفريغ داخلي (فتحة الإطار الوسطى شفافة مثل إطار الهند)
               </div>
             )}
@@ -546,12 +670,12 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               gap: '5px',
               padding: '6px',
               borderRadius: '6px',
-              background: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.28)',
+              background: 'rgba(124, 92, 255, 0.08)',
+              border: '1px solid rgba(124, 92, 255, 0.28)',
             }}
           >
-            <div style={{ fontSize: '9.5px', color: '#fde68a', lineHeight: 1.4 }}>
-              💡 <b>تحريك مسار اللمعة:</b> اسحب نقطة البداية الخضراء <b>(P1)</b> أو نقطة النهاية الحمراء <b>(P{motionPointsCount})</b> على الكانفاس، أو اضغط على الكانفاس لإضافة نقطة مسار جديدة!
+            <div style={{ fontSize: '9.5px', color: '#e9d5ff', lineHeight: 1.4 }}>
+              💡 <b>تحريك مسار اللمعة:</b> اسحب نقطة البداية <b>(P1)</b> أو نقطة النهاية <b>(P{motionPointsCount})</b> على الكانفاس، أو اضغط على الكانفاس لإضافة نقطة مسار جديدة!
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
               <button
@@ -605,9 +729,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 style={{
                   padding: '4px 6px',
                   borderRadius: '5px',
-                  border: '1px solid rgba(245, 158, 11, 0.4)',
-                  background: 'rgba(245, 158, 11, 0.14)',
-                  color: '#fde047',
+                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  background: 'rgba(124, 92, 255, 0.14)',
+                  color: '#ddd6fe',
                   fontSize: '9.5px',
                   fontWeight: 700,
                   cursor: 'pointer',
@@ -627,9 +751,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 style={{
                   padding: '4px 6px',
                   borderRadius: '5px',
-                  border: '1px solid rgba(52, 211, 153, 0.4)',
-                  background: 'rgba(52, 211, 153, 0.14)',
-                  color: '#6ee7b7',
+                  border: '1px solid rgba(124, 92, 255, 0.4)',
+                  background: 'rgba(124, 92, 255, 0.14)',
+                  color: '#ddd6fe',
                   fontSize: '9.5px',
                   fontWeight: 700,
                   cursor: 'pointer',
@@ -673,7 +797,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
       <div
         style={{
           background: 'rgba(12, 12, 20, 0.75)',
-          border: '1px solid #27273a',
+          border: '1px solid rgba(124, 92, 255, 0.25)',
           borderRadius: '8px',
           padding: '8px',
           display: 'flex',
@@ -685,7 +809,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#e2e8f0' }}>
             3. صورة الطبقة اللامعة (Shine Image):
           </span>
-          <span style={{ fontSize: '9.5px', color: '#fbbf24' }}>
+          <span style={{ fontSize: '9.5px', color: '#c084fc' }}>
             {config.shineWidth}×{config.shineHeight}px
           </span>
         </div>
@@ -697,7 +821,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
               height: '44px',
               borderRadius: '7px',
               background: 'repeating-conic-gradient(#22222c 0 25%, #14141c 0 50%) 0 0 / 8px 8px',
-              border: '1px solid rgba(245, 158, 11, 0.45)',
+              border: '1px solid rgba(124, 92, 255, 0.45)',
               display: 'grid',
               placeItems: 'center',
               overflow: 'hidden',
@@ -722,9 +846,9 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 width: '100%',
                 padding: '5px 8px',
                 borderRadius: '6px',
-                border: '1px solid rgba(245, 158, 11, 0.5)',
-                background: 'rgba(245, 158, 11, 0.16)',
-                color: '#fde68a',
+                border: '1px solid rgba(124, 92, 255, 0.45)',
+                background: 'rgba(124, 92, 255, 0.16)',
+                color: '#e9d5ff',
                 fontSize: '10px',
                 fontWeight: 700,
                 cursor: 'pointer',
@@ -768,9 +892,48 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           </div>
         </div>
 
-        {/* Preset Selector */}
-        <div>
-          <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>قوالب اللمعة الاحترافية الجاهزة:</span>
+        {/* Preset Selector & Quick SVGA Style Pills */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
+            <span style={{ fontSize: '9.5px', color: '#cbd5e1', fontWeight: 700 }}>
+              قوالب اللمعة الاحترافية الأصلية (SVGA 2.0):
+            </span>
+            {config.presetId === 'custom_image' && (
+              <button
+                type="button"
+                id="edRestoreProceduralShineBtn"
+                onClick={() => {
+                  const gold = SHINE_PRESETS[0];
+                  onUpdateConfig(
+                    {
+                      presetId: gold.id,
+                      colorPrimary: gold.colorPrimary,
+                      colorSecondary: gold.colorSecondary,
+                      beamAngleDeg: gold.beamAngleDeg,
+                      beamWidthRatio: gold.beamWidthRatio,
+                    },
+                    {
+                      regenerateBitmap: true,
+                      actionLabel: '✨ تم استعادة شعاع اللمعة الاحترافي الأصلي (SVGA Specular)',
+                    }
+                  );
+                }}
+                style={{
+                  background: 'rgba(124, 92, 255, 0.28)',
+                  border: '1px solid #a78bfa',
+                  color: '#ffffff',
+                  borderRadius: '5px',
+                  padding: '2px 7px',
+                  fontSize: '9px',
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                }}
+              >
+                🔄 استعادة شعاع اللمعة الأصلي
+              </button>
+            )}
+          </div>
+
           <select
             id="edShinePresetSelect"
             aria-label="قالب اللمعة الجاهز"
@@ -796,13 +959,13 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             }}
             style={{
               width: '100%',
-              marginTop: '3px',
               background: '#141420',
-              border: '1px solid #2b2b3e',
+              border: '1px solid rgba(124, 92, 255, 0.45)',
               borderRadius: '6px',
               padding: '5px 8px',
               color: '#f8fafc',
               fontSize: '10.5px',
+              fontWeight: 700,
             }}
           >
             {SHINE_PRESETS.map((p) => (
@@ -816,84 +979,167 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           </select>
         </div>
 
-        {config.presetId !== 'custom_image' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-              <div>
-                <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>لون التوهج</span>
-                <input
-                  type="color"
-                  aria-label="لون التوهج الأساسي"
-                  value={config.colorPrimary}
-                  onChange={(e) =>
-                    onUpdateConfig(
-                      { colorPrimary: e.target.value },
-                      { regenerateBitmap: true, actionLabel: 'تغيير لون اللمعة' }
-                    )
-                  }
-                  style={{ width: '100%', height: '24px', marginTop: '2px', cursor: 'pointer' }}
-                />
-              </div>
-              <div>
-                <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>لون مركز الشعاع</span>
-                <input
-                  type="color"
-                  aria-label="لون مركز الشعاع"
-                  value={config.colorSecondary}
-                  onChange={(e) =>
-                    onUpdateConfig(
-                      { colorSecondary: e.target.value },
-                      { regenerateBitmap: true, actionLabel: 'تغيير لون مركز اللمعة' }
-                    )
-                  }
-                  style={{ width: '100%', height: '24px', marginTop: '2px', cursor: 'pointer' }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
-              <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
-                زاوية الشعاع ({config.beamAngleDeg}°)
-              </span>
+        {/* Always-Visible Specular Beam Controls (Colors, Angle, Width) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+            <div>
+              <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>لون التوهج المعدني</span>
               <input
-                type="range"
-                min="-85"
-                max="85"
-                step="1"
-                aria-label="زاوية ميلان اللمعة"
-                value={config.beamAngleDeg}
+                type="color"
+                aria-label="لون التوهج الأساسي"
+                value={config.colorPrimary}
                 onChange={(e) =>
                   onUpdateConfig(
-                    { beamAngleDeg: Number(e.target.value) },
-                    { regenerateBitmap: true }
+                    { colorPrimary: e.target.value },
+                    { regenerateBitmap: true, actionLabel: 'تغيير لون اللمعة' }
                   )
                 }
-                style={{ flex: 1, accentColor: '#f59e0b', cursor: 'pointer' }}
+                style={{ width: '100%', height: '24px', marginTop: '2px', cursor: 'pointer' }}
               />
             </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
-              <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
-                عرض الشعاع ({Math.round(config.beamWidthRatio * 100)}%)
-              </span>
+            <div>
+              <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>لون نواة الشعاع</span>
               <input
-                type="range"
-                min="8"
-                max="75"
-                step="1"
-                aria-label="عرض شعاع اللمعة"
-                value={Math.round(config.beamWidthRatio * 100)}
+                type="color"
+                aria-label="لون مركز الشعاع"
+                value={config.colorSecondary}
                 onChange={(e) =>
                   onUpdateConfig(
-                    { beamWidthRatio: Number(e.target.value) / 100 },
-                    { regenerateBitmap: true }
+                    { colorSecondary: e.target.value },
+                    { regenerateBitmap: true, actionLabel: 'تغيير لون مركز اللمعة' }
                   )
                 }
-                style={{ flex: 1, accentColor: '#f59e0b', cursor: 'pointer' }}
+                style={{ width: '100%', height: '24px', marginTop: '2px', cursor: 'pointer' }}
               />
             </div>
           </div>
-        )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+            <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+              زاوية الشعاع ({Math.max(-85, Math.min(85, Math.round(config.beamAngleDeg)))}°)
+            </span>
+            <input
+              type="range"
+              min="-85"
+              max="85"
+              step="1"
+              aria-label="زاوية ميلان اللمعة"
+              value={Math.max(-85, Math.min(85, Math.round(config.beamAngleDeg)))}
+              onChange={(e) =>
+                onUpdateConfig(
+                  { beamAngleDeg: Number(e.target.value) },
+                  { regenerateBitmap: true }
+                )
+              }
+              style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+            <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+              عرض الشعاع ({Math.round(config.beamWidthRatio * 100)}%)
+            </span>
+            <input
+              type="range"
+              min="6"
+              max="65"
+              step="1"
+              aria-label="عرض شعاع اللمعة"
+              value={Math.max(6, Math.min(65, Math.round(config.beamWidthRatio * 100)))}
+              onChange={(e) =>
+                onUpdateConfig(
+                  { beamWidthRatio: Number(e.target.value) / 100 },
+                  { regenerateBitmap: true }
+                )
+              }
+              style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+            />
+          </div>
+        </div>
+
+        {/* Shine Opacity / Transparency Control (شفافية وقوة اللمعة — يعلي الشفافية ويخففها بجودة كاملة) */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '5px',
+            background: 'rgba(124, 92, 255, 0.12)',
+            border: '1px solid rgba(124, 92, 255, 0.38)',
+            borderRadius: '7px',
+            padding: '6px 8px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+            <span style={{ fontSize: '10px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap' }}>
+              ✨ شفافية وقوة اللمعة ({Math.round(config.shineOpacity ?? 100)}%)
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <button
+                type="button"
+                id="edShineOpacityDownBtn"
+                onClick={() => {
+                  const nextOpa = Math.max(5, Math.round((config.shineOpacity ?? 100) - 10));
+                  onUpdateConfig(
+                    { shineOpacity: nextOpa },
+                    { actionLabel: `تخفيف شفافية اللمعة إلى ${nextOpa}%` }
+                  );
+                }}
+                style={{
+                  background: '#161624',
+                  border: '1px solid rgba(124, 92, 255, 0.45)',
+                  color: '#e9d5ff',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '9.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                - تخفيف
+              </button>
+              <button
+                type="button"
+                id="edShineOpacityUpBtn"
+                onClick={() => {
+                  const nextOpa = Math.min(100, Math.round((config.shineOpacity ?? 100) + 10));
+                  onUpdateConfig(
+                    { shineOpacity: nextOpa },
+                    { actionLabel: `تعزيز قوة وشفافية اللمعة إلى ${nextOpa}%` }
+                  );
+                }}
+                style={{
+                  background: 'rgba(124, 92, 255, 0.25)',
+                  border: '1px solid rgba(124, 92, 255, 0.55)',
+                  color: '#ffffff',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '9.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                + تعزيز
+              </button>
+            </div>
+          </div>
+
+          <input
+            type="range"
+            id="edShineOpacityRange"
+            min="5"
+            max="100"
+            step="1"
+            aria-label="شفافية وقوة اللمعة"
+            value={Math.round(config.shineOpacity ?? 100)}
+            onChange={(e) =>
+              onUpdateConfig(
+                { shineOpacity: Number(e.target.value) },
+                { actionLabel: `ضبط شفافية وقوة اللمعة (${e.target.value}%)` }
+              )
+            }
+            style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer' }}
+          />
+        </div>
       </div>
 
       {/* 4. Shine Sweep Timing & Loops (توقيت وسرعة اللمعة عبر الفريمات) */}

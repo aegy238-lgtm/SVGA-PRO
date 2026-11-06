@@ -3,6 +3,7 @@ import {
   Play,
   Pause,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Diamond,
   Eye,
@@ -107,6 +108,8 @@ interface SvgaTimelinePanelProps {
     currentOffset?: number
   ) => void;
   onSplitOrTrimLayerAtCurrentFrame: (layerId: string, mode: 'trimIn' | 'trimOut') => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
@@ -142,6 +145,8 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
   onTogglePropertyKeyframe,
   onStartLayerBarDrag,
   onSplitOrTrimLayerAtCurrentFrame,
+  collapsed = false,
+  onToggleCollapse,
 }) => {
   const playheadPercent =
     totalFrames > 1 ? Math.min(100, Math.max(0, (currentFrame / (totalFrames - 1)) * 100)) : 0;
@@ -1101,21 +1106,22 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
   return (
     <div
       style={{
-        height: '255px',
-        minHeight: '255px',
+        height: collapsed ? '38px' : '255px',
+        minHeight: collapsed ? '38px' : '255px',
         background: '#0b0b10',
         borderTop: '1px solid #1b1b26',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        transition: 'height 0.2s ease, min-height 0.2s ease',
       }}
     >
       {/* Top Timeline Transport + Time Ruler */}
       <div
         style={{
-          height: '40px',
-          minHeight: '40px',
-          borderBottom: '1px solid #1b1b26',
+          height: '38px',
+          minHeight: '38px',
+          borderBottom: collapsed ? 'none' : '1px solid #1b1b26',
           display: 'flex',
           alignItems: 'center',
         }}
@@ -1124,7 +1130,7 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
           style={{
             width: '280px',
             minWidth: '280px',
-            padding: '0 12px',
+            padding: '0 10px',
             display: 'flex',
             alignItems: 'center',
             gap: '6px',
@@ -1132,6 +1138,42 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
             height: '100%',
           }}
         >
+          {onToggleCollapse && (
+            <button
+              type="button"
+              id="edTimelineCollapseToggleBtn"
+              onClick={onToggleCollapse}
+              title={
+                collapsed
+                  ? 'إظهار شريط التوقيت والطبقات (Expand Timeline Panel)'
+                  : 'طي وإخفاء شريط التوقيت لتوسيع مساحة المشروع (Collapse Timeline Panel)'
+              }
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '6px',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                background: collapsed
+                  ? 'linear-gradient(135deg, #7c5cff, #6366f1)'
+                  : 'rgba(124, 92, 255, 0.15)',
+                color: '#ffffff',
+                fontSize: '11px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                boxShadow: collapsed ? '0 2px 8px rgba(124, 92, 255, 0.4)' : 'none',
+                flexShrink: 0,
+              }}
+            >
+              {collapsed ? (
+                <ChevronUp size={13} color="#ffffff" />
+              ) : (
+                <ChevronDown size={13} color="#c084fc" />
+              )}
+              <span>{collapsed ? '▲ التايم لاين' : '▼ طَي'}</span>
+            </button>
+          )}
           <button
             type="button"
             id="edPlayPause"
@@ -1279,7 +1321,8 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
       </div>
 
       {/* Scrollable Timeline Tracks */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+      {!collapsed && (
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
         <div
           style={{
             height: '24px',
@@ -1741,6 +1784,7 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
           );
         })}
       </div>
+      )}
     </div>
   );
 };

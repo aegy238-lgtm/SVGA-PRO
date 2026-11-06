@@ -340,3 +340,93 @@ test('traceAlphaContourFromRgba with Moore-Neighbor: tightly hugs concave banner
   assert.equal(parsed.sp[1].mk, 'banner_asset', 'SVGA exported shine layer must preserve matteKey');
 });
 
+test('traceAlphaContourFromRgba: ignores top-left dust specks and cuts out dark-tinted center hole in avatar frames', () => {
+  const W = 120;
+  const H = 120;
+  const rgba = new Uint8Array(W * H * 4);
+
+  // 1. Add an isolated 2x2 dust speck at y=0, x=5 (previously caused Moore tracer to stop on 2x2 speck)
+  for (let y = 0; y < 2; y++) {
+    for (let x = 5; x < 7; x++) {
+      const idx = (y * W + x) * 4;
+      rgba[idx] = 255;
+      rgba[idx + 1] = 220;
+      rgba[idx + 2] = 100;
+      rgba[idx + 3] = 255;
+    }
+  }
+
+  // 2. Draw a golden ring frame centered at (60, 60), outer R = 48, inner hole R = 24,
+  // with a dark green radar tint inside the center hole (r=12, g=42, b=24, a=170)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const dist = Math.hypot(x - 60, y - 60);
+      const idx = (y * W + x) * 4;
+      if (dist >= 24 && dist <= 48) {
+        rgba[idx] = 255;
+        rgba[idx + 1] = 205;
+        rgba[idx + 2] = 45;
+        rgba[idx + 3] = 255;
+      } else if (dist < 24) {
+        rgba[idx] = 12;
+        rgba[idx + 1] = 42;
+        rgba[idx + 2] = 24;
+        rgba[idx + 3] = 170;
+      }
+    }
+  }
+
+  const contours = traceAlphaContourFromRgba(rgba, W, H, [1, 0, 0, 1, 0, 0], {
+    alphaThreshold: 45,
+    detectInnerHole: true,
+    contourMethod: 'moore',
+  });
+
+  assert.equal(
+    contours.length,
+    2,
+    'Must trace the main golden ring outer contour AND cut out the dark-tinted inner hole'
+  );
+  assert.ok(contours[0].length >= 8, 'Outer contour must be the main ring, not the 2x2 dust speck');
+  assert.ok(contours[1].length >= 8, 'Inner hole contour must be smooth and well-sampled');
+});
+
+test('traceAlphaContourFromRgba: wide horizontal VIP ID banner (512x115) with opaque dark charcoal interior does NOT get a false circular hole', () => {
+  const W = 512;
+  const H = 115;
+  const rgba = new Uint8Array(W * H * 4);
+
+  // Draw ornate gold border (outer 12px) and opaque dark charcoal center plate (r=42, g=40, b=38, a=255)
+  for (let y = 8; y < H - 8; y++) {
+    for (let x = 10; x < W - 10; x++) {
+      const idx = (y * W + x) * 4;
+      const isBorder = y < 22 || y > H - 22 || x < 140 || x > W - 50;
+      if (isBorder) {
+        rgba[idx] = 250;
+        rgba[idx + 1] = 204;
+        rgba[idx + 2] = 21;
+        rgba[idx + 3] = 255;
+      } else {
+        rgba[idx] = 42;
+        rgba[idx + 1] = 40;
+        rgba[idx + 2] = 38;
+        rgba[idx + 3] = 255;
+      }
+    }
+  }
+
+  const contours = traceAlphaContourFromRgba(rgba, W, H, [1, 0, 0, 1, 0, 0], {
+    detectInnerHole: true,
+    contourMethod: 'moore',
+  });
+
+  assert.equal(
+    contours.length,
+    1,
+    'Wide horizontal VIP ID banner with dark interior must produce 1 outer contour and 0 false inner holes'
+  );
+  assert.ok(contours[0].length >= 4 && contours[0].length <= 48);
+});
+
+
+
