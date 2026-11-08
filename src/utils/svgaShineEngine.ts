@@ -1629,8 +1629,8 @@ export function renderProceduralShineCanvasSync(options: {
   beamSoftness: number;
   targetCanvas?: HTMLCanvasElement;
 }): HTMLCanvasElement {
-  const W = Math.max(32, Math.min(1024, Math.round(options.width || 320)));
-  const H = Math.max(32, Math.min(1024, Math.round(options.height || 320)));
+  const W = Math.max(32, Math.min(2400, Math.round(options.width || 320)));
+  const H = Math.max(32, Math.min(2400, Math.round(options.height || 320)));
   const c = options.targetCanvas || document.createElement('canvas');
   if (c.width !== W || c.height !== H) {
     c.width = W;
@@ -1640,8 +1640,10 @@ export function renderProceduralShineCanvasSync(options: {
 
   ctx.clearRect(0, 0, W, H);
 
-  const angleRad = ((options.beamAngleDeg ?? -30) * Math.PI) / 180;
-  const bw = Math.max(0.05, Math.min(0.75, options.beamWidthRatio ?? 0.18));
+  // Negate beamAngleDeg so -30deg / -32deg produces a '/' forward-slash beam that is 100% perpendicular
+  // to the Top-Left -> Bottom-Right ('\') sweep motion path, sweeping across the entire layer from start to end!
+  const angleRad = (-(options.beamAngleDeg ?? -30) * Math.PI) / 180;
+  const bw = Math.max(0.05, Math.min(0.75, options.beamWidthRatio ?? 0.22));
   const soft = Math.max(0.1, Math.min(1, options.beamSoftness ?? 0.85));
   const c1 = options.colorPrimary || '#fbbf24';
   const c2 = options.colorSecondary || '#ffffff';
@@ -1662,7 +1664,7 @@ export function renderProceduralShineCanvasSync(options: {
   };
 
   const minDim = Math.min(W, H);
-  const safeRadius = minDim * 0.485;
+  const safeRadius = minDim * 0.495;
 
   ctx.save();
   ctx.translate(W / 2, H / 2);
@@ -1700,15 +1702,15 @@ export function renderProceduralShineCanvasSync(options: {
   ctx.fillStyle = secGrad;
   ctx.fillRect(secOffset - secHalfW, -safeRadius, secHalfW * 2, safeRadius * 2);
 
-  // Longitudinal fade near the very ends of safeRadius only (keeps 100% full brightness across 86% of the span
-  // so top, bottom, and outer corner edges of the target layer receive 100% shine intensity!)
+  // Longitudinal fade near the very ends of safeRadius only (keeps 100% full brightness across 94% of the span
+  // so top, bottom, and outer corner edges of even very large layers receive 100% shine intensity!)
   ctx.globalCompositeOperation = 'destination-in';
   const vGrad = ctx.createLinearGradient(0, -safeRadius, 0, safeRadius);
   vGrad.addColorStop(0, 'rgba(255,255,255,0)');
-  vGrad.addColorStop(0.07, 'rgba(255,255,255,0.92)');
-  vGrad.addColorStop(0.12, 'rgba(255,255,255,1)');
-  vGrad.addColorStop(0.88, 'rgba(255,255,255,1)');
-  vGrad.addColorStop(0.93, 'rgba(255,255,255,0.92)');
+  vGrad.addColorStop(0.03, 'rgba(255,255,255,0.95)');
+  vGrad.addColorStop(0.06, 'rgba(255,255,255,1)');
+  vGrad.addColorStop(0.94, 'rgba(255,255,255,1)');
+  vGrad.addColorStop(0.97, 'rgba(255,255,255,0.95)');
   vGrad.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = vGrad;
   ctx.fillRect(-safeRadius, -safeRadius, safeRadius * 2, safeRadius * 2);
@@ -1742,6 +1744,83 @@ export function renderProceduralShineCanvasSync(options: {
   ctx.restore();
 
   return c;
+}
+
+/**
+ * Computes full-layer shine dimensions (`shineWidth`, `shineHeight`), perpendicular `beamAngleDeg`,
+ * and full start-to-end `motionPoints` (`من أول الطبقة لآخرها`) for any target layer bounding box,
+ * even when the layer is very large.
+ */
+export function computeFullLayerShineSweepAndSize(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number; cx: number; cy: number },
+  direction: 'diag_tl_br' | 'diag_tr_bl' | 'horiz_lr' | 'vert_tb' = 'diag_tl_br'
+): {
+  shineWidth: number;
+  shineHeight: number;
+  beamAngleDeg: number;
+  motionPoints: Point2D[];
+} {
+  const spanW = Math.max(48, bounds.maxX - bounds.minX);
+  const spanH = Math.max(48, bounds.maxY - bounds.minY);
+  const isWideBanner = spanW > spanH * 1.55;
+  const diagSpan = Math.hypot(spanW, spanH);
+
+  // Size the shine square to 1.85x the full diagonal of the target layer (up to 2200px)
+  // so the beam spans 100% across the entire cross-section of even the largest layers!
+  const shineSide = Math.max(320, Math.min(2200, Math.round(diagSpan * 1.85)));
+
+  let beamAngleDeg = -32;
+  let motionPoints: Point2D[];
+
+  if (direction === 'diag_tr_bl') {
+    beamAngleDeg = isWideBanner ? 26 : 32;
+    motionPoints = isWideBanner
+      ? [
+          { x: Number((bounds.maxX + spanW * 0.15).toFixed(1)), y: Number((bounds.cy - spanH * 0.14).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.minX - spanW * 0.15).toFixed(1)), y: Number((bounds.cy + spanH * 0.14).toFixed(1)) },
+        ]
+      : [
+          { x: Number((bounds.maxX + spanW * 0.12).toFixed(1)), y: Number((bounds.minY - spanH * 0.12).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.minX - spanW * 0.12).toFixed(1)), y: Number((bounds.maxY + spanH * 0.12).toFixed(1)) },
+        ];
+  } else if (direction === 'horiz_lr') {
+    beamAngleDeg = -18;
+    motionPoints = [
+      { x: Number((bounds.minX - spanW * 0.16).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+      { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+      { x: Number((bounds.maxX + spanW * 0.16).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+    ];
+  } else if (direction === 'vert_tb') {
+    beamAngleDeg = -76;
+    motionPoints = [
+      { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.minY - spanH * 0.16).toFixed(1)) },
+      { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+      { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.maxY + spanH * 0.16).toFixed(1)) },
+    ];
+  } else {
+    // diag_tl_br (Default): sweeps from the very beginning of the layer (Top-Left / Left) to the very end (Bottom-Right / Right)
+    beamAngleDeg = isWideBanner ? -26 : -32;
+    motionPoints = isWideBanner
+      ? [
+          { x: Number((bounds.minX - spanW * 0.15).toFixed(1)), y: Number((bounds.cy - spanH * 0.14).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.maxX + spanW * 0.15).toFixed(1)), y: Number((bounds.cy + spanH * 0.14).toFixed(1)) },
+        ]
+      : [
+          { x: Number((bounds.minX - spanW * 0.12).toFixed(1)), y: Number((bounds.minY - spanH * 0.12).toFixed(1)) },
+          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
+          { x: Number((bounds.maxX + spanW * 0.12).toFixed(1)), y: Number((bounds.maxY + spanH * 0.12).toFixed(1)) },
+        ];
+  }
+
+  return {
+    shineWidth: shineSide,
+    shineHeight: shineSide,
+    beamAngleDeg,
+    motionPoints,
+  };
 }
 
 /**

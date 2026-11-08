@@ -97,6 +97,7 @@ import {
   featherCustomShineBitmap,
   extractShineConfigFromExistingSprite,
   applySmartSoftFeatherMatteToMaskCanvas,
+  computeFullLayerShineSweepAndSize,
 } from '../utils/svgaShineEngine';
 import { SvgaShineStudioPanel, ShineTargetOption } from './SvgaShineStudioPanel';
 import { SvgaTimelinePanel } from './SvgaTimelinePanel';
@@ -4108,8 +4109,6 @@ export default function SvgaAeEditor({
         };
       }
 
-      const padX = Math.round(canvasW * 0.14);
-      const padY = Math.round(canvasH * 0.14);
       return {
         bitmap: null,
         width: canvasW,
@@ -4117,10 +4116,10 @@ export default function SvgaAeEditor({
         fx: 0,
         fy: 0,
         worldMatrix: [1, 0, 0, 1, 0, 0],
-        minX: padX,
-        minY: padY,
-        maxX: canvasW - padX,
-        maxY: canvasH - padY,
+        minX: 0,
+        minY: 0,
+        maxX: canvasW,
+        maxY: canvasH,
         cx: canvasW / 2,
         cy: canvasH / 2,
         label: docName,
@@ -4231,49 +4230,15 @@ export default function SvgaAeEditor({
       }
 
       const { contours, bounds } = traceContoursFromLayerTarget(resolvedTargetId, true, 28);
-      const spanW = Math.max(60, bounds.maxX - bounds.minX);
-      const spanH = Math.max(60, bounds.maxY - bounds.minY);
-      const isWideBanner = spanW > spanH * 1.45;
-      const diagSpan = Math.hypot(spanW, spanH);
-      const shineW = isWideBanner
-        ? Math.max(240, Math.min(720, Math.round(Math.max(spanH * 2.6, spanW * 0.65))))
-        : Math.max(280, Math.min(880, Math.round(diagSpan * 1.35)));
-      const shineH = shineW;
-
-      const motionPoints: Point2D[] = isWideBanner
-        ? [
-            {
-              x: Number((bounds.cx - spanW * 0.78).toFixed(1)),
-              y: Number((bounds.cy - spanH * 0.18).toFixed(1)),
-            },
-            {
-              x: Number(bounds.cx.toFixed(1)),
-              y: Number(bounds.cy.toFixed(1)),
-            },
-            {
-              x: Number((bounds.cx + spanW * 0.78).toFixed(1)),
-              y: Number((bounds.cy + spanH * 0.18).toFixed(1)),
-            },
-          ]
-        : [
-            {
-              x: Number((bounds.cx - spanW * 0.76).toFixed(1)),
-              y: Number((bounds.cy - spanH * 0.68).toFixed(1)),
-            },
-            {
-              x: Number(bounds.cx.toFixed(1)),
-              y: Number(bounds.cy.toFixed(1)),
-            },
-            {
-              x: Number((bounds.cx + spanW * 0.76).toFixed(1)),
-              y: Number((bounds.cy + spanH * 0.68).toFixed(1)),
-            },
-          ];
+      const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
+      const shineW = fullSweep.shineWidth;
+      const shineH = fullSweep.shineHeight;
+      const motionPoints: Point2D[] = fullSweep.motionPoints;
 
       const sweepStart = 0;
       const sweepEnd = Math.max(1, totalFrames - 1);
       const presetId: ShineLayerConfig['presetId'] = 'royal_gold';
-      const beamAngleDeg = isWideBanner ? -28 : -32;
+      const beamAngleDeg = fullSweep.beamAngleDeg;
       const beamWidthRatio = 0.22;
       const beamSoftness = 0.85;
       const colorPrimary = '#fbbf24';
@@ -4454,13 +4419,18 @@ export default function SvgaAeEditor({
         nextConfig.presetId = 'royal_gold';
       }
 
-      // Ensure procedural shine bitmap is always a well-proportioned square canvas
+      // Ensure procedural shine bitmap is always a well-proportioned square canvas large enough for any target layer
       if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
-        const curSide = Math.max(nextConfig.shineWidth || 0, nextConfig.shineHeight || 0, targetLayer.width, targetLayer.height);
+        const curSide = Math.max(
+          nextConfig.shineWidth || 0,
+          nextConfig.shineHeight || 0,
+          targetLayer.width,
+          targetLayer.height
+        );
         const procSide =
-          nextConfig.shineWidth === nextConfig.shineHeight && (nextConfig.shineWidth || 0) >= 180
-            ? nextConfig.shineWidth!
-            : Math.max(220, Math.min(640, Math.round(curSide * 0.85)));
+          nextConfig.shineWidth === nextConfig.shineHeight && (nextConfig.shineWidth || 0) >= 240
+            ? Math.min(2200, nextConfig.shineWidth!)
+            : Math.max(320, Math.min(2200, Math.round(curSide)));
         const syncCanvas = renderProceduralShineCanvasSync({
           presetId: nextConfig.presetId,
           width: procSide,
@@ -4599,6 +4569,7 @@ export default function SvgaAeEditor({
       if (!targetLayer || !targetLayer.shineConfig) return;
       const targetId = overrideTargetId || targetLayer.shineConfig.targetLayerId || 'DOCUMENT';
       const { contours, bounds } = traceContoursFromLayerTarget(targetId, true, 28);
+      const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
       handleUpdateShineConfig(
         shineLayerId,
         {
@@ -4606,10 +4577,16 @@ export default function SvgaAeEditor({
           maskContours: contours,
           maskMode: 'auto_layer_contour',
           exactLayerAlphaMask: true,
+          shineWidth: fullSweep.shineWidth,
+          shineHeight: fullSweep.shineHeight,
+          beamAngleDeg: fullSweep.beamAngleDeg,
+          motionPoints: fullSweep.motionPoints,
           referenceFrame: currentFrame,
         },
         {
-          actionLabel: `🎯 تم استدعاء وتتبع حواف الطبقة (${bounds.label}) بدقة 100% بدون آثار قص (${contours[0]?.length || 0} نقطة)`,
+          regenerateBitmap: true,
+          regenerateKeyframes: true,
+          actionLabel: `🎯 تم ضبط اللمعة لتغطي الطبقة (${bounds.label}) بالكامل من أولها لآخرها (${contours[0]?.length || 0} نقطة)`,
         }
       );
     },
@@ -4719,48 +4696,20 @@ export default function SvgaAeEditor({
       }
 
       const bounds = getTargetLayerBoundsAndBitmapAtFrame(sc.targetLayerId, currentFrame);
-      const spanW = Math.max(60, bounds.maxX - bounds.minX);
-      const spanH = Math.max(60, bounds.maxY - bounds.minY);
-      let nextPts: ShinePoint[] = [];
-      let nextAngle = sc.beamAngleDeg;
-
-      if (dir === 'diag_tl_br') {
-        nextPts = [
-          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number((bounds.cy - spanH * 0.58).toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number((bounds.cy + spanH * 0.58).toFixed(1)) },
-        ];
-        nextAngle = -32;
-      } else if (dir === 'diag_tr_bl') {
-        nextPts = [
-          { x: Number((bounds.cx + spanW * 0.7).toFixed(1)), y: Number((bounds.cy - spanH * 0.58).toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx - spanW * 0.7).toFixed(1)), y: Number((bounds.cy + spanH * 0.58).toFixed(1)) },
-        ];
-        nextAngle = 32;
-      } else if (dir === 'horiz_lr') {
-        nextPts = [
-          { x: Number((bounds.cx - spanW * 0.74).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number((bounds.cx + spanW * 0.74).toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-        ];
-        nextAngle = -26;
-      } else if (dir === 'vert_tb') {
-        nextPts = [
-          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy - spanH * 0.72).toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number(bounds.cy.toFixed(1)) },
-          { x: Number(bounds.cx.toFixed(1)), y: Number((bounds.cy + spanH * 0.72).toFixed(1)) },
-        ];
-        nextAngle = -68;
-      }
+      const fullSweep = computeFullLayerShineSweepAndSize(bounds, dir);
 
       handleUpdateShineConfig(
         shineLayerId,
-        { motionPoints: nextPts, beamAngleDeg: nextAngle },
+        {
+          motionPoints: fullSweep.motionPoints,
+          beamAngleDeg: fullSweep.beamAngleDeg,
+          shineWidth: fullSweep.shineWidth,
+          shineHeight: fullSweep.shineHeight,
+        },
         {
           regenerateBitmap: true,
           regenerateKeyframes: true,
-          actionLabel: '🧭 تم تحديث مسار حركة اللمعة وزاوية الشعاع تلقائياً',
+          actionLabel: '🧭 تم تحديث مسار حركة اللمعة لتغطي الطبقة بالكامل من أولها لآخرها',
         }
       );
       setShineEditSubmode('motion_points');

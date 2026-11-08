@@ -8,6 +8,7 @@ import {
   buildShineKeyframesFromMotionPoints,
   buildClippedShineSvgaFrames,
   interpolateMotionPathPoint,
+  computeFullLayerShineSweepAndSize,
   ShineLayerConfig,
 } from './svgaShineEngine';
 import {
@@ -427,6 +428,35 @@ test('traceAlphaContourFromRgba: wide horizontal VIP ID banner (512x115) with op
   );
   assert.ok(contours[0].length >= 4 && contours[0].length <= 48);
 });
+
+test('computeFullLayerShineSweepAndSize: scales shine dimensions and sweep path from start to end even on large layers', () => {
+  // Large 1000x1000 layer
+  const largeBounds = {
+    minX: 100,
+    minY: 50,
+    maxX: 1100,
+    maxY: 1050,
+    cx: 600,
+    cy: 550,
+  };
+  const res = computeFullLayerShineSweepAndSize(largeBounds, 'diag_tl_br');
+  const diag = Math.hypot(1000, 1000);
+  assert.ok(
+    res.shineWidth >= diag * 1.5 && res.shineWidth <= 2200,
+    `Expected shineWidth (${res.shineWidth}) to exceed 1.5x layer diagonal (${diag.toFixed(1)})`
+  );
+  assert.equal(res.shineWidth, res.shineHeight);
+  assert.ok(
+    res.motionPoints[0].x < largeBounds.minX && res.motionPoints[0].y < largeBounds.minY,
+    'Sweep start point must begin before the top-left corner of the large layer'
+  );
+  assert.ok(
+    res.motionPoints[res.motionPoints.length - 1].x > largeBounds.maxX &&
+      res.motionPoints[res.motionPoints.length - 1].y > largeBounds.maxY,
+    'Sweep end point must finish past the bottom-right corner of the large layer'
+  );
+});
+
 
 
 
