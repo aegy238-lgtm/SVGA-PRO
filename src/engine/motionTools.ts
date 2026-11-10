@@ -311,6 +311,8 @@ export function initMotionToolsFixed() {
   let load = function (f) {
     cur = f;
     (window as any).__currentMotionFile = f;
+    userAdjustedZoom = false;
+    previewZoom = 1;
     show('convert');
     const ext = f.name.split('.').pop().toLowerCase(),
       u = URL.createObjectURL(f),
@@ -328,6 +330,23 @@ export function initMotionToolsFixed() {
   const defaultGiftBg = 'repeating-conic-gradient(#999 0 25%,#ccc 0 50%) 0 0/14px 14px';
   let curGiftBg: { type: 'color' | 'chk' | 'image'; val: string } = { type: 'chk', val: defaultGiftBg };
   let previewZoom = 1;
+  let userAdjustedZoom = false;
+
+  function getAutoDefaultZoom(w?: number, h?: number): number {
+    const maxDim = Math.max(Number(w) || 0, Number(h) || 0);
+    return maxDim >= 600 ? 1.6 : 1;
+  }
+
+  function getHiResCanvasDims(w?: number, h?: number): [number, number] {
+    const W = Math.max(1, Number(w) || 500);
+    const H = Math.max(1, Number(h) || 500);
+    const dpr = Math.min(2, Math.max(1, Number(window.devicePixelRatio) || 1));
+    const baseScale = Math.min(2, 400 / Math.max(W, H));
+    const targetW = Math.max(W, Math.round(W * baseScale * Math.max(2.2, previewZoom) * dpr));
+    const targetH = Math.max(H, Math.round(H * baseScale * Math.max(2.2, previewZoom) * dpr));
+    const capScale = Math.min(1, 1920 / Math.max(targetW, targetH));
+    return [Math.max(1, Math.round(targetW * capScale)), Math.max(1, Math.round(targetH * capScale))];
+  }
 
   function applyGiftBg(val: string, isImage = false) {
     curGiftBg = isImage
@@ -408,6 +427,14 @@ export function initMotionToolsFixed() {
           el.style.display = 'block';
           el.style.objectFit = 'fill';
         }
+        const innerCanvas = el.tagName === 'CANVAS' ? null : (el.querySelector?.('canvas') as HTMLCanvasElement | null);
+        if (innerCanvas) {
+          innerCanvas.style.width = `${displayW}px`;
+          innerCanvas.style.height = `${displayH}px`;
+          innerCanvas.style.maxWidth = 'none';
+          innerCanvas.style.maxHeight = 'none';
+          innerCanvas.style.display = 'block';
+        }
         const innerSvg = el.querySelector?.('svg');
         if (innerSvg) {
           innerSvg.setAttribute('width', String(displayW));
@@ -416,12 +443,6 @@ export function initMotionToolsFixed() {
         }
       });
 
-      const activePl = (window as any).SVP || player;
-      if (activePl && typeof activePl._resize === 'function') {
-        try {
-          activePl._resize();
-        } catch (_) {}
-      }
       if (anim && typeof anim.resize === 'function') {
         try {
           anim.resize();
@@ -532,19 +553,23 @@ export function initMotionToolsFixed() {
 
   if (zoomInBtn) {
     zoomInBtn.onclick = () => {
+      userAdjustedZoom = true;
       previewZoom = Math.min(3, Math.round((previewZoom + 0.2) * 100) / 100);
       syncPreviewSize();
     };
   }
   if (zoomOutBtn) {
     zoomOutBtn.onclick = () => {
+      userAdjustedZoom = true;
       previewZoom = Math.max(0.2, Math.round((previewZoom - 0.2) * 100) / 100);
       syncPreviewSize();
     };
   }
   if (zoomResetBtn) {
     zoomResetBtn.onclick = () => {
-      previewZoom = 1;
+      userAdjustedZoom = true;
+      const defaultZ = getAutoDefaultZoom(S?.w, S?.h);
+      previewZoom = Math.abs(previewZoom - defaultZ) < 0.05 ? 1 : defaultZ;
       syncPreviewSize();
     };
   }
@@ -594,6 +619,21 @@ export function initMotionToolsFixed() {
   $('#again').onclick = () => fi.click();
   $('#q').oninput = (e) =>
     $$('#assets div').forEach((d) => (d.style.display = d.title.includes(e.target.value) ? '' : 'none'));
+
+  const wInputEl = document.getElementById('w') as HTMLInputElement | null;
+  const hInputEl = document.getElementById('h') as HTMLInputElement | null;
+  const onDimInputChange = () => {
+    const nw = Number(wInputEl?.value || (S && S.w) || 0);
+    const nh = Number(hInputEl?.value || (S && S.h) || 0);
+    if (nw > 0 && nh > 0) {
+      if (!userAdjustedZoom) {
+        previewZoom = getAutoDefaultZoom(nw, nh);
+      }
+      syncPreviewSize(nw, nh);
+    }
+  };
+  if (wInputEl) wInputEl.addEventListener('input', onDimInputChange);
+  if (hInputEl) hInputEl.addEventListener('input', onDimInputChange);
 
   const h = location.hash.slice(1);
   if (['home', 'convert', 'editor', 'gifts'].includes(h)) show(h);
@@ -721,10 +761,13 @@ export function initMotionToolsFixed() {
           ),
           w = vi.videoSize.width,
           h = vi.videoSize.height,
-          s = Math.min(2, 400 / Math.max(w, h));
-        d.style.cssText = `width:${w * s}px;height:${h * s}px`;
+          [hiW, hiH] = getHiResCanvasDims(w, h);
+        d.style.cssText = `width:${hiW}px;height:${hiH}px`;
         player = new SVGA.Player(d);
         player.setVideoItem(vi);
+        try {
+          player._resize = () => {};
+        } catch (_) {}
         player.startAnimation();
         S = {
           w,
@@ -980,10 +1023,14 @@ export function initMotionToolsFixed() {
           n = 1;
         }
 
-        // Render interactive canvas player in #view so play/pause/seek and alpha checkerboard work cleanly
-        const sc = Math.min(2, 400 / Math.max(w, h));
-        const cv = mk(Math.round(w * sc), Math.round(h * sc));
+        // Render interactive canvas player in #view at full high resolution so play/pause/seek and alpha checkerboard stay razor-sharp
+        const [hiW, hiH] = getHiResCanvasDims(w, h);
+        const cv = mk(hiW, hiH);
         const cx = cv.getContext('2d');
+        if (cx) {
+          cx.imageSmoothingEnabled = true;
+          cx.imageSmoothingQuality = 'high';
+        }
         cv.style.background = 'transparent';
         v.appendChild(cv);
 
@@ -1064,6 +1111,9 @@ export function initMotionToolsFixed() {
       $('#w').value = S.w;
       $('#h').value = S.h;
       $('#fps').value = Math.round(S.fps) || 15;
+      if (!userAdjustedZoom && S && S.w > 0 && S.h > 0) {
+        previewZoom = getAutoDefaultZoom(S.w, S.h);
+      }
       syncPreviewSize(S.w, S.h);
     } catch (e) {
       v.textContent = e.message || 'Could not open this file.';
@@ -2176,9 +2226,7 @@ export function initMotionToolsFixed() {
     }
 
     const m = S.vid as HTMLVideoElement;
-    const sc = Math.min(2, 400 / Math.max(S.w || 360, S.h || 360)) * previewZoom;
-    const cw = Math.max(1, Math.round((S.w || 360) * sc));
-    const ch = Math.max(1, Math.round((S.h || 360) * sc));
+    const [cw, ch] = getHiResCanvasDims(S.w || 360, S.h || 360);
 
     let cv = existingCv;
     if (!cv || !cv.isConnected) {
@@ -2304,6 +2352,8 @@ export function initMotionToolsFixed() {
   function prep(f) {
     cur = f;
     (window as any).__currentMotionFile = f;
+    userAdjustedZoom = false;
+    previewZoom = 1;
     origPreChromaAssets = {};
     if (window.SVP) {
       try {
@@ -2346,6 +2396,9 @@ export function initMotionToolsFixed() {
     $('#w').value = S.w;
     $('#h').value = S.h;
     $('#fps').value = Math.round(S.fps) || 15;
+    if (!userAdjustedZoom && S && S.w > 0 && S.h > 0) {
+      previewZoom = getAutoDefaultZoom(S.w, S.h);
+    }
     syncPreviewSize(S.w, S.h);
   }
   function lot(data, f, v, fmt) {
@@ -2577,9 +2630,13 @@ export function initMotionToolsFixed() {
       window.SV = { m, bm };
       if (!m.n) m.n = Math.max(...m.sp.map((s) => s.fr.length), 1);
 
-      const s = Math.min(2, 400 / Math.max(m.w || 500, m.h || 500)),
-        cv = mk(Math.max(1, Math.round((m.w || 500) * s)), Math.max(1, Math.round((m.h || 500) * s))),
+      const [hiW, hiH] = getHiResCanvasDims(m.w || 500, m.h || 500),
+        cv = mk(hiW, hiH),
         cx = cv.getContext('2d');
+      if (cx) {
+        cx.imageSmoothingEnabled = true;
+        cx.imageSmoothingQuality = 'high';
+      }
       v.appendChild(cv);
 
       let i = 0,
@@ -2865,9 +2922,13 @@ export function initMotionToolsFixed() {
       }
       window.SV = { m, bm };
       if (!m.n) m.n = Math.max(...m.sp.map((s) => s.fr.length), 1);
-      const s = Math.min(2, 400 / Math.max(m.w, m.h)),
-        cv = mk(Math.round(m.w * s), Math.round(m.h * s)),
+      const [hiW, hiH] = getHiResCanvasDims(m.w, m.h),
+        cv = mk(hiW, hiH),
         cx = cv.getContext('2d');
+      if (cx) {
+        cx.imageSmoothingEnabled = true;
+        cx.imageSmoothingQuality = 'high';
+      }
       v.appendChild(cv);
       let i = 0,
         run = true,
@@ -3065,6 +3126,8 @@ export function initMotionToolsFixed() {
       }
     }
 
+    c.imageSmoothingEnabled = true;
+    c.imageSmoothingQuality = 'high';
     c.drawImage(t, 0, 0, W, H);
   }
   const _dv = drawVid;
@@ -3095,8 +3158,8 @@ export function initMotionToolsFixed() {
         sleep(800),
       ]);
     };
-    const sc = Math.min(2, 400 / Math.max(S.w, S.h)),
-      cv = mk(Math.round(S.w * sc), Math.round(S.h * sc)),
+    const [hiW, hiH] = getHiResCanvasDims(S.w, S.h),
+      cv = mk(hiW, hiH),
       x = cv.getContext('2d');
     cv.style.background = 'transparent';
     const bgMeta = (window as any).__getGiftBg?.();
@@ -3632,15 +3695,18 @@ export function initMotionToolsFixed() {
       const baseW = S.w || (vi && vi.videoSize && vi.videoSize.width) || 360;
       const baseH = S.h || (vi && vi.videoSize && vi.videoSize.height) || 360;
       const baseFps = S.fps || (vi && vi.FPS) || 20;
-      const sc = Math.min(2, 400 / Math.max(baseW, baseH)) * previewZoom,
+      const [hiW, hiH] = getHiResCanvasDims(baseW, baseH),
         d = document.createElement('div');
-      d.style.cssText = 'width:' + Math.round(baseW * sc) + 'px;height:' + Math.round(baseH * sc) + 'px';
+      d.style.cssText = 'width:' + hiW + 'px;height:' + hiH + 'px';
       v.appendChild(d);
       const pl = new SVGA.Player(d);
       if (vi && Array.isArray(vi.audios)) {
         vi.audios = [];
       }
       pl.setVideoItem(vi);
+      try {
+        pl._resize = () => {};
+      } catch (_) {}
       // Apply any existing edited/chroma-keyed images to the upgraded player
       if (window.EDIT) {
         for (const [ek, eu] of Object.entries(window.EDIT)) {
@@ -5145,9 +5211,7 @@ export function initMotionToolsFixed() {
     }
     function ensureAlphaPreviewCanvas(source, m) {
       let cv = source._alphaCanvas;
-      const sc = Math.min(2, 400 / Math.max(source.w, source.h)),
-        cw = Math.max(1, Math.round(source.w * sc)),
-        ch = Math.max(1, Math.round(source.h * sc));
+      const [cw, ch] = getHiResCanvasDims(source.w, source.h);
       if (!cv || !cv.isConnected) {
         cv = mk(cw, ch);
         cv.style.background = 'transparent';
