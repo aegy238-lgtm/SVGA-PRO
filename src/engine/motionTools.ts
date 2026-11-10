@@ -65,6 +65,19 @@ import {
   applyChromaKeyToRgbaBuffer,
 } from '../utils/chromaKey';
 import { exportSvgaToAfterEffectsDirect } from '../services/svgaAeExport';
+import {
+  issueGiftCertificate,
+  issueAndAutoAttachGiftCertificate,
+  injectCertificateIntoJsZipInstance,
+  loadCertificateAutoSettings,
+} from '../utils/giftCertificateEngine';
+import {
+  encodePagFileBinary,
+  decodePagBinaryToMovie,
+  decodePagWithLibpagFallback,
+  renderSvgaMovieToWebpFrames,
+  isPagBinary,
+} from '../utils/pagEngine';
 
 let initialized = false;
 
@@ -94,6 +107,10 @@ export function initMotionToolsFixed() {
     st: {},
     defs: {
       SVGA: ['https://cdn.jsdelivr.net/npm/svgaplayerweb@2.3.1/build/svga.min.js'],
+      libpag: [
+        '/lib/libpag.min.js',
+        'https://cdn.jsdelivr.net/npm/libpag@4.3.45/lib/libpag.min.js',
+      ],
       lottie: [
         'https://cdn.jsdelivr.net/npm/lottie-web@5.13.0/build/player/lottie.min.js',
         'https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.13.0/lottie.min.js',
@@ -634,7 +651,15 @@ export function initMotionToolsFixed() {
   };
   let dl = async function (b, n) {
     dlBar('File ready: ' + n + ' · ' + kb(b.size), b, n);
-    return dl0(b, n);
+    const res = await dl0(b, n);
+    if (!(b as any)?.__certAlreadyEmbedded) {
+      void issueAndAutoAttachGiftCertificate({
+        giftFileName: n,
+        fileSizeBytes: b.size,
+        sourceStudio: 'منصة المصمم أحمد للهدايا',
+      });
+    }
+    return res;
   };
   let drawVid = function (c, W, H, m) {
     const L = LY(),
@@ -1252,7 +1277,18 @@ export function initMotionToolsFixed() {
         await render(W, H, fps, async (c, x, k) => {
           z.file(base + '_' + String(k).padStart(4, '0') + '.png', await window.pngQ(c, window.__cmp));
         });
-        await dl(await z.generateAsync({ type: 'blob' }), base + '_frames.zip');
+        const autoCertCfg = loadCertificateAutoSettings();
+        if (autoCertCfg.enabled && autoCertCfg.embedInZipArchives) {
+          const certRec = issueGiftCertificate({
+            giftName: base,
+            fileFormat: 'ZIP',
+            sourceStudio: 'منصة المصمم أحمد للهدايا',
+          });
+          await injectCertificateIntoJsZipInstance(z, certRec);
+        }
+        const zipOutBlob: any = await z.generateAsync({ type: 'blob' });
+        zipOutBlob.__certAlreadyEmbedded = true;
+        await dl(zipOutBlob, base + '_frames.zip');
       } else if (F === 'gif') {
         const fr = [];
         await render(W, H, fps, async (c, x) => {
@@ -1766,15 +1802,29 @@ export function initMotionToolsFixed() {
   function buildAssets() {
     for (const k in A) delete A[k];
     const rawMap = (window as any).__svgaRawImages || {};
-    const im = (window.VI && player && window.VI.images) || {};
+    const im =
+      (window.VI && player && window.VI.images) ||
+      (window.SV && window.SV.m && window.SV.m.im) ||
+      {};
     for (const k in im) {
       if (window.EDIT && window.EDIT[k]) {
         A[k] = window.EDIT[k];
-      } else if (rawMap[k] && rawMap[k][0] === 0x89) {
+      } else if (rawMap[k] && rawMap[k] instanceof Uint8Array && rawMap[k][0] === 0x89) {
         A[k] = 'data:image/png;base64,' + base64(rawMap[k]);
+      } else if (im[k] instanceof Uint8Array) {
+        const d = im[k];
+        const mt =
+          d[0] === 0xff && d[1] === 0xd8
+            ? 'image/jpeg'
+            : d[0] === 0x52 && d.length >= 12 && d[8] === 0x57
+              ? 'image/webp'
+              : 'image/png';
+        A[k] = `data:${mt};base64,` + base64(d);
       } else {
         const s = im[k];
-        A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
+        if (typeof s === 'string') {
+          A[k] = /^data:|^http/.test(s) ? s : 'data:image/png;base64,' + s;
+        }
       }
     }
     if (!Object.keys(A).length && (window as any).__lottieData?.assets) {
@@ -1807,7 +1857,17 @@ export function initMotionToolsFixed() {
         z.file(fileName, blob);
       }
       const base = cur ? cur.name.replace(/\.[^.]+$/, '') : 'assets';
-      const zipBlob = await z.generateAsync({ type: 'blob' });
+      const autoCertCfg = loadCertificateAutoSettings();
+      if (autoCertCfg.enabled && autoCertCfg.embedInZipArchives) {
+        const certRec = issueGiftCertificate({
+          giftName: base,
+          fileFormat: 'ZIP',
+          sourceStudio: 'منصة المصمم أحمد للهدايا',
+        });
+        await injectCertificateIntoJsZipInstance(z, certRec);
+      }
+      const zipBlob: any = await z.generateAsync({ type: 'blob' });
+      zipBlob.__certAlreadyEmbedded = true;
       await dl(zipBlob, `${base}_images.zip`);
     } catch (e: any) {
       toast(e?.message || 'Could not download image assets');
@@ -2466,47 +2526,105 @@ export function initMotionToolsFixed() {
   async function openPag(f) {
     const v = prep(f);
     try {
-      await getLib('libpag');
-      if (!window.libpag) throw Error('libpag could not be downloaded');
-      const base = (LIBS.src.libpag || LIBS.defs.libpag[0]).replace('libpag.min.js', ''),
-        PAG = await libpag.PAGInit({ locateFile: (n) => base + n }),
-        file = await PAG.PAGFile.load(f),
-        w = file.width(),
-        h = file.height(),
-        c = mk(w, h);
-      v.appendChild(c);
-      const pv = await PAG.PAGView.init(file, c);
-      pv.setRepeatCount(0);
-      await pv.play();
-      const fps = Math.round(file.frameRate()) || 30,
-        n = Math.max(1, Math.round((file.duration() / 1e6) * fps));
+      for (const k in A) delete A[k];
+      const decoded = await decodePagWithLibpagFallback(f);
+      const m = decoded.svgaMovie;
+      const bm = {};
+      (window as any).__svgaRawImages = m.im;
+      (window as any).M = m;
+
+      for (const k in m.im) {
+        const d = m.im[k];
+        if (!d || !d.length) continue;
+        const mt =
+          d[0] === 0x89 && d[1] === 0x50
+            ? 'image/png'
+            : d[0] === 0xff && d[1] === 0xd8
+              ? 'image/jpeg'
+              : d[0] === 0x52 && d.length >= 12 && d[8] === 0x57 && d[9] === 0x45 && d[10] === 0x42 && d[11] === 0x50
+                ? 'image/webp'
+                : 'image/png';
+        try {
+          const b = await createImageBitmap(new Blob([d], { type: mt }));
+          bm[k] = b;
+          if (mt === 'image/png') {
+            A[k] = 'data:image/png;base64,' + base64(d);
+          } else {
+            const t = mk(b.width, b.height);
+            t.getContext('2d').drawImage(b, 0, 0);
+            A[k] = t.toDataURL('image/png');
+          }
+        } catch (err) {
+          A[k] = `data:${mt};base64,` + base64(d);
+        }
+      }
+
+      if (decoded.audioBytes && decoded.audioBytes.byteLength > 0 && window.AU) {
+        try {
+          const actx = new AudioContext();
+          const abuf = await actx.decodeAudioData(decoded.audioBytes.slice().buffer);
+          await actx.close();
+          window.AU.orig = {
+            name: f.name.replace(/\.[^.]+$/, '') + '.mp3',
+            bytes: decoded.audioBytes,
+            buf: abuf,
+            mp3: true,
+          };
+          if (window.PA) window.PA.restart();
+        } catch (_) {}
+      }
+
+      window.SV = { m, bm };
+      if (!m.n) m.n = Math.max(...m.sp.map((s) => s.fr.length), 1);
+
+      const s = Math.min(2, 400 / Math.max(m.w || 500, m.h || 500)),
+        cv = mk(Math.max(1, Math.round((m.w || 500) * s)), Math.max(1, Math.round((m.h || 500) * s))),
+        cx = cv.getContext('2d');
+      v.appendChild(cv);
+
+      let i = 0,
+        run = true,
+        ix = 0;
+      const tk = setInterval(() => {
+        if (!document.body.contains(cv)) return clearInterval(tk);
+        if (!run) return;
+        (window as any).__svgaCurrentFrame = i;
+        svPaint(cx, cv.width, cv.height, i);
+        if (window.PA) window.PA.sync(i / Math.max(1, m.fps));
+        i = (i + 1) % Math.max(1, m.n);
+      }, 1000 / Math.max(1, m.fps));
+
       S = {
-        w,
-        h,
-        fps,
-        n,
-        set: async (i) => {
-          await pv.setProgress(i / n);
-          await pv.flush();
+        w: Math.round(m.w || 500),
+        h: Math.round(m.h || 500),
+        fps: m.fps || 30,
+        n: Math.max(1, m.n || 1),
+        set: async (k) => {
+          ix = Math.max(0, Math.min(m.n - 1, k));
+          i = ix;
+          svPaint(cx, cv.width, cv.height, ix);
         },
-        draw: (cx, W, H) => cx.drawImage(c, 0, 0, W, H),
-        stop: () => pv.pause(),
-        go: () => pv.play(),
+        draw: (c, W, H) => svPaint(c, W, H, ix),
+        stop: () => (run = false),
+        go: () => (run = true),
       };
+
       info({
-        Format: 'PAG',
-        Resolution: w + ' × ' + h,
-        'Frame Rate': fps + ' FPS',
-        Duration: (n / fps).toFixed(2) + ' S',
+        Format: 'PAG (Tencent Portable Animated Graphics)',
+        Resolution: S.w + ' × ' + S.h,
+        'Frame Rate': S.fps + ' FPS',
+        Duration: (S.n / S.fps).toFixed(2) + ' S',
+        Frames: S.n,
+        'Image Count': Object.keys(A).length,
+        'Decomposed Layers': (m.sp || []).length,
         'File Size': kb(f.size),
         'File Name': f.name,
       });
       fin();
+      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
     } catch (e) {
-      v.textContent =
-        'PAG needs libpag.wasm, which this page could not fetch here (' +
-        (e.message || e) +
-        '). It works when the page is hosted on your own site.';
+      window.SV = null;
+      v.textContent = 'Could not decode this PAG file: ' + (e.message || e);
     }
   }
   const _load = load;
@@ -3187,11 +3305,22 @@ export function initMotionToolsFixed() {
     window.__svgaEnc = svgaEnc;
     const prev = $('#start').onclick;
     $('#start').onclick = async () => {
-      const F = $('#fmt').value;
+      let F = $('#fmt').value;
+      const activeExt = cur ? cur.name.split('.').pop().toLowerCase() : '';
+      if (F === 'orig' && activeExt === 'pag') {
+        const hasPagEdits =
+          Object.keys(window.EDIT || {}).length > 0 ||
+          Boolean((window as any).__WATERMARK_LAYERS?.length) ||
+          Boolean((window as any).__chromaKey?.enabled) ||
+          Boolean((window as any).__edgeFeather?.enabled) ||
+          (S &&
+            ((+$('#w').value && +$('#w').value !== S.w) ||
+              (+$('#h').value && +$('#h').value !== S.h) ||
+              (+$('#fps').value && Math.abs(+$('#fps').value - Math.round(S.fps)) > 0.5)));
+        if (hasPagEdits) F = 'pag';
+      }
       if (!/^(lottie|dotlottie|svga|webp|apng|mov|pag)$/.test(F)) return prev();
       if (!cur || !S) return toast('Upload a supported file first');
-      if (F === 'pag')
-        return toast('PAG export needs Tencent’s PAGExporter (After Effects plugin); no browser encoder exists');
       const W = +$('#w').value || S.w,
         H = +$('#h').value || S.h,
         fps = Math.max(1, +$('#fps').value || 15),
@@ -3201,7 +3330,81 @@ export function initMotionToolsFixed() {
       btn.disabled = true;
       S.stop();
       try {
-        if (F === 'mov') {
+        if (F === 'pag') {
+          const stEl = document.getElementById('exportStatus');
+          if (stEl) stEl.textContent = 'جاري تشفير وتصدير ملف PAG الاحترافي (.pag)…';
+          const geomModified =
+            W !== S.w ||
+            H !== S.h ||
+            (+$('#scale').value && +$('#scale').value !== 100) ||
+            ($('#mirror').value && $('#mirror').value !== 'none') ||
+            ($('#fit').value && $('#fit').value !== 'stretch') ||
+            Boolean($('#trim')?.checked) ||
+            Boolean((window as any).__edgeFeather?.enabled);
+
+          const audioPayload =
+            typeof (window as any).svgaPrepareAudioPayload === 'function'
+              ? await (window as any).svgaPrepareAudioPayload(fps, S.n || 1)
+              : null;
+
+          // If we have decomposed layers in window.SV.m and geometry is intact, preserve decomposed layers + edits AND embed rendered WebP sequence for native libpag playback
+          if (window.SV && window.SV.m && !geomModified && !(window as any).__WATERMARK_LAYERS?.length) {
+            const clonedIm: Record<string, Uint8Array> = { ...(window.SV.m.im || {}) };
+            if (window.EDIT) {
+              for (const [ek, eu] of Object.entries(window.EDIT)) {
+                try {
+                  const b = await (await fetch(eu as string)).blob();
+                  clonedIm[ek] = new Uint8Array(await b.arrayBuffer());
+                } catch (_) {}
+              }
+            }
+            const pagMovie = {
+              ...window.SV.m,
+              w: W,
+              h: H,
+              fps,
+              im: clonedIm,
+            };
+            const webpFrames = await renderSvgaMovieToWebpFrames(pagMovie, 180);
+            const pagBytes = encodePagFileBinary({
+              width: W,
+              height: H,
+              fps,
+              svgaMovie: pagMovie,
+              webpFrames,
+              audioBytes: audioPayload?.bytes || null,
+            });
+            await dl(new Blob([pagBytes as any], { type: 'application/octet-stream' }), base + '.pag');
+          } else {
+            // Render frames from any source format (MP4, VAP, YYEVA, SVGA, GIF, WebP, Lottie, PAG) into PAG binary
+            const frPngBytes: Uint8Array[] = [];
+            const webpFrames: Uint8Array[] = [];
+            await render(W, H, fps, async (c, x) => {
+              const pngBlob = await window.pngQ(c, q < 1, false);
+              frPngBytes.push(new Uint8Array(await pngBlob.arrayBuffer()));
+              const wBlob = await bl(c, 'image/webp', q);
+              if (wBlob && wBlob.type === 'image/webp') {
+                const u = new Uint8Array(await wBlob.arrayBuffer());
+                if (u.length >= 20 && u[0] === 0x52 && u[8] === 0x57) {
+                  webpFrames.push(u);
+                  return;
+                }
+              }
+              const id = x.getImageData(0, 0, W, H);
+              webpFrames.push(encodeLosslessWebPFrame(id.data, W, H));
+            });
+            const pagBytes = encodePagFileBinary({
+              width: W,
+              height: H,
+              fps,
+              framesPng: frPngBytes,
+              webpFrames,
+              audioBytes: audioPayload?.bytes || null,
+            });
+            await dl(new Blob([pagBytes as any], { type: 'application/octet-stream' }), base + '.pag');
+          }
+          if (stEl) stEl.textContent = '';
+        } else if (F === 'mov') {
           const w2 = W + (W % 2),
             h2 = H + (H % 2),
             r = await record(w2, h2, fps, q, 'mp4', {
@@ -4037,6 +4240,40 @@ export function initMotionToolsFixed() {
       const activeFile = cur || (window as any).__currentMotionFile;
       if (!activeFile) return null;
       const activeExt = (activeFile.name.split('.').pop() || '').toLowerCase();
+
+      if (activeExt === 'pag' && window.SV && window.SV.m) {
+        try {
+          const clonedIm: Record<string, Uint8Array> = { ...(window.SV.m.im || {}) };
+          if (window.EDIT) {
+            for (const [ek, eu] of Object.entries(window.EDIT)) {
+              try {
+                const b = await (await fetch(eu as string)).blob();
+                clonedIm[ek] = new Uint8Array(await b.arrayBuffer());
+              } catch (_) {}
+            }
+          }
+          const pagBytes = encodePagFileBinary({
+            width: window.SV.m.w || S?.w || 500,
+            height: window.SV.m.h || S?.h || 500,
+            fps: window.SV.m.fps || S?.fps || 30,
+            svgaMovie: {
+              ...window.SV.m,
+              im: clonedIm,
+            },
+          });
+          return new File([pagBytes as any], activeFile.name, {
+            type: 'application/octet-stream',
+            lastModified: Date.now(),
+          });
+        } catch (err) {
+          console.warn('Fallback to raw PAG file for editor:', err);
+        }
+        const buf = await activeFile.arrayBuffer();
+        return new File([buf], activeFile.name, {
+          type: 'application/octet-stream',
+          lastModified: Date.now(),
+        });
+      }
 
       if (activeExt === 'svga') {
         const hasEdits =
@@ -5587,6 +5824,13 @@ export function initMotionToolsFixed() {
       dlBar('File ready: ' + name + ' · ' + kb(blob.size), blob, name);
       status('Ready: ' + name + ' · ' + kb(blob.size) + ' — use Download file if the download did not start.');
       await dl0(blob, name);
+      if (!(blob as any)?.__certAlreadyEmbedded) {
+        void issueAndAutoAttachGiftCertificate({
+          giftFileName: name,
+          fileSizeBytes: blob.size,
+          sourceStudio: 'منصة المصمم أحمد للهدايا',
+        });
+      }
       return blob;
     };
     function settings() {

@@ -17,6 +17,7 @@ import {
   rgbToHex,
 } from '../utils/gold3dEngine';
 import { FeatureFreeAttemptsStatus } from '../utils/platformStore';
+import { issueAndAutoAttachGiftCertificate } from '../utils/giftCertificateEngine';
 
 interface GoldNameDesignerStudioProps {
   isAr: boolean;
@@ -427,6 +428,14 @@ export default function GoldNameDesignerStudio({
               ? `📥 تم تصدير وتحميل التصميم بدقة ${config.canvasWidth}×${config.canvasHeight} (${fileName})`
               : `📥 Exported ${config.canvasWidth}×${config.canvasHeight} design (${fileName})`
           );
+
+          void issueAndAutoAttachGiftCertificate({
+            giftFileName: exportCfg.text || fileName,
+            fileFormat: ext.toUpperCase(),
+            fileSizeBytes: blob.size,
+            dimensionsLabel: `${config.canvasWidth}x${config.canvasHeight}`,
+            sourceStudio: 'مصمم الأسماء الذهبية 3D – منصة المصمم أحمد للهدايا',
+          });
         },
         mimeType,
         quality

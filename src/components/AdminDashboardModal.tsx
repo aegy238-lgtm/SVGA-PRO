@@ -43,6 +43,7 @@ import {
   isNetworkIdBanned,
   isUserAccountBanned,
 } from '../utils/platformStore';
+import { setGlobalAdminCertificateEnabled } from '../utils/giftCertificateEngine';
 import { getTranslation } from '../utils/i18n';
 import {
   firebaseConfig,
@@ -1187,6 +1188,25 @@ export default function AdminDashboardModal({
     showSavedFeedback('تمت استعادة اللوجو الافتراضي', 'Default logo restored');
   };
 
+  const handleToggleGiftCertificate = async () => {
+    const nextEnabled = !Boolean(settings.giftCertificateEnabled);
+    setGlobalAdminCertificateEnabled(nextEnabled);
+    const updated: PlatformSettings = {
+      ...settings,
+      giftCertificateEnabled: nextEnabled,
+    };
+    onUpdateSettings(updated);
+    await syncSettingsToFirestore(updated);
+    showSavedFeedback(
+      nextEnabled
+        ? '✅ تم فتح وتفعيل شهادة التوثيق — ستظهر في الموقع ويتم تنزيلها مع الهدايا تلقائياً'
+        : '🔒 تم إغلاق شهادة التوثيق نهائياً — لن يتم تنزيلها أو إظهارها لأي مستخدم حتى المدير',
+      nextEnabled
+        ? '✅ Gift Authentication Certificate enabled & opened'
+        : '🔒 Gift Authentication Certificate closed & disabled for all users'
+    );
+  };
+
   const handleSendNotification = (e: React.FormEvent) => {
     e.preventDefault();
     if (!hasAdminPermission(currentUser, 'manage_notifications')) return;
@@ -1467,6 +1487,49 @@ export default function AdminDashboardModal({
               )}
             </button>
 
+            {/* Toggle Gift Authentication Certificate Open / Closed Button */}
+            <button
+              type="button"
+              id="toggleGiftCertificateAdminBtn"
+              onClick={handleToggleGiftCertificate}
+              title={
+                settings.giftCertificateEnabled
+                  ? isAr
+                    ? 'شهادة التوثيق مفتوحة حالياً — انقر لإغلاقها ومنع تنزيلها أو ظهورها لأي مستخدم حتى المدير'
+                    : 'Gift Certificate is currently OPEN — click to close and disable it completely'
+                  : isAr
+                    ? 'شهادة التوثيق مغلقة حالياً (لا تنزل ولا تظهر لأي مستخدم حتى المدير) — انقر لفتحها وتفعيلها'
+                    : 'Gift Certificate is currently CLOSED — click to open and enable it'
+              }
+              style={{
+                padding: '6px 14px',
+                borderRadius: '10px',
+                border: settings.giftCertificateEnabled
+                  ? '1px solid rgba(16, 185, 129, 0.7)'
+                  : '1px solid rgba(245, 158, 11, 0.65)',
+                background: settings.giftCertificateEnabled
+                  ? 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
+                  : 'linear-gradient(135deg, #334155 0%, #0f172a 100%)',
+                color: settings.giftCertificateEnabled ? '#ffffff' : '#fde047',
+                fontWeight: 800,
+                fontSize: '12.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: settings.giftCertificateEnabled
+                  ? '0 4px 14px rgba(16, 185, 129, 0.35)'
+                  : '0 4px 14px rgba(0, 0, 0, 0.45)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {settings.giftCertificateEnabled ? (
+                <>👑 {isAr ? 'شهادة التوثيق: مفتوحة (إغلاق 🔒)' : 'Certificate: Open (Close 🔒)'}</>
+              ) : (
+                <>🚫 {isAr ? 'شهادة التوثيق: مغلقة (فتح 🟢)' : 'Certificate: Closed (Open 🟢)'}</>
+              )}
+            </button>
+
             {/* Quick Preview Role Switcher for Admin */}
             <div
               style={{
@@ -1614,6 +1677,126 @@ export default function AdminDashboardModal({
 
         {/* Body Content */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+          {/* Master Control Banner: Gift Authentication Certificate (Open / Close) */}
+          <div
+            id="adminGiftCertificateControlCard"
+            style={{
+              marginBottom: '18px',
+              padding: '14px 18px',
+              borderRadius: '14px',
+              border: settings.giftCertificateEnabled
+                ? '1px solid rgba(16, 185, 129, 0.55)'
+                : '1px solid rgba(239, 68, 68, 0.45)',
+              background: settings.giftCertificateEnabled
+                ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.14) 0%, rgba(15, 23, 42, 0.95) 100%)'
+                : 'linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(15, 23, 42, 0.95) 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '11px',
+                  background: settings.giftCertificateEnabled
+                    ? 'rgba(16, 185, 129, 0.2)'
+                    : 'rgba(239, 68, 68, 0.2)',
+                  border: settings.giftCertificateEnabled
+                    ? '1px solid rgba(16, 185, 129, 0.5)'
+                    : '1px solid rgba(239, 68, 68, 0.5)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontSize: '20px',
+                  flexShrink: 0,
+                }}
+              >
+                {settings.giftCertificateEnabled ? '👑' : '🔒'}
+              </div>
+              <div>
+                <div
+                  style={{
+                    fontWeight: 900,
+                    fontSize: '14px',
+                    color: settings.giftCertificateEnabled ? '#6ee7b7' : '#fca5a5',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span>
+                    {isAr
+                      ? 'التحكم الرئيسي في نظام شهادة توثيق الهدايا (المصمم أحمد للهدايا)'
+                      : 'Master Control: Gift Authentication Certificate System'}
+                  </span>
+                  <span
+                    id="adminGiftCertificateStatusBadge"
+                    style={{
+                      fontSize: '11px',
+                      padding: '2px 10px',
+                      borderRadius: '99px',
+                      background: settings.giftCertificateEnabled ? '#059669' : '#dc2626',
+                      color: '#fff',
+                      fontWeight: 800,
+                    }}
+                  >
+                    {settings.giftCertificateEnabled
+                      ? isAr
+                        ? '🟢 مفتوحة ومفعلة'
+                        : '🟢 OPEN & ACTIVE'
+                      : isAr
+                        ? '🔴 مغلقة نهائياً (مخفية ولا تنزل لأحد)'
+                        : '🔴 CLOSED & HIDDEN'}
+                  </span>
+                </div>
+                <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                  {settings.giftCertificateEnabled
+                    ? isAr
+                      ? 'الشهادة مفتوحة حالياً: تظهر في الواجهة ويتم إصدارها وتنزيلها تلقائياً مع ملفات الهدايا المصدرة.'
+                      : 'Certificate is currently OPEN: visible in the UI and automatically downloaded/attached with exported gifts.'
+                    : isAr
+                      ? 'الشهادة مغلقة حالياً: لن تظهر في الواجهة ولن يتم تنزيل أو إرفاق أي شهادة توثيق لأي مستخدم نهائياً (حتى المدير العام) إلا عند فتحها من هنا.'
+                      : 'Certificate is currently CLOSED: completely hidden from the UI and will NOT download or attach for any user (including Super Admin) until opened here.'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              id="adminGiftCertificateCardToggleBtn"
+              onClick={handleToggleGiftCertificate}
+              style={{
+                padding: '9px 18px',
+                borderRadius: '10px',
+                border: settings.giftCertificateEnabled
+                  ? '1px solid rgba(239, 68, 68, 0.7)'
+                  : '1px solid rgba(16, 185, 129, 0.7)',
+                background: settings.giftCertificateEnabled
+                  ? 'linear-gradient(135deg, #dc2626, #991b1b)'
+                  : 'linear-gradient(135deg, #059669, #10b981)',
+                color: '#fff',
+                fontWeight: 900,
+                fontSize: '12.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '7px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {settings.giftCertificateEnabled ? (
+                <>🔒 {isAr ? 'إغلاق شهادة التوثيق نهائياً' : 'Close Certificate Completely'}</>
+              ) : (
+                <>🟢 {isAr ? 'فتح وتفعيل شهادة التوثيق الآن' : 'Open & Enable Certificate Now'}</>
+              )}
+            </button>
+          </div>
+
           {/* TAB 1: USERS & ACCOUNTS */}
           {activeTab === 'users' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>

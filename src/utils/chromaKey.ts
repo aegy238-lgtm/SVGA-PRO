@@ -1,3 +1,8 @@
+import {
+  detectBorderBackgroundPalette,
+  detectAndRemoveBackgroundSmart,
+} from './smartSetCutter';
+
 export interface ChromaKeyConfig {
   enabled: boolean;
   keyColor: string;         // Hex color e.g. '#00ff00'
@@ -139,6 +144,15 @@ export function autoDetectChromaKeyColor(
     return rgbToHex(greenSumR / greenCount, greenSumG / greenCount, greenSumB / greenCount);
   }
 
+  const borderPal = detectBorderBackgroundPalette(rgba, width, height);
+  if (borderPal.isCheckerboard) {
+    return '#ffffff';
+  }
+  if (borderPal.primaryColors.length > 0) {
+    const c0 = borderPal.primaryColors[0];
+    return rgbToHex(c0.r, c0.g, c0.b);
+  }
+
   return '#00ff00';
 }
 
@@ -164,6 +178,20 @@ export function applyChromaKeyToRgbaBuffer(
   const isGreenKey = keyRgb.g > keyRgb.r + 35 && keyRgb.g > keyRgb.b + 35;
   const isBlueKey = keyRgb.b > keyRgb.r + 35 && keyRgb.b > keyRgb.g + 25;
   const isDarkKey = keyRgb.r < 28 && keyRgb.g < 28 && keyRgb.b < 28;
+  const isLightNeutralKey =
+    Math.max(keyRgb.r, keyRgb.g, keyRgb.b) - Math.min(keyRgb.r, keyRgb.g, keyRgb.b) <= 24 &&
+    keyRgb.r >= 165;
+
+  const borderPal = detectBorderBackgroundPalette(rgba, width, height);
+  if (borderPal.isCheckerboard || isLightNeutralKey) {
+    const smartRes = detectAndRemoveBackgroundSmart(rgba, width, height, {
+      similarity: config.similarity,
+      smoothness: config.smoothness,
+    });
+    if (smartRes.modifiedPixels > 0) {
+      return smartRes.modifiedPixels;
+    }
+  }
 
   const similarity = Math.max(1, Math.min(100, Number(config.similarity) || 42));
   const smoothness = Math.max(0, Math.min(50, Number(config.smoothness) ?? 14));

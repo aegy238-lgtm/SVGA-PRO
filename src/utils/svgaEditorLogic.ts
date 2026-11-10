@@ -1638,3 +1638,45 @@ ${layerLines}
 })(this);
 `;
 }
+
+/**
+ * Parses a rectangular sprite-sheet sub-window `M x y L (x+w) y L (x+w) (y+h) L x (y+h) Z`
+ * from an SVGA frame's `clipPath` string so the renderer and tests can inspect or clip the cell.
+ */
+export function parseSpriteSheetWindowFromClipPath(
+  clipPath?: string,
+  assetW?: number,
+  assetH?: number
+): { cellW: number; cellH: number } | null {
+  if (!clipPath || typeof clipPath !== 'string') return null;
+  const nums = clipPath.match(/-?\d+(?:\.\d+)?/g)?.map(Number);
+  if (!nums || nums.length < 8) return null;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    if (Number.isFinite(nums[i]) && Number.isFinite(nums[i + 1])) {
+      xs.push(nums[i]);
+      ys.push(nums[i + 1]);
+    }
+  }
+  if (xs.length < 4) return null;
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const w = maxX - minX;
+  const h = maxY - minY;
+  if (w <= 0 || h <= 0) return null;
+  if (
+    assetW &&
+    assetH &&
+    Math.abs(minX) < 1 &&
+    Math.abs(minY) < 1 &&
+    Math.abs(w - assetW) < 1 &&
+    Math.abs(h - assetH) < 1
+  ) {
+    return null;
+  }
+  return { cellW: w, cellH: h };
+}
+

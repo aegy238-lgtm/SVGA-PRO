@@ -1997,8 +1997,19 @@ function toast(m){const d=E('div');d.textContent=m;d.style.cssText='position:fix
 let _pag=null;
 function getPAG(){return _pag||(_pag=(async()=>{
  try{new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]))}catch(e){throw Error('WebAssembly محظور في بيئة العرض هذه ('+(e&&e.message||e)+') — تشغيل PAG يحتاج فتح النسخة المحلية gifts-studio-local.html على جهازك')}
- if(!window.libpag)await new Promise((r,j)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/libpag@4.5.52/lib/libpag.min.js';s.onload=r;s.onerror=()=>j(Error('تعذر تحميل مكتبة PAG'));document.head.append(s)});
- return await Promise.race([libpag.PAGInit(window.__pagWasm?{wasmBinary:window.__pagWasm}:{locateFile:f=>'https://cdn.jsdelivr.net/npm/libpag@4.5.52/lib/'+f}),new Promise((r,j)=>setTimeout(()=>j(Error('انتهت مهلة تحميل محرك PAG')),25000))])})().catch(e=>{_pag=null;const m=String(e&&e.message||e);throw Error(m.includes('محظور')?m:m+' — اضغط «⚙ محرك PAG» أعلى الصفحة واختر ملف libpag.wasm')}))}
+ if(!window.libpag){
+  const urls=['/lib/libpag.min.js','https://cdn.jsdelivr.net/npm/libpag@4.3.45/lib/libpag.min.js'];
+  let ok=false;
+  for(const u of urls){
+   try{
+    await new Promise((r,j)=>{const s=document.createElement('script');s.src=u;s.onload=r;s.onerror=()=>j(Error('تعذر تحميل مكتبة PAG'));document.head.append(s)});
+    if(window.libpag){ok=true;break;}
+   }catch(e){}
+  }
+  if(!ok||!window.libpag)throw Error('تعذر تحميل مكتبة PAG');
+ }
+ const initFn=window.libpag.PAGInit||window.libpag.default||window.libpag;
+ return await Promise.race([initFn(window.__pagWasm?{wasmBinary:window.__pagWasm}:{locateFile:f=>'/lib/'+f}),new Promise((r,j)=>setTimeout(()=>j(Error('انتهت مهلة تحميل محرك PAG')),25000))])})().catch(e=>{_pag=null;const m=String(e&&e.message||e);throw Error(m.includes('محظور')?m:m+' — اضغط «⚙ محرك PAG» أعلى الصفحة واختر ملف libpag.wasm')}))}
 
 function waitCompositorTick(){
  return new Promise(r=>{
@@ -2172,8 +2183,8 @@ async function mkPlayer(it,host,o){
  }
  else if(f=='pag'){
   const PAG=await getPAG(),pf=await PAG.PAGFile.load(await it.file.arrayBuffer());if(!pf)throw Error('ملف PAG تالف');
-  const cv=E('canvas');cv.width=pf.width();cv.height=pf.height();host.append(cv);
-  const pv=await PAG.PAGView.init(pf,cv);if(!pv)throw Error('تعذر تشغيل ملف PAG');pv.setRepeatCount(loop?0:1);
+  const cv=E('canvas');cv.width=pf.width()||500;cv.height=pf.height()||500;host.append(cv);
+  const pv=await PAG.PAGView.init(pf,cv,{useScale:false,useCanvas2D:true,firstFrame:true});if(!pv)throw Error('تعذر تشغيل ملف PAG');pv.setRepeatCount(loop?0:1);
   const stepTo=async(sec)=>{
    const totalDur=Math.max(0.05,it.dur||3);
    pv.setProgress(Math.max(0,Math.min(0.9999,sec/totalDur)));
@@ -2188,7 +2199,7 @@ async function mkPlayer(it,host,o){
    else if(playing&&!it.userPaused&&!isExporting){pv.play().catch(N)}
   };
   const waitReady=async()=>{await stepTo(0)};
-  P={src:()=>cv,play(){syncSpeed()},pause(){pv.pause()},restart(){if(pt)pt.elapsed=0;pv.setProgress(0);syncSpeed()},syncNow:N,syncSpeed,waitReady,stepTo,destroy(){if(pt)customPreviewTasks.delete(pt);try{pv.destroy()}catch(e){}cv.remove()}}
+  P={src:()=>cv,play(){syncSpeed()},pause(){pv.pause()},restart(){if(pt)pt.elapsed=0;pv.setProgress(0);syncSpeed()},syncNow:N,syncSpeed,waitReady,stepTo,destroy(){if(pt)customPreviewTasks.delete(pt);try{pv.destroy()}catch(e){}try{pf.destroy()}catch(e){}cv.remove()}}
  }
  else if(f=='svga'){
   if(!window.SVGA)throw Error('محرك SVGA لم يُحمَّل');
@@ -2291,7 +2302,7 @@ function cardDupBadgeHtml(it){
 function cardInnerHtml(it){
  const itMuted=it.muted!==undefined?it.muted:muted;
  const soundBtn=it.audio?`<button data-a="m" title="${itMuted?t('cardAudioUnmute'):t('cardAudioMute')}">${itMuted?'🔇':'🔊'}</button>`:'';
- const editBtn=it.fmt==='svga'?`<button data-a="ed" title="✨ تعديل الطبقات والأنيميشن في محرر SVGA (نسخ طبقة / عكس شمال↔يمين / نسخ حركة)" style="background:rgba(168,85,247,0.2);border-color:rgba(192,132,252,0.5);color:#e9d5ff">✨</button>`:'';
+ const editBtn=(it.fmt==='svga'||it.fmt==='pag')?`<button data-a="ed" title="✨ تعديل وتفكيك الطبقات والأنيميشن في محرر SVGA & PAG" style="background:rgba(168,85,247,0.2);border-color:rgba(192,132,252,0.5);color:#e9d5ff">✨</button>`:'';
  return `<div class="st">${it.fmt||it.err?'':'<div style="color:#fff8">…</div>'}${it.err?'<p class="er">'+esc(it.err)+'</p>':''}</div><span class="tag">${it.kind||NAMES[it.fmt]||'؟'}</span>${cardDupBadgeHtml(it)}<input type="checkbox" class="ck" ${it.sel?'checked':''}><div class="meta"><b title="${esc(it.name)}">${esc(it.name)}</b><small>${formatDurBadge(it)} · ${it.w||'?'}×${it.h||'?'} · ${it.audio?'🔊':'🔇'}</small>${alSel(it)}</div><div class="cb"><button data-a="p" title="${t('cardPlay')}">▶</button><button data-a="s" title="${t('cardPause')}">⏸</button><button data-a="r" title="${t('cardRestart')}">🔄</button>${soundBtn}<button data-a="df" title="${t('cardDownloadGift')}">📁</button><button data-a="mv" class="mv-btn" title="${t('cardMobilePreview')}">📱</button>${editBtn}<button data-a="di" title="${t('cardDownloadImage')}">🖼</button><button data-a="x" title="${t('cardDelete')}" style="margin-inline-start:auto">✖</button></div>`;
 }
 function updateBar(){
@@ -4241,7 +4252,7 @@ $('#mode').onchange=syncModeUi;
 syncModeUi();
 
 function isSvgaItem(it){
- return !!(it&&!it.err&&(it.fmt==='svga'||/\.svga$/i.test(it.name||'')));
+ return !!(it&&!it.err&&(it.fmt==='svga'||it.fmt==='pag'||/\.(svga|pag)$/i.test(it.name||'')));
 }
 
 $('#cx').onclick=()=>{sig.stop=true;$('#dock').style.display='none'};$('#sv').onclick=()=>out&&save(out.name,out.blob);

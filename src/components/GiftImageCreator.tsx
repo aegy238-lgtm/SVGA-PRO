@@ -19,6 +19,12 @@ import {
   buildExportFileName,
 } from '../utils/giftImageCreator';
 import { FeatureFreeAttemptsStatus } from '../utils/platformStore';
+import {
+  issueGiftCertificate,
+  issueAndAutoAttachGiftCertificate,
+  injectCertificateIntoJsZipInstance,
+  loadCertificateAutoSettings,
+} from '../utils/giftCertificateEngine';
 
 export interface GiftImageItem {
   id: string;
@@ -703,6 +709,12 @@ export default function GiftImageCreator({
     triggerBlobDownload(blob, fileName);
     consumeAttemptIfApplicable();
     showToast(isAr ? `تم تنزيل: ${fileName}` : `Downloaded: ${fileName}`);
+    void issueAndAutoAttachGiftCertificate({
+      giftFileName: fileName,
+      fileFormat: settings.exportFormat.toUpperCase(),
+      fileSizeBytes: blob.size,
+      sourceStudio: 'صانع صور الهدايا – منصة المصمم أحمد للهدايا',
+    });
   };
 
   // Batch export all or selected images into a single organized ZIP archive
@@ -758,6 +770,16 @@ export default function GiftImageCreator({
         }
         // Yield between chunks to keep UI smooth and prevent memory spikes
         await new Promise((r) => setTimeout(r, 12));
+      }
+
+      const autoCertCfg = loadCertificateAutoSettings();
+      if (autoCertCfg.enabled && autoCertCfg.embedInZipArchives) {
+        const certRec = issueGiftCertificate({
+          giftName: `حزمة هدايا ${settings.shapeId} (${targetList.length} هدية)`,
+          fileFormat: 'ZIP',
+          sourceStudio: 'صانع صور الهدايا – منصة المصمم أحمد للهدايا',
+        });
+        await injectCertificateIntoJsZipInstance(zip, certRec);
       }
 
       const zipBlob = await zip.generateAsync({ type: 'blob' });

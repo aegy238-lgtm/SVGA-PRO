@@ -378,6 +378,7 @@ export interface PlatformSettings {
   isSiteClosed?: boolean; // إغلاق الموقع عن جميع المستخدمين والزوار (Site Maintenance / Closed)
   siteClosedMessageAr?: string;
   siteClosedMessageEn?: string;
+  giftCertificateEnabled?: boolean; // فتح أو إغلاق شهادة توثيق الهدايا من الداش بورد (مغلقة افتراضياً ولا تنزل لأي مستخدم حتى المدير إلا عند فتحها)
   proPackageNameAr: string;
   proPackageNameEn: string;
   proPrice: string;
@@ -427,6 +428,7 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   isSiteClosed: false,
   siteClosedMessageAr: 'الموقع مغلق الآن',
   siteClosedMessageEn: 'The site is currently closed',
+  giftCertificateEnabled: false,
   proPackageNameAr: 'أدوات برو (Pro Tools)',
   proPackageNameEn: 'Pro Tools Package',
   proPrice: '15',

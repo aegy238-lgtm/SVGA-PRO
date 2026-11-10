@@ -3,6 +3,11 @@ import * as protobufNs from 'protobufjs';
 import * as jszipNs from 'jszip';
 import * as upngNs from 'upng-js';
 import { SVGPathData } from 'svg-pathdata';
+import {
+  issueGiftCertificate,
+  injectCertificateIntoJsZipInstance,
+  loadCertificateAutoSettings,
+} from '../utils/giftCertificateEngine';
 
 const pako: any = (pakoNs as any).default || pakoNs;
 const protobuf: any = (protobufNs as any).default || protobufNs;
@@ -904,6 +909,17 @@ export async function createAePackage(
     '使用说明.txt',
     `SVGA → After Effects\n\n1. 解压完整 ZIP 文件。将 assets 文件夹保留在 ${name}.jsx 旁边。\n2. 打开 After Effects，选择 File > Scripts > Run Script File。\n3. 运行 ${name}.jsx，等待创建合成与独立图层。\n4. 在 After Effects 中将项目保存为 .aep。\n\n${layers.length} 图层，${data.width} × ${data.height}，${data.fps} FPS，${data.totalFrames} 帧。\n`
   );
+
+  const autoCertCfg = loadCertificateAutoSettings();
+  if (autoCertCfg.enabled && autoCertCfg.embedInZipArchives) {
+    const certRec = issueGiftCertificate({
+      giftName: name,
+      fileFormat: 'AE ZIP PACKAGE',
+      dimensionsLabel: `${data.width}x${data.height}`,
+      sourceStudio: 'تصدير After Effects – منصة المصمم أحمد للهدايا',
+    });
+    await injectCertificateIntoJsZipInstance(folder, certRec);
+  }
 
   onProgress(80, 'ضغط حزمة After Effects');
   const blob = await zip.generateAsync(

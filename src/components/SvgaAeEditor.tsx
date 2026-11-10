@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import { parseMovie, pako, SvgaFrame, SvgaMovie } from '../utils/codecs';
 import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
+import { issueAndAutoAttachGiftCertificate } from '../utils/giftCertificateEngine';
 import {
   LayerTransform,
   AnimatableProperty,
@@ -106,6 +107,13 @@ import {
   CropSelectionRect,
   ContextMenuState,
 } from './SvgaCropAndContextMenu';
+import {
+  encodePagFileBinary,
+  decodePagBinaryToMovie,
+  decodePagWithLibpagFallback,
+  renderSvgaMovieToWebpFrames,
+  isPagBinary,
+} from '../utils/pagEngine';
 
 interface AddedLayer {
   id: string;
@@ -494,15 +502,22 @@ export default function SvgaAeEditor({
 
   const loadSvgaBuffer = useCallback(
     async (buf: ArrayBuffer, name: string, reportedSize?: number) => {
-      setLastAction('Decoding decomposed SVGA 2.0...');
+      const isPagFile = name.toLowerCase().endsWith('.pag');
+      setLastAction(isPagFile ? 'Decoding decomposed PAG layers...' : 'Decoding decomposed SVGA 2.0...');
       try {
         const raw = new Uint8Array(buf);
-        if (raw[0] === 0x50 && raw[1] === 0x4b) {
-          throw new Error('SVGA 1.x (ZIP) is not supported; use SVGA 2.0');
+        let m: SvgaMovie;
+        if (isPagBinary(raw) || isPagFile) {
+          const decodedPag = await decodePagWithLibpagFallback(raw);
+          m = decodedPag.svgaMovie;
+        } else {
+          if (raw[0] === 0x50 && raw[1] === 0x4b) {
+            throw new Error('SVGA 1.x (ZIP) is not supported; use SVGA 2.0');
+          }
+          const inflated = await decompressDeflate(raw);
+          m = parseMovie(inflated);
         }
-        const inflated = await decompressDeflate(raw);
-        const m = parseMovie(inflated);
-        if (!m.w || !m.h) throw new Error('Invalid SVGA 2.0 header');
+        if (!m.w || !m.h) throw new Error('Invalid animation header');
         if (!m.n) m.n = Math.max(...m.sp.map((s) => s.fr.length), 1);
 
         const newBitmaps: Record<string, ImageBitmap> = {};
@@ -5932,8 +5947,14 @@ export default function SvgaAeEditor({
     setLastAction(`Merging ${f.name}...`);
     try {
       const raw = new Uint8Array(await f.arrayBuffer());
-      const inf = await decompressDeflate(raw);
-      const other = parseMovie(inf);
+      let other: SvgaMovie;
+      if (isPagBinary(raw) || f.name.toLowerCase().endsWith('.pag')) {
+        const decodedPag = await decodePagWithLibpagFallback(raw);
+        other = decodedPag.svgaMovie;
+      } else {
+        const inf = await decompressDeflate(raw);
+        other = parseMovie(inf);
+      }
       const nextIm = { ...movie.im };
       const nextBm = { ...bitmaps };
       const nextTh = { ...thumbs };
@@ -6535,8 +6556,60 @@ export default function SvgaAeEditor({
       setLastAction(
         `Exported ${outName} (${totalExportedLayers} decomposed layers · ${(blob.size / 1024).toFixed(1)} KB)`
       );
+      void issueAndAutoAttachGiftCertificate({
+        giftFileName: outName,
+        fileFormat: 'SVGA',
+        fileSizeBytes: blob.size,
+        dimensionsLabel: `${canvasW}x${canvasH}`,
+        sourceStudio: 'محرر SVGA الاحترافي – منصة المصمم أحمد للهدايا',
+      });
     } catch (e: any) {
       setLastAction(`Export failed: ${e?.message || 'Error'}`);
+    }
+  };
+
+  const handleExportPag = async () => {
+    if (typeof (window as any).__checkConversionAccess === 'function') {
+      const allowed = (window as any).__checkConversionAccess('pag', docName);
+      if (!allowed) return;
+    }
+    setLastAction('Encoding decomposed PAG (.pag) layers...');
+    try {
+      const svgaBlob = await buildEditedSvgaBlob();
+      const rawDeflated = new Uint8Array(await svgaBlob.arrayBuffer());
+      const inflated = await decompressDeflate(rawDeflated);
+      const editedMovie = parseMovie(inflated);
+      const webpFrames = await renderSvgaMovieToWebpFrames(editedMovie, 180);
+      const pagBytes = encodePagFileBinary({
+        width: editedMovie.w || canvasW || 500,
+        height: editedMovie.h || canvasH || 500,
+        fps: editedMovie.fps || fps || 30,
+        svgaMovie: editedMovie,
+        webpFrames,
+      });
+      const pagBlob = new Blob([pagBytes as any], { type: 'application/octet-stream' });
+      const baseName = (docName || 'animation').replace(/\.(svga|pag)$/i, '');
+      const outName = `${baseName}.pag`;
+      const url = URL.createObjectURL(pagBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = outName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setLastAction(
+        `Exported ${outName} (${editedMovie.sp.length} decomposed PAG layers · ${(pagBlob.size / 1024).toFixed(1)} KB)`
+      );
+      void issueAndAutoAttachGiftCertificate({
+        giftFileName: outName,
+        fileFormat: 'PAG',
+        fileSizeBytes: pagBlob.size,
+        dimensionsLabel: `${canvasW}x${canvasH}`,
+        sourceStudio: 'محرر SVGA & PAG الاحترافي – منصة المصمم أحمد للهدايا',
+      });
+    } catch (e: any) {
+      setLastAction(`PAG export failed: ${e?.message || 'Error'}`);
     }
   };
 
@@ -6591,6 +6664,13 @@ export default function SvgaAeEditor({
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     setLastAction(`Downloaded MotionTools_SVGA_AE_Plugin.jsx (${layersForAe.length} layers)`);
+    void issueAndAutoAttachGiftCertificate({
+      giftFileName: docName || 'MotionTools_SVGA_AE_Plugin.jsx',
+      fileFormat: 'AE JSX SCRIPT',
+      fileSizeBytes: blob.size,
+      dimensionsLabel: `${canvasW}x${canvasH}`,
+      sourceStudio: 'محرر SVGA الاحترافي – منصة المصمم أحمد للهدايا',
+    });
   };
 
   const toggleTimelineLayerExpand = (layerId: string) => {
@@ -6661,7 +6741,7 @@ export default function SvgaAeEditor({
       <input
         ref={openSvgaInputRef}
         type="file"
-        accept=".svga"
+        accept=".svga,.pag"
         hidden
         onChange={handleOpenSvgaFile}
       />
@@ -6676,7 +6756,7 @@ export default function SvgaAeEditor({
       <input
         ref={mergeSvgaInputRef}
         type="file"
-        accept=".svga"
+        accept=".svga,.pag"
         hidden
         onChange={handleMergeSvga}
       />
@@ -7192,6 +7272,30 @@ export default function SvgaAeEditor({
           >
             <ArrowLeftRight size={13} color="#a0a0b4" />
             <span>Sync to Motion Tools</span>
+          </button>
+
+          <button
+            type="button"
+            id="edExportPag"
+            onClick={handleExportPag}
+            title="تصدير المشروع وجميع الطبقات بصيغة PAG (.pag)"
+            style={{
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: '1px solid rgba(16, 185, 129, 0.55)',
+              background: 'linear-gradient(135deg, #059669, #10b981)',
+              color: '#ffffff',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '12px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Download size={13} />
+            <span>Export PAG</span>
           </button>
 
           <button

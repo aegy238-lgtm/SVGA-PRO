@@ -9,6 +9,14 @@ import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
 import SiteClosedScreen from './components/SiteClosedScreen';
+import {
+  GiftCertificateStudioModal,
+  GiftCertificateFloatingNotice,
+} from './components/GiftCertificateStudioModal';
+import {
+  PLATFORM_BRAND_NAME_AR,
+  setGlobalAdminCertificateEnabled,
+} from './utils/giftCertificateEngine';
 import { BatchOperationsState } from './utils/batchImageOps';
 import { AppliedWatermarkLayer } from './utils/watermark';
 import {
@@ -114,6 +122,8 @@ export default function App() {
   const [activeView, setActiveView] = useState<string>('convert');
   const [leftClickExportEnabled] = useState<boolean>(true);
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
+  const [certModalOpen, setCertModalOpen] = useState<boolean>(false);
+  const [certModalInitialId, setCertModalInitialId] = useState<string | undefined>(undefined);
   const [previewBlockMode, setPreviewBlockMode] = useState<'account' | 'network' | null>(null);
   const clientNetworkId = getClientNetworkId();
   const accessBlock = evaluatePlatformAccessBlock({
@@ -150,7 +160,19 @@ export default function App() {
       }
       link.href = cleanLogo;
     }
-  }, [platformState.settings.siteName, platformState.settings.siteLogoUrl]);
+    (window as any).__activeDesignerName = currentUser?.name || PLATFORM_BRAND_NAME_AR;
+    setGlobalAdminCertificateEnabled(Boolean(platformState.settings.giftCertificateEnabled));
+    (window as any).__openGiftCertificateModal = (certId?: string) => {
+      if (!platformState.settings.giftCertificateEnabled) return;
+      setCertModalInitialId(certId);
+      setCertModalOpen(true);
+    };
+  }, [
+    platformState.settings.siteName,
+    platformState.settings.siteLogoUrl,
+    platformState.settings.giftCertificateEnabled,
+    currentUser?.name,
+  ]);
 
   useEffect(() => {
     // Automatic ping, live connection verification, and legacy admin purge on boot
@@ -189,6 +211,7 @@ export default function App() {
           merged.siteLogoUrl = prev.settings.siteLogoUrl;
           merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
           merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+          merged.giftCertificateEnabled = prev.settings.giftCertificateEnabled;
           merged.bannedNetworkIds = prev.settings.bannedNetworkIds;
           merged.bannedUserIds = prev.settings.bannedUserIds;
           merged.bannedEmails = prev.settings.bannedEmails;
@@ -211,6 +234,7 @@ export default function App() {
             merged.siteLogoUrl = prev.settings.siteLogoUrl;
             merged.brandingUpdatedAt = prev.settings.brandingUpdatedAt;
             merged.logoExplicitlyRemoved = prev.settings.logoExplicitlyRemoved;
+            merged.giftCertificateEnabled = prev.settings.giftCertificateEnabled;
             merged.bannedNetworkIds = prev.settings.bannedNetworkIds;
             merged.bannedUserIds = prev.settings.bannedUserIds;
             merged.bannedEmails = prev.settings.bannedEmails;
@@ -1408,6 +1432,33 @@ export default function App() {
             </span>
             {renderNavProBadge(goldDesignerAttemptStatus)}
           </a>
+          {Boolean(platformState.settings.giftCertificateEnabled) && (
+            <button
+              type="button"
+              id="giftCertVerifyNavBtn"
+              onClick={() => {
+                setCertModalInitialId(undefined);
+                setCertModalOpen(true);
+              }}
+              style={{
+                padding: '3px 10px',
+                borderRadius: '7px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), #0f172a)',
+                border: '1px solid rgba(245, 158, 11, 0.55)',
+                color: '#fde047',
+                fontWeight: 800,
+                fontSize: '12px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>👑</span>
+              <span>{isAr ? 'شهادة التوثيق والتحقق' : 'Gift Certificate & Verify'}</span>
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -1549,6 +1600,41 @@ export default function App() {
                     <span>👑</span>
                     <span>{isAr ? 'اشتراك برو (Pro)' : 'Subscribe Pro'}</span>
                   </button>
+
+                  {/* 2b. Gift Certificate & Verification Button (Only shown when opened in Admin Dashboard) */}
+                  {Boolean(platformState.settings.giftCertificateEnabled) && (
+                    <button
+                      type="button"
+                      id="giftCertMenuBtn"
+                      onClick={() => {
+                        setNavMenuOpen(false);
+                        setCertModalInitialId(undefined);
+                        setCertModalOpen(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '10px',
+                        border: '1px solid rgba(245, 158, 11, 0.55)',
+                        background: 'rgba(15, 23, 42, 0.92)',
+                        color: '#fde047',
+                        fontSize: '12px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        textAlign: 'start',
+                      }}
+                    >
+                      <span>🛡️</span>
+                      <span>
+                        {isAr
+                          ? 'شهادة توثيق الهدايا والتحقق'
+                          : 'Gift Authentication & Verify'}
+                      </span>
+                    </button>
+                  )}
 
                   {/* 3. WhatsApp Link */}
                   {whatsappUrl && (
@@ -3114,6 +3200,26 @@ export default function App() {
           }
         }}
       />
+
+      {/* Gift Authentication Certificate Studio & Verification Modal (Only active when opened in Admin Dashboard) */}
+      {Boolean(platformState.settings.giftCertificateEnabled) && (
+        <>
+          <GiftCertificateStudioModal
+            open={certModalOpen}
+            onClose={() => setCertModalOpen(false)}
+            initialCertificateId={certModalInitialId}
+            defaultDesignerName={currentUser?.name || PLATFORM_BRAND_NAME_AR}
+          />
+
+          {/* Automatic Certificate Issuance Floating Notice */}
+          <GiftCertificateFloatingNotice
+            onOpenCertificateModal={(certId) => {
+              setCertModalInitialId(certId);
+              setCertModalOpen(true);
+            }}
+          />
+        </>
+      )}
 
       <div id="toast" role="status"></div>
     </>
