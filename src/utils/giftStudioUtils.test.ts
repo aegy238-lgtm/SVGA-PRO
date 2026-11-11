@@ -13,6 +13,7 @@ import {
   GIFT_STUDIO_EXPORT_MODES,
   getExportModeMeta,
   isSvgaGiftItem,
+  isPagGiftItem,
   isVapOrYyevaGiftItem,
   classifyExtractedGiftFolder,
   buildExtractedGiftAndImagePaths,
@@ -148,37 +149,43 @@ test('GIFT_STUDIO_EXPORT_MODES defines all 5 coordinated export modes with unifi
   assert.equal(getExportModeMeta('extract').usesResolutionSelect, true);
 });
 
-test('classifyExtractedGiftFolder and resolveItemsForExportMode sort SVGA and VAP+YYEVA into separate folders', () => {
+test('classifyExtractedGiftFolder and resolveItemsForExportMode sort PAG, SVGA, and VAP+YYEVA into separate folders', () => {
   const sampleItems: GiftStudioExportItemLike[] = [
     { id: 1, name: 'crown.svga', fmt: 'svga', kind: 'SVGA', sel: false },
     { id: 2, name: 'dragon.svga', fmt: 'svga', kind: 'SVGA', sel: false },
     { id: 3, name: 'car_vap.mp4', fmt: 'mp4', kind: 'VAP', vapi: {}, alpha: 'V', sel: false },
     { id: 4, name: 'castle_yyeva.mp4', fmt: 'mp4', kind: 'YYEVA', yy: true, alpha: 'L', sel: false },
-    { id: 5, name: 'plain.lottie.json', fmt: 'lottie', kind: 'Lottie', sel: true },
+    { id: 5, name: 'phoenix.pag', fmt: 'pag', kind: 'PAG', sel: false },
+    { id: 6, name: 'plain.lottie.json', fmt: 'lottie', kind: 'Lottie', sel: true },
   ];
 
   assert.equal(isSvgaGiftItem(sampleItems[0]), true);
   assert.equal(isSvgaGiftItem(sampleItems[2]), false);
+  assert.equal(isPagGiftItem(sampleItems[4]), true);
+  assert.equal(isPagGiftItem(sampleItems[0]), false);
+
   assert.equal(classifyExtractedGiftFolder(sampleItems[0]), 'SVGA_Files');
   assert.equal(classifyExtractedGiftFolder(sampleItems[2]), 'VAP_YYEVA_Files');
   assert.equal(classifyExtractedGiftFolder(sampleItems[3]), 'VAP_YYEVA_Files');
+  assert.equal(classifyExtractedGiftFolder(sampleItems[4]), 'PAG_Files');
 
   assert.equal(isVapOrYyevaGiftItem(sampleItems[2]), true);
   assert.equal(isVapOrYyevaGiftItem(sampleItems[3]), true);
   assert.equal(isVapOrYyevaGiftItem(sampleItems[0]), false);
+  assert.equal(isVapOrYyevaGiftItem(sampleItems[4]), false);
 
   // Single combined video ('one') merges all displayed valid items when <= 1 item is checked
   const oneVideoList = resolveItemsForExportMode(sampleItems, 'one');
-  assert.equal(oneVideoList.length, 5);
+  assert.equal(oneVideoList.length, 6);
 
   // Extract mode returns selected items if any, otherwise all valid items
   const extractSelected = resolveItemsForExportMode(sampleItems, 'extract');
   assert.equal(extractSelected.length, 1);
-  sampleItems[4].sel = false;
+  sampleItems[5].sel = false;
   const extractAll = resolveItemsForExportMode(sampleItems, 'extract');
-  assert.equal(extractAll.length, 5);
+  assert.equal(extractAll.length, 6);
 
-  // Verify each gift file and its PNG image are placed together in the same folder
+  // Verify each gift file and its PNG image are placed together in the respective folder
   const paths = buildExtractedGiftAndImagePaths(sampleItems);
   assert.deepEqual(paths[0], {
     folder: 'SVGA_Files',
@@ -189,6 +196,11 @@ test('classifyExtractedGiftFolder and resolveItemsForExportMode sort SVGA and VA
     folder: 'VAP_YYEVA_Files',
     filePath: 'VAP_YYEVA_Files/car_vap.mp4',
     imagePath: 'VAP_YYEVA_Files/car_vap.png',
+  });
+  assert.deepEqual(paths[4], {
+    folder: 'PAG_Files',
+    filePath: 'PAG_Files/phoenix.pag',
+    imagePath: 'PAG_Files/phoenix.png',
   });
 });
 

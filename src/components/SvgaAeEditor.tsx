@@ -502,7 +502,7 @@ export default function SvgaAeEditor({
 
   const loadSvgaBuffer = useCallback(
     async (buf: ArrayBuffer, name: string, reportedSize?: number) => {
-      const isPagFile = name.toLowerCase().endsWith('.pag');
+      const isPagFile = /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(name.trim());
       setLastAction(isPagFile ? 'Decoding decomposed PAG layers...' : 'Decoding decomposed SVGA 2.0...');
       try {
         const raw = new Uint8Array(buf);
@@ -5948,7 +5948,7 @@ export default function SvgaAeEditor({
     try {
       const raw = new Uint8Array(await f.arrayBuffer());
       let other: SvgaMovie;
-      if (isPagBinary(raw) || f.name.toLowerCase().endsWith('.pag')) {
+      if (isPagBinary(raw) || /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(f.name.trim())) {
         const decodedPag = await decodePagWithLibpagFallback(raw);
         other = decodedPag.svgaMovie;
       } else {

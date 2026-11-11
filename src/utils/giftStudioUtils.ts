@@ -758,7 +758,7 @@ export const GIFT_STUDIO_EXPORT_MODES: ExportModeMeta[] = [
   },
   {
     value: 'extract',
-    optionLabel: '📦 استخراج الهدايا في فولدرات + الصور (SVGA / VAP)',
+    optionLabel: '📦 استخراج الهدايا في فولدرات + الصور (PAG / SVGA / VAP)',
     buttonLabel: '📦 استخراج الفولدرات + الصور',
     requiresVideoEncoder: false,
     usesResolutionSelect: true,
@@ -777,6 +777,11 @@ export function isSvgaGiftItem(item: GiftStudioExportItemLike): boolean {
   return item.fmt === 'svga' || /\.svga$/i.test(item.name || '');
 }
 
+export function isPagGiftItem(item: GiftStudioExportItemLike): boolean {
+  if (!item || item.err) return false;
+  return item.fmt === 'pag' || /\.pag(\s*\[\d+\])?$/i.test(item.name || '');
+}
+
 export function isVapOrYyevaGiftItem(item: GiftStudioExportItemLike): boolean {
   if (!item || item.err) return false;
   if (item.kind === 'VAP' || item.kind === 'YYEVA') return true;
@@ -788,32 +793,37 @@ export function isVapOrYyevaGiftItem(item: GiftStudioExportItemLike): boolean {
 
 /**
  * Classifies which folder inside the unified extraction ZIP a gift belongs to.
- * SVGA files go into 'SVGA_Files', while VAP/YYEVA/MP4 and other formats go into 'VAP_YYEVA_Files'.
+ * PAG files go into 'PAG_Files', SVGA files into 'SVGA_Files', and VAP/YYEVA/other formats into 'VAP_YYEVA_Files'.
  */
-export function classifyExtractedGiftFolder(item: GiftStudioExportItemLike): 'SVGA_Files' | 'VAP_YYEVA_Files' {
-  return isSvgaGiftItem(item) ? 'SVGA_Files' : 'VAP_YYEVA_Files';
+export function classifyExtractedGiftFolder(
+  item: GiftStudioExportItemLike
+): 'PAG_Files' | 'SVGA_Files' | 'VAP_YYEVA_Files' {
+  if (isPagGiftItem(item)) return 'PAG_Files';
+  if (isSvgaGiftItem(item)) return 'SVGA_Files';
+  return 'VAP_YYEVA_Files';
 }
 
 export interface ExtractedGiftEntryPaths {
-  folder: 'SVGA_Files' | 'VAP_YYEVA_Files';
+  folder: 'PAG_Files' | 'SVGA_Files' | 'VAP_YYEVA_Files';
   filePath: string;
   imagePath: string;
 }
 
 /**
  * Computes the ZIP paths for each gift and its high-clarity PNG snapshot so that
- * SVGA files and their PNG images live together in `SVGA_Files/`, and VAP/YYEVA/other files
- * and their PNG images live together in `VAP_YYEVA_Files/`.
+ * PAG files and their PNG images live in `PAG_Files/`, SVGA in `SVGA_Files/`,
+ * and VAP/YYEVA/other files in `VAP_YYEVA_Files/`.
  */
 export function buildExtractedGiftAndImagePaths(
   items: GiftStudioExportItemLike[]
 ): ExtractedGiftEntryPaths[] {
   const used = new Set<string>();
   return (items || []).map((item, idx) => {
+    const isPag = isPagGiftItem(item);
     const isSvga = isSvgaGiftItem(item);
     const folder = classifyExtractedGiftFolder(item);
     const extMatch = (item.name || '').match(/(\.[^.]+)$/);
-    const ext = isSvga ? '.svga' : extMatch ? extMatch[1] : '.mp4';
+    const ext = isPag ? '.pag' : isSvga ? '.svga' : extMatch ? extMatch[1] : '.mp4';
     const rawBase = (item.name || '').replace(/\.[^.]+$/, '').trim() || `gift_${idx + 1}`;
     let k = rawBase;
     let n = 1;
@@ -1337,7 +1347,7 @@ export const GIFT_STUDIO_I18N_AR: GiftStudioI18n = {
     pack: { option: '🎁 هدية + 🎬 فيديو + 🖼 صورة', button: '⬇ تصدير الحزمة الشاملة' },
     sep: { option: '🎬 فيديو لكل هدية (منفصل)', button: '⬇ تصدير الفيديوهات' },
     one: { option: '🎞️ جميع الهدايا في فيديو واحد (جنب بعض)', button: '🎞️ تصدير في فيديو واحد' },
-    extract: { option: '📦 استخراج الهدايا في فولدرات + الصور (SVGA / VAP)', button: '📦 استخراج الفولدرات + الصور' },
+    extract: { option: '📦 استخراج الهدايا في فولدرات + الصور (PAG / SVGA / VAP)', button: '📦 استخراج الفولدرات + الصور' },
   },
   resolutionTitle: 'دقة التصدير',
   resolutions: {
@@ -1437,7 +1447,7 @@ export const GIFT_STUDIO_I18N_EN: GiftStudioI18n = {
     pack: { option: '🎁 Gift + 🎬 Video + 🖼 Image', button: '⬇ Export Full Pack' },
     sep: { option: '🎬 Video per Gift (Separate)', button: '⬇ Export Videos' },
     one: { option: '🎞️ All Gifts in One Video (Side-by-Side)', button: '🎞️ Export All in One Video' },
-    extract: { option: '📦 Extract Gifts in Folders + Images (SVGA / VAP)', button: '📦 Extract Folders + Images' },
+    extract: { option: '📦 Extract Gifts in Folders + Images (PAG / SVGA / VAP)', button: '📦 Extract Folders + Images' },
   },
   resolutionTitle: 'Export Resolution',
   resolutions: {

@@ -1,6 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { initMotionToolsFixed } from './engine/motionTools';
+import {
+  isPagBinary,
+  encodePagFileBinary,
+  decodePagBinaryToMovie,
+  decodePagWithLibpagFallback,
+  renderSvgaMovieToWebpFrames,
+  getBrowserLibpag,
+} from './utils/pagEngine';
 import SvgaAeEditor from './components/SvgaAeEditor';
+
+if (typeof window !== 'undefined') {
+  (window as any).__pagEngine = {
+    isPagBinary,
+    encodePagFileBinary,
+    decodePagBinaryToMovie,
+    decodePagWithLibpagFallback,
+    renderSvgaMovieToWebpFrames,
+    getBrowserLibpag,
+  };
+}
 import AdminDashboardModal, { AdminDashboardTabId } from './components/AdminDashboardModal';
 import EdgeFeatherModal from './components/EdgeFeatherModal';
 import ChromaKeyModal from './components/ChromaKeyModal';
@@ -2617,7 +2636,7 @@ export default function App() {
 
         <section className="view" id="gifts" style={{ height: '100%', overflow: 'hidden' }}>
           <iframe
-            src={`/gifts-studio.html?lang=${platformState.language}`}
+            src={`/gifts-studio.html?v=pag_fix_11&lang=${platformState.language}`}
             id="giftsStudioFrame"
             title={isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
             onLoad={(e) => {

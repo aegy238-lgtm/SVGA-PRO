@@ -36,6 +36,7 @@ export interface PagEncodeInput {
 export interface PagDecodedMovie {
   isValidPag: boolean;
   isDecomposedPag: boolean;
+  isCustomDecomposedManifest?: boolean;
   version: number;
   width: number;
   height: number;
@@ -354,7 +355,7 @@ export function encodePagFileBinary(input: PagEncodeInput): Uint8Array {
     ...(input.svgaMovie?.sp || []),
     ...(input.sprites || []),
   ];
-  const rawFrameList = input.framesPng || input.framePngs;
+  const rawFrameList = input.framesPng || input.framePngs || input.webpFrames;
 
   if (input.layers && input.layers.length > 0) {
     for (const layer of input.layers) {
@@ -662,6 +663,37 @@ export function extractEmbeddedImagesFromPagBytes(
   return results;
 }
 
+async function toUint8ArrayCrossRealm(
+  rawInput: Uint8Array | ArrayBuffer | Blob | any
+): Promise<Uint8Array> {
+  if (!rawInput) return new Uint8Array(0);
+  if (rawInput instanceof Uint8Array) return rawInput;
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(rawInput)) {
+    return new Uint8Array(
+      rawInput.buffer,
+      rawInput.byteOffset,
+      rawInput.byteLength
+    );
+  }
+  if (
+    rawInput instanceof ArrayBuffer ||
+    Object.prototype.toString.call(rawInput) === '[object ArrayBuffer]'
+  ) {
+    return new Uint8Array(rawInput);
+  }
+  if (typeof rawInput.arrayBuffer === 'function') {
+    return new Uint8Array(await rawInput.arrayBuffer());
+  }
+  if (rawInput.buffer && typeof rawInput.byteLength === 'number') {
+    return new Uint8Array(
+      rawInput.buffer,
+      rawInput.byteOffset || 0,
+      rawInput.byteLength
+    );
+  }
+  return new Uint8Array(0);
+}
+
 /**
  * Decodes a `.pag` binary file and decomposes its layers into a full `PagDecodedMovie`
  * (including an `SvgaMovie` object ready for the SVGA / Layer Editor and Motion Processing stage).
@@ -669,14 +701,7 @@ export function extractEmbeddedImagesFromPagBytes(
 export async function decodePagBinaryToMovie(
   rawInput: Uint8Array | ArrayBuffer | Blob
 ): Promise<PagDecodedMovie> {
-  let bytes: Uint8Array;
-  if (rawInput instanceof Uint8Array) {
-    bytes = rawInput;
-  } else if (rawInput instanceof ArrayBuffer) {
-    bytes = new Uint8Array(rawInput);
-  } else {
-    bytes = new Uint8Array(await (rawInput as Blob).arrayBuffer());
-  }
+  const bytes = await toUint8ArrayCrossRealm(rawInput);
 
   // Also check if the user renamed an SVGA/zlib file to .pag
   if (!isPagBinary(bytes) && bytes.length > 8 && bytes[0] === 0x78) {
@@ -736,11 +761,19 @@ export async function decodePagBinaryToMovie(
   let sprites: SvgaSprite[] = [];
   let audioBytes: Uint8Array | null = null;
   let foundCompAttributes = false;
+  let lastCompositionTagCode = 0;
+  let hasCustomManifest = false;
+  const bitmapSeqFrames: { isKeyframe: boolean; rects: { x: number; y: number; bytes: Uint8Array }[] }[] = [];
 
-  const parseInnerCompositionTags = (compBuf: Uint8Array) => {
+  const parseInnerCompositionTags = (compBuf: Uint8Array, outerTagCode = 2) => {
+    lastCompositionTagCode = outerTagCode;
     const cur = { p: 0 };
     // Read composition->id (EncodedUint32)
     readPagEncodedUint(compBuf, cur);
+    // VideoCompositionBlock (TagCode = 50) has a 1-byte boolean `hasAlpha` immediately after composition->id
+    if (outerTagCode === 50 && cur.p < compBuf.length) {
+      cur.p += 1;
+    }
     let pos = cur.p;
     while (pos + 2 <= compBuf.length) {
       const tagAndLen = compBuf[pos] | (compBuf[pos + 1] << 8);
@@ -776,6 +809,69 @@ export async function decodePagBinaryToMovie(
         if (fr >= 1 && fr <= 240) {
           fps = Math.round(fr);
         }
+      } else if (tagCode === 47 && payload.byteLength > 8) {
+        // TagCode::VideoSequence (width, height, frameRate, alphaStartX, alphaStartY, ...)
+        try {
+          const c = { p: 0 };
+          const seqW = readPagEncodedInt32(payload, c);
+          const seqH = readPagEncodedInt32(payload, c);
+          const seqFr = c.p + 4 <= payload.byteLength ? readFloat32LE(payload, c.p) : fps;
+          if (seqW >= 2 && seqW <= 8192 && seqH >= 2 && seqH <= 8192 && !foundCompAttributes) {
+            width = seqW;
+            height = seqH;
+            foundCompAttributes = true;
+          }
+          if (seqFr >= 1 && seqFr <= 240) {
+            fps = Math.round(seqFr);
+          }
+        } catch {}
+      } else if (tagCode === 46 && payload.byteLength > 8) {
+        // TagCode::BitmapSequence
+        try {
+          const c = { p: 0 };
+          const seqW = readPagEncodedInt32(payload, c);
+          const seqH = readPagEncodedInt32(payload, c);
+          const seqFr = c.p + 4 <= payload.byteLength ? readFloat32LE(payload, c.p) : fps;
+          c.p += 4;
+          const fCount = readPagEncodedUint(payload, c);
+          if (seqW >= 2 && seqW <= 8192 && seqH >= 2 && seqH <= 8192 && !foundCompAttributes) {
+            width = seqW;
+            height = seqH;
+            foundCompAttributes = true;
+          }
+          if (seqFr >= 1 && seqFr <= 240) {
+            fps = Math.round(seqFr);
+          }
+          const bitByteLen = Math.ceil(fCount / 8);
+          if (fCount >= 1 && fCount <= 10000 && c.p + bitByteLen <= payload.byteLength) {
+            bitmapSeqFrames.length = 0;
+            const keyframeBits = payload.subarray(c.p, c.p + bitByteLen);
+            c.p += bitByteLen;
+            for (let fIdx = 0; fIdx < fCount; fIdx++) {
+              if (c.p >= payload.byteLength) break;
+              const isKf = Boolean(keyframeBits[fIdx >>> 3] & (1 << (fIdx & 7)));
+              const bmpCount = readPagEncodedUint(payload, c);
+              const rects: { x: number; y: number; bytes: Uint8Array }[] = [];
+              for (let bIdx = 0; bIdx < bmpCount; bIdx++) {
+                if (c.p >= payload.byteLength) break;
+                const bx = readPagEncodedInt32(payload, c);
+                const by = readPagEncodedInt32(payload, c);
+                const bLen = readPagEncodedUint(payload, c);
+                if (bLen > 0 && c.p + bLen <= payload.byteLength) {
+                  rects.push({
+                    x: bx,
+                    y: by,
+                    bytes: new Uint8Array(payload.subarray(c.p, c.p + bLen)),
+                  });
+                  c.p += bLen;
+                } else {
+                  break;
+                }
+              }
+              bitmapSeqFrames.push({ isKeyframe: isKf, rects });
+            }
+          }
+        } catch {}
       } else if (tagCode === 55 && payload.byteLength > 2 && !audioBytes) {
         // TagCode::AudioBytes
         const c = { p: 0 };
@@ -809,7 +905,7 @@ export async function decodePagBinaryToMovie(
 
       if (tagCode === 2 || tagCode === 45 || tagCode === 50) {
         // VectorCompositionBlock (2), BitmapCompositionBlock (45), VideoCompositionBlock (50)
-        parseInnerCompositionTags(payload);
+        parseInnerCompositionTags(payload, tagCode);
       } else if ((tagCode === 15 || tagCode === 48 || tagCode === 49) && payload.byteLength > 8) {
         // Official ImageBytes (id: EncodedUint32, fileBytes: ByteData) OR legacy ImageBytes
         const c = { p: 0 };
@@ -855,10 +951,11 @@ export async function decodePagBinaryToMovie(
                 if (Array.isArray(parsed.imageKeys)) {
                   parsedManifestKeys = parsed.imageKeys;
                 }
-                if (Array.isArray(parsed.sprites)) {
+                if (Array.isArray(parsed.sprites) && parsed.sprites.length > 0) {
                   sprites = parsed.sprites;
+                  foundStructuredChunk = true;
+                  hasCustomManifest = true;
                 }
-                foundStructuredChunk = true;
               }
             } catch {}
             const audOff = mOff + 4 + compLen;
@@ -920,6 +1017,57 @@ export async function decodePagBinaryToMovie(
     decodedStructured = tryParsePagTags(4);
   }
 
+  // If no custom decomposed sprites were present, and the main composition is a native BitmapCompositionBlock (TagCode 45)
+  // with a BitmapSequence (TagCode 46), build frame-accurate sprites directly from the BitmapSequence.
+  if (sprites.length === 0 && bitmapSeqFrames.length > 0 && lastCompositionTagCode === 45) {
+    const seqLen = bitmapSeqFrames.length;
+    totalFrames = Math.max(totalFrames, seqLen);
+    const uniqueBmps: {
+      key: string;
+      bytes: Uint8Array;
+      xByFrame: Map<number, number>;
+      yByFrame: Map<number, number>;
+    }[] = [];
+    for (let fIdx = 0; fIdx < seqLen; fIdx++) {
+      const fItem = bitmapSeqFrames[fIdx];
+      for (const r of fItem.rects) {
+        let uBmp = uniqueBmps.find((u) => areBuffersEqual(u.bytes, r.bytes));
+        if (!uBmp) {
+          const key = `pag_seq_${String(uniqueBmps.length + 1).padStart(3, '0')}`;
+          images[key] = r.bytes;
+          uBmp = {
+            key,
+            bytes: r.bytes,
+            xByFrame: new Map(),
+            yByFrame: new Map(),
+          };
+          uniqueBmps.push(uBmp);
+        }
+        uBmp.xByFrame.set(fIdx, r.x);
+        uBmp.yByFrame.set(fIdx, r.y);
+      }
+    }
+    if (uniqueBmps.length > 0) {
+      for (const uBmp of uniqueBmps) {
+        const fr: SvgaFrame[] = [];
+        for (let f = 0; f < totalFrames; f++) {
+          const mappedF = Math.min(seqLen - 1, Math.floor((f / Math.max(1, totalFrames)) * seqLen));
+          const isActive = uBmp.xByFrame.has(mappedF);
+          fr.push({
+            a: isActive ? 1 : 0,
+            x: uBmp.xByFrame.get(mappedF) || 0,
+            y: uBmp.yByFrame.get(mappedF) || 0,
+            w: width,
+            h: height,
+            t: [1, 0, 0, 1, 0, 0],
+          });
+        }
+        sprites.push({ key: uBmp.key, fr });
+      }
+      decodedStructured = true;
+    }
+  }
+
   if (Object.keys(images).length === 0 && officialImagesList.length > 0) {
     for (let i = 0; i < officialImagesList.length; i++) {
       images[`pag_layer_${String(i + 1).padStart(2, '0')}`] = officialImagesList[i];
@@ -965,6 +1113,7 @@ export async function decodePagBinaryToMovie(
   return {
     isValidPag: validHeader || foundCompAttributes || Object.keys(images).length > 0,
     isDecomposedPag: decodedStructured,
+    isCustomDecomposedManifest: hasCustomManifest,
     version,
     width,
     height,
@@ -979,6 +1128,483 @@ export async function decodePagBinaryToMovie(
 }
 
 let browserLibpagPromise: Promise<any> | null = null;
+
+function patchLibpagRuntime(PAG: any): any {
+  if (!PAG || PAG.__patchedByAhmedStudio) return PAG;
+  PAG.__patchedByAhmedStudio = true;
+  try {
+    // 1. Ensure GlobalCanvas uses HTMLCanvasElement with preserveDrawingBuffer: true
+    // while preserving libpag's internal BackendContext.from(gl) initialization.
+    const patchGlobalCanvasRetain = (protoOrInst: any) => {
+      if (!protoOrInst || typeof protoOrInst.retain !== 'function' || protoOrInst.__retainPatched) return;
+      const origRetain = protoOrInst.retain;
+      protoOrInst.__retainPatched = true;
+      protoOrInst.retain = function (this: any) {
+        const w = typeof window !== 'undefined' ? (window as any) : null;
+        const origOffscreen = w ? w.OffscreenCanvas : undefined;
+        const origGetCtx =
+          typeof HTMLCanvasElement !== 'undefined'
+            ? HTMLCanvasElement.prototype.getContext
+            : null;
+        try {
+          if (w) w.OffscreenCanvas = undefined;
+          if (origGetCtx) {
+            HTMLCanvasElement.prototype.getContext = function (
+              this: any,
+              type: any,
+              attrs?: any
+            ) {
+              if (type === 'webgl' || type === 'webgl2') {
+                attrs = Object.assign({}, attrs || {}, {
+                  preserveDrawingBuffer: true,
+                });
+              }
+              return origGetCtx.call(this, type, attrs);
+            } as any;
+          }
+          return origRetain.call(this);
+        } finally {
+          if (origGetCtx) {
+            HTMLCanvasElement.prototype.getContext = origGetCtx;
+          }
+          if (w && origOffscreen !== undefined) {
+            w.OffscreenCanvas = origOffscreen;
+          }
+        }
+      };
+    };
+    if (PAG.GlobalCanvas && PAG.GlobalCanvas.prototype) {
+      patchGlobalCanvasRetain(PAG.GlobalCanvas.prototype);
+    }
+    if (PAG.globalCanvas) {
+      patchGlobalCanvasRetain(PAG.globalCanvas);
+    }
+
+    // 2. Ensure PAG.tgfx.getSourceSize never returns 0x0 for unprimed video elements
+    // (C++ tgfx::VideoElement::MakeFrom discards the entire VideoSequence decoder if getSourceSize returns 0x0!)
+    if (PAG.tgfx && typeof PAG.tgfx.getSourceSize === 'function') {
+      PAG.tgfx.getSourceSize = (el: any) => ({
+        width: Number(el?.videoWidth || el?.width || 500) || 500,
+        height: Number(el?.videoHeight || el?.height || 500) || 500,
+      });
+    }
+
+    if (PAG.PAGFile && typeof PAG.PAGFile.loadFromBuffer === 'function') {
+      const origLoad = PAG.PAGFile.load?.bind(PAG.PAGFile);
+      PAG.PAGFile.load = async function (data: any) {
+        const u8 = await toUint8ArrayCrossRealm(data);
+        if (u8 && u8.byteLength > 0) {
+          const localAb = new ArrayBuffer(u8.byteLength);
+          new Uint8Array(localAb).set(u8);
+          return PAG.PAGFile.loadFromBuffer(localAb);
+        }
+        return origLoad ? origLoad(data) : null;
+      };
+    }
+    if (PAG.PAGPlayer && PAG.PAGPlayer.prototype) {
+      const origLink = PAG.PAGPlayer.prototype.linkVideoReader;
+      if (typeof origLink === 'function') {
+        PAG.PAGPlayer.prototype.linkVideoReader = function (vr: any) {
+          if (this._pagView && this._pagView.isPlaying && vr) {
+            vr.isPlaying = true;
+          }
+          return origLink.call(this, vr);
+        };
+      }
+    }
+    // Enable cross-realm canvas recognition for libpag's internal `x(t, HTMLCanvasElement)` check
+    if (typeof HTMLCanvasElement !== 'undefined') {
+      try {
+        Object.defineProperty(HTMLCanvasElement, Symbol.hasInstance, {
+          value: function (inst: any) {
+            return !!(
+              inst &&
+              (inst.tagName === 'CANVAS' ||
+                typeof inst.getContext === 'function' ||
+                Object.prototype.toString.call(inst) === '[object HTMLCanvasElement]')
+            );
+          },
+          configurable: true,
+        });
+      } catch {}
+    }
+
+    if (PAG.PAGView && typeof PAG.PAGView.init === 'function') {
+      const origInit = PAG.PAGView.init.bind(PAG.PAGView);
+      PAG.PAGView.init = async function (file: any, canvas: any, options: any) {
+        // In iframe environments, ensure cross-realm canvas elements pass libpag's internal check
+        if (
+          canvas &&
+          typeof canvas !== 'string' &&
+          !(canvas instanceof HTMLCanvasElement) &&
+          (canvas.tagName === 'CANVAS' || typeof canvas.getContext === 'function')
+        ) {
+          try {
+            Object.setPrototypeOf(canvas, HTMLCanvasElement.prototype);
+          } catch {}
+        }
+        const pv = await origInit(file, canvas, options);
+        if (pv && pv.player) {
+          pv.player._pagView = pv;
+        }
+        return pv;
+      };
+    }
+    if (PAG.PAGView && PAG.PAGView.prototype) {
+      const origFlush = PAG.PAGView.prototype.flush;
+      if (typeof origFlush === 'function') {
+        PAG.PAGView.prototype.flush = async function () {
+          const res = await origFlush.call(this);
+          // Even if wasmIns._flush() returned false (same frame index as init), ensure 2D canvas receives the image
+          if (
+            !res &&
+            this.pagViewOptions &&
+            this.pagViewOptions.useCanvas2D &&
+            PAG.globalCanvas &&
+            PAG.globalCanvas.canvas &&
+            this.canvasElement &&
+            this.canvasContext
+          ) {
+            try {
+              const gcv = PAG.globalCanvas.canvas;
+              this.canvasContext.clearRect(
+                0,
+                0,
+                this.canvasElement.width,
+                this.canvasElement.height
+              );
+              this.canvasContext.drawImage(
+                gcv,
+                0,
+                gcv.height - this.rawHeight,
+                this.rawWidth,
+                this.rawHeight,
+                0,
+                0,
+                this.canvasElement.width,
+                this.canvasElement.height
+              );
+            } catch {}
+          }
+          return res;
+        };
+      }
+      PAG.PAGView.prototype.flushLoop = async function (force = false) {
+        if (!this.isPlaying) return;
+        this.setTimer();
+        if (this.flushingNextFrame) return;
+        this.flushingNextFrame = true;
+        try {
+          await this.flushNextFrame(force);
+        } catch {
+          // Keep animation loop alive on transient video/context errors
+        } finally {
+          this.flushingNextFrame = false;
+        }
+      };
+    }
+    const VR = PAG.VideoReader;
+    if (VR && VR.prototype) {
+      // Patch VideoReader.create so:
+      // 1) `new VR(...)` runs synchronously before any `await` (preserving `this.linkPlayer(r.currentPlayer)`).
+      // 2) `vr._frameCanvas` is initialized immediately with `width x height` so `vr.getVideo()` and `tgfx.getSourceSize` never fail.
+      // 3) `vr.videoEl` is attached to the DOM, loaded, and primed to frame 0 before `VideoReader.create` resolves.
+      VR.create = async function (
+        mp4Bytes: any,
+        width: number,
+        height: number,
+        frameRate: number,
+        staticTimeRanges: any
+      ) {
+        const safeBytes =
+          mp4Bytes instanceof Uint8Array
+            ? new Uint8Array(mp4Bytes)
+            : new Uint8Array(mp4Bytes || 0);
+        const vr = new VR(safeBytes, width, height, frameRate, staticTimeRanges);
+        const fw = Math.max(2, width || 500);
+        const fh = Math.max(2, height || 500);
+        const cv = document.createElement('canvas');
+        cv.width = fw;
+        cv.height = fh;
+        vr._frameCanvas = cv;
+        const v: HTMLVideoElement | null = vr.videoEl;
+        if (v) {
+          if (typeof document !== 'undefined' && document.body && !v.isConnected) {
+            v.style.cssText =
+              'position:fixed;width:2px;height:2px;opacity:0.001;pointer-events:none;left:-9999px;top:-9999px;z-index:-1';
+            document.body.appendChild(v);
+          }
+          await new Promise<void>((res) => {
+            let done = false;
+            const fin = () => {
+              if (done) return;
+              done = true;
+              clearTimeout(tm);
+              v.removeEventListener('loadeddata', fin);
+              v.removeEventListener('canplay', fin);
+              v.removeEventListener('error', fin);
+              res();
+            };
+            const tm = setTimeout(fin, 1500);
+            if (v.readyState >= 2) {
+              fin();
+              return;
+            }
+            v.addEventListener('loadeddata', fin, { once: true });
+            v.addEventListener('canplay', fin, { once: true });
+            v.addEventListener('error', fin, { once: true });
+            try {
+              v.load();
+            } catch {
+              fin();
+            }
+          });
+          if (v.videoWidth > 0 && v.videoHeight > 0) {
+            cv.width = v.videoWidth;
+            cv.height = v.videoHeight;
+            vr.width = v.videoWidth;
+            vr.height = v.videoHeight;
+          }
+          try {
+            v.muted = true;
+            await v.play();
+            await new Promise<void>((r) => {
+              let d = false;
+              const f = () => {
+                if (!d) {
+                  d = true;
+                  r();
+                }
+              };
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(f);
+              }
+              setTimeout(f, 24);
+            });
+            if (!vr.isPlaying) {
+              try {
+                v.pause();
+                v.currentTime = 0;
+              } catch {}
+            }
+          } catch {}
+          vr._syncFrameCanvas();
+        }
+        return vr;
+      };
+
+      VR.prototype.getError = function () {
+        return null;
+      };
+      VR.prototype.play = async function () {
+        const v: HTMLVideoElement | null = this.videoEl;
+        if (v && v.paused) {
+          try {
+            v.muted = true;
+            await v.play();
+          } catch {}
+        }
+      };
+      VR.prototype._syncFrameCanvas = function () {
+        const v: HTMLVideoElement | null = this.videoEl;
+        if (!v || v.readyState < 2 || !(v.videoWidth > 0 && v.videoHeight > 0)) {
+          return;
+        }
+        const fw = Math.max(2, this.width || v.videoWidth);
+        const fh = Math.max(2, this.height || v.videoHeight);
+        if (!this._frameCanvas) {
+          this._frameCanvas = document.createElement('canvas');
+        }
+        if (this._frameCanvas.width !== fw || this._frameCanvas.height !== fh) {
+          this._frameCanvas.width = fw;
+          this._frameCanvas.height = fh;
+        }
+        const ctx = this._frameCanvas.getContext('2d');
+        if (ctx) {
+          try {
+            ctx.clearRect(0, 0, fw, fh);
+            ctx.drawImage(v, 0, 0, fw, fh);
+            this._hasFrameCanvas = true;
+          } catch {}
+        }
+      };
+      VR.prototype.getVideo = function () {
+        if (!this._frameCanvas) {
+          this._frameCanvas = document.createElement('canvas');
+          this._frameCanvas.width = Math.max(
+            2,
+            this.width || this.videoEl?.videoWidth || 500
+          );
+          this._frameCanvas.height = Math.max(
+            2,
+            this.height || this.videoEl?.videoHeight || 500
+          );
+        }
+        return this._frameCanvas;
+      };
+      VR.prototype.seek = function (targetTime: number, playAfter = true) {
+        return new Promise<void>((resolve) => {
+          const v: HTMLVideoElement | null = this.videoEl;
+          if (!v) {
+            resolve();
+            return;
+          }
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(tm);
+            v.removeEventListener('seeked', onSeeked);
+            v.removeEventListener('loadeddata', onLoaded);
+            this._hasSoughtOnce = true;
+            this._syncFrameCanvas();
+            if (playAfter && this.isPlaying) {
+              v.muted = true;
+              v.play().catch(() => {});
+            } else if (!playAfter && !v.paused) {
+              try {
+                v.pause();
+              } catch {}
+            }
+            resolve();
+          };
+          const onSeeked = () => finish();
+          const onLoaded = () => {
+            v.removeEventListener('loadeddata', onLoaded);
+            try {
+              v.currentTime = targetTime;
+            } catch {
+              finish();
+            }
+          };
+          const tm = setTimeout(finish, 1200);
+          v.addEventListener('seeked', onSeeked, { once: true });
+          if (v.readyState >= 1) {
+            try {
+              if (
+                this._hasSoughtOnce &&
+                Math.abs((v.currentTime || 0) - targetTime) < 0.0005 &&
+                !v.seeking &&
+                v.readyState >= 2
+              ) {
+                finish();
+                return;
+              }
+              v.currentTime = targetTime;
+            } catch {
+              finish();
+            }
+          } else {
+            v.addEventListener('loadeddata', onLoaded, { once: true });
+            try {
+              v.load();
+            } catch {}
+          }
+        });
+      };
+      VR.prototype.prepare = async function (
+        targetFrame: number,
+        playbackRate: number
+      ) {
+        this.setError(null);
+        this.isSought = false;
+        const v: HTMLVideoElement | null = this.videoEl;
+        if (!v) return;
+        if (!v.isConnected && typeof document !== 'undefined' && document.body) {
+          v.style.cssText =
+            'position:fixed;width:2px;height:2px;opacity:0.001;pointer-events:none;left:-9999px;top:-9999px;z-index:-1';
+          document.body.appendChild(v);
+        }
+        if (v.readyState < 2) {
+          await new Promise<void>((res) => {
+            let d = false;
+            const fin = () => {
+              if (d) return;
+              d = true;
+              clearTimeout(t);
+              v.removeEventListener('loadeddata', fin);
+              v.removeEventListener('canplay', fin);
+              res();
+            };
+            const t = setTimeout(fin, 1200);
+            v.addEventListener('loadeddata', fin, { once: true });
+            v.addEventListener('canplay', fin, { once: true });
+          });
+        }
+        const curTime = v.currentTime || 0;
+        const fps = Math.max(1, this.frameRate || 30);
+        const targetSec = targetFrame / fps;
+        if (!this._primedFirstFrame) {
+          this._primedFirstFrame = true;
+          try {
+            v.muted = true;
+            await v.play();
+            await new Promise<void>((r) => {
+              let done = false;
+              const fin = () => {
+                if (done) return;
+                done = true;
+                r();
+              };
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(fin);
+              }
+              setTimeout(fin, 24);
+            });
+            if (!this.isPlaying) {
+              try {
+                v.pause();
+              } catch {}
+            }
+          } catch {}
+          if (Math.abs((v.currentTime || 0) - targetSec) > 0.001 || v.readyState < 2) {
+            await this.seek(targetSec === 0 ? 0.001 : targetSec, !!this.isPlaying);
+          }
+          this._syncFrameCanvas();
+        } else if (Math.round(targetSec * fps) !== Math.round(curTime * fps)) {
+          const isStatic =
+            this.staticTimeRanges &&
+            typeof this.staticTimeRanges.contains === 'function' &&
+            this.staticTimeRanges.contains(targetFrame);
+          if (isStatic) {
+            await this.seek(targetSec, false);
+            return;
+          }
+          const driftThreshold = this.isPlaying
+            ? Math.max(0.35, (1 / fps) * 8)
+            : (0.4 / fps);
+          if (Math.abs(curTime - targetSec) >= driftThreshold) {
+            this.isSought = true;
+            await this.seek(targetSec, !!this.isPlaying);
+            return;
+          }
+        }
+        const rate = Math.min(Math.max(playbackRate || 1, 0.125), 4);
+        if (!this.disablePlaybackRate && v.playbackRate !== rate) {
+          try {
+            v.playbackRate = rate;
+          } catch {}
+        }
+        if (this.isPlaying && v.paused) {
+          await this.play();
+        }
+        this._syncFrameCanvas();
+      };
+      const origDestroy = VR.prototype.onDestroy;
+      if (typeof origDestroy === 'function') {
+        VR.prototype.onDestroy = function () {
+          try {
+            if (this.videoEl && this.videoEl.parentNode) {
+              this.videoEl.remove();
+            }
+          } catch {}
+          return origDestroy.call(this);
+        };
+      }
+    }
+  } catch {}
+  return PAG;
+}
 
 /**
  * Loads the local `/lib/libpag.min.js` + `/lib/libpag.wasm` runtime in browser environments,
@@ -1017,10 +1643,29 @@ export function getBrowserLibpag(): Promise<any> {
         throw new Error('تعذر تحميل محرك PAG (libpag)');
       }
     }
+
+    if (!w.__pagWasm) {
+      const wasmUrls = [
+        '/lib/libpag.wasm',
+        'https://cdn.jsdelivr.net/npm/libpag@4.3.45/lib/libpag.wasm',
+      ];
+      for (const wu of wasmUrls) {
+        try {
+          const res = await fetch(wu);
+          if (res.ok) {
+            w.__pagWasm = await res.arrayBuffer();
+            break;
+          }
+        } catch {}
+      }
+    }
+
     const PAGInit = w.libpag.PAGInit || w.libpag.default || w.libpag;
-    return await PAGInit({
-      locateFile: (file: string) => `/lib/${file}`,
-    });
+    const config = w.__pagWasm
+      ? { wasmBinary: w.__pagWasm }
+      : { locateFile: (file: string) => `/lib/${file}` };
+    const PAG = await PAGInit(config);
+    return patchLibpagRuntime(PAG);
   })().catch((err) => {
     browserLibpagPromise = null;
     throw err;
@@ -1030,26 +1675,19 @@ export function getBrowserLibpag(): Promise<any> {
 }
 
 /**
- * Decodes a `.pag` file and, if it is a third-party Tencent `.pag` file (Vector or VideoSequence)
- * without decomposed PNG layers, uses `libpag` (`PAGFile` + offscreen `PAGView`) in the browser
+ * Decodes a `.pag` file and, if it is a third-party Tencent `.pag` file (Vector, VideoSequence, or Bitmap)
+ * without our custom `PAG_DECOMPOSED_V2` manifest, uses `libpag` (`PAGFile` + offscreen `PAGView`) in the browser
  * to extract exact dimensions/FPS and render decomposed frame layers so it displays and edits
  * cleanly everywhere in the platform.
  */
 export async function decodePagWithLibpagFallback(
   rawInput: Uint8Array | ArrayBuffer | Blob
 ): Promise<PagDecodedMovie> {
-  let bytes: Uint8Array;
-  if (rawInput instanceof Uint8Array) {
-    bytes = rawInput;
-  } else if (rawInput instanceof ArrayBuffer) {
-    bytes = new Uint8Array(rawInput);
-  } else {
-    bytes = new Uint8Array(await (rawInput as Blob).arrayBuffer());
-  }
+  const bytes = await toUint8ArrayCrossRealm(rawInput);
 
   const baseDecoded = await decodePagBinaryToMovie(bytes);
   if (
-    baseDecoded.isDecomposedPag &&
+    baseDecoded.isCustomDecomposedManifest &&
     baseDecoded.sprites.length > 0 &&
     Object.keys(baseDecoded.images).length > 0
   ) {
@@ -1080,7 +1718,7 @@ export async function decodePagWithLibpagFallback(
         : baseDecoded.totalFrames || 30
     );
 
-    const images: Record<string, Uint8Array> = { ...baseDecoded.images };
+    const images: Record<string, Uint8Array> = {};
     const sprites: SvgaSprite[] = [];
 
     // Render frames via offscreen PAGView so VectorComposition and VideoSequence PAG files decompose into playable/editable layers
@@ -1090,7 +1728,7 @@ export async function decodePagWithLibpagFallback(
     const pagView = await PAG.PAGView.init(pagFile, canvas, {
       useScale: false,
       useCanvas2D: true,
-      firstFrame: true,
+      firstFrame: false,
     });
 
     if (pagView) {
@@ -1098,12 +1736,28 @@ export async function decodePagWithLibpagFallback(
       const maxSampledFrames = Math.min(totalFrames, 60);
       const renderedKeysByFrame: string[] = [];
       const uniqueFrames: { key: string; bytes: Uint8Array }[] = [];
+      const ctx2d = canvas.getContext('2d');
+      let anyVisibleFrame = false;
 
       for (let sIdx = 0; sIdx < maxSampledFrames; sIdx++) {
         const progress =
-          maxSampledFrames <= 1 ? 0 : sIdx / (maxSampledFrames - 1);
+          maxSampledFrames <= 1 ? 0 : sIdx / maxSampledFrames;
         pagView.setProgress(progress);
         await pagView.flush();
+
+        if (!anyVisibleFrame && ctx2d) {
+          try {
+            const imgData = ctx2d.getImageData(0, 0, width, height).data;
+            for (let p = 3; p < imgData.length; p += 16) {
+              if (imgData[p] > 2) {
+                anyVisibleFrame = true;
+                break;
+              }
+            }
+          } catch {
+            anyVisibleFrame = true;
+          }
+        }
 
         const blob: Blob | null = await new Promise((res) =>
           canvas.toBlob((b) => res(b), 'image/png')
@@ -1117,7 +1771,6 @@ export async function decodePagWithLibpagFallback(
             renderedKeysByFrame.push(existing.key);
           } else {
             const key = `pag_frame_${String(uniqueFrames.length + 1).padStart(3, '0')}`;
-            images[key] = fBytes;
             uniqueFrames.push({ key, bytes: fBytes });
             renderedKeysByFrame.push(key);
           }
@@ -1128,8 +1781,9 @@ export async function decodePagWithLibpagFallback(
         pagView.destroy();
       } catch {}
 
-      if (uniqueFrames.length > 0) {
+      if (anyVisibleFrame && uniqueFrames.length > 0) {
         for (const uf of uniqueFrames) {
+          images[uf.key] = uf.bytes;
           const fr: SvgaFrame[] = [];
           for (let f = 0; f < totalFrames; f++) {
             const mappedIdx = Math.min(
@@ -1155,26 +1809,29 @@ export async function decodePagWithLibpagFallback(
       pagFile.destroy();
     } catch {}
 
+    const finalImages =
+      Object.keys(images).length > 0 ? images : baseDecoded.images;
     const finalSprites = sprites.length > 0 ? sprites : baseDecoded.sprites;
     const svgaMovie: SvgaMovie = {
       w: width,
       h: height,
       fps,
       n: totalFrames,
-      im: images,
+      im: finalImages,
       sp: finalSprites,
     };
 
     return {
       isValidPag: true,
       isDecomposedPag: finalSprites.length > 0,
+      isCustomDecomposedManifest: false,
       version: baseDecoded.version,
       width,
       height,
       fps,
       totalFrames,
       durationSec: totalFrames / Math.max(1, fps),
-      images,
+      images: finalImages,
       sprites: finalSprites,
       audioBytes: baseDecoded.audioBytes,
       svgaMovie,
@@ -1278,5 +1935,16 @@ export async function renderSvgaMovieToWebpFrames(
   }
 
   return outFrames;
+}
+
+if (typeof window !== 'undefined') {
+  (window as any).__pagEngine = {
+    isPagBinary,
+    encodePagFileBinary,
+    decodePagBinaryToMovie,
+    decodePagWithLibpagFallback,
+    renderSvgaMovieToWebpFrames,
+    getBrowserLibpag,
+  };
 }
 

@@ -2685,10 +2685,23 @@ export function initMotionToolsFixed() {
     }
   }
   const _load = load;
+  const cleanFileExt = (fname: string) =>
+    String(fname || '')
+      .trim()
+      .replace(/(?:\s*\(\d+\)|\s*\[\d+\]|\s+-\s*copy(?:\s*\(\d+\))?|\s+copy(?:\s*\d+)?|\s*-\s*نسخة(?:\s*\(\d+\))?)+$/gi, '')
+      .split('.')
+      .pop()
+      ?.toLowerCase() || '';
   load = async function (f) {
-    const ext = f.name.split('.').pop().toLowerCase();
+    const ext = cleanFileExt(f.name);
     if (ext === 'lottie') return openDot(f);
     if (ext === 'pag') return openPag(f);
+    if (f && typeof f.slice === 'function') {
+      try {
+        const hdr = new Uint8Array(await f.slice(0, 16).arrayBuffer());
+        if (isPagBinary(hdr)) return openPag(f);
+      } catch {}
+    }
     if (ext === 'svg') return openSvg(f);
     if (ext === 'zip') return openSeq(f);
     await LIBS.all;
@@ -3369,7 +3382,14 @@ export function initMotionToolsFixed() {
     const prev = $('#start').onclick;
     $('#start').onclick = async () => {
       let F = $('#fmt').value;
-      const activeExt = cur ? cur.name.split('.').pop().toLowerCase() : '';
+      const activeExt = cur
+        ? String(cur.name || '')
+            .trim()
+            .replace(/(?:\s*\(\d+\)|\s*\[\d+\]|\s+-\s*copy(?:\s*\(\d+\))?|\s+copy(?:\s*\d+)?|\s*-\s*نسخة(?:\s*\(\d+\))?)+$/gi, '')
+            .split('.')
+            .pop()
+            ?.toLowerCase() || ''
+        : '';
       if (F === 'orig' && activeExt === 'pag') {
         const hasPagEdits =
           Object.keys(window.EDIT || {}).length > 0 ||
@@ -3636,8 +3656,11 @@ export function initMotionToolsFixed() {
       let F = $('#fmt').value;
       const L = qv() < 1;
       if (!cur) return toast('Upload a supported file first');
-      const ext = cur.name.split('.').pop().toLowerCase(),
-        base = cur.name.replace(/\.\w+$/, '');
+      const cleanCurName = String(cur.name || '')
+        .trim()
+        .replace(/(?:\s*\(\d+\)|\s*\[\d+\]|\s+-\s*copy(?:\s*\(\d+\))?|\s+copy(?:\s*\d+)?|\s*-\s*نسخة(?:\s*\(\d+\))?)+$/gi, '');
+      const ext = cleanCurName.split('.').pop().toLowerCase(),
+        base = cleanCurName.replace(/\.\w+$/, '');
       if (F === 'orig' && L) {
         const mp = {
           gif: 'gif',
