@@ -28,6 +28,14 @@ import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
 import SiteClosedScreen from './components/SiteClosedScreen';
+import ProjectComposerPanel from './components/ProjectComposerPanel';
+import {
+  ProjectComposerState,
+  INITIAL_PROJECT_COMPOSER_STATE,
+  DEFAULT_LAYER_TRANSFORM,
+  hasActiveComposerModifications,
+  isDefaultLayerTransform,
+} from './utils/projectComposer';
 import {
   GiftCertificateStudioModal,
   GiftCertificateFloatingNotice,
@@ -116,6 +124,15 @@ export default function App() {
   const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   const [activeWatermarkCount, setActiveWatermarkCount] = useState(0);
   const [motionAssetsMap, setMotionAssetsMap] = useState<Record<string, string>>({});
+  const [composerPanelOpen, setComposerPanelOpen] = useState(false);
+  const [composerState, setComposerState] = useState<ProjectComposerState>(
+    INITIAL_PROJECT_COMPOSER_STATE
+  );
+  const [isUploadingSecondary, setIsUploadingSecondary] = useState(false);
+  const [projectBaseDims, setProjectBaseDims] = useState<{ w: number; h: number }>({
+    w: 750,
+    h: 1334,
+  });
   const edgeFeatherRef = useRef<EdgeFeatherConfig>(edgeFeather);
   edgeFeatherRef.current = edgeFeather;
   const chromaKeyRef = useRef<ChromaKeyConfig>(chromaKey);
@@ -139,7 +156,7 @@ export default function App() {
   const [screenShieldActive, setScreenShieldActive] = useState(false);
   const [, setGuestAttemptTrigger] = useState(0);
   const [activeView, setActiveView] = useState<string>('convert');
-  const [leftClickExportEnabled] = useState<boolean>(true);
+  const [leftClickExportEnabled] = useState<boolean>(false);
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
   const [certModalOpen, setCertModalOpen] = useState<boolean>(false);
   const [certModalInitialId, setCertModalInitialId] = useState<string | undefined>(undefined);
@@ -198,7 +215,32 @@ export default function App() {
     testFirebaseConnection();
     purgeLegacyAdminsFromFirestore();
     (window as any).__openAeScriptModal = () => setAeModalOpen(true);
+
+    const onComposerChange = (e: Event) => {
+      const customEv = e as CustomEvent<ProjectComposerState>;
+      if (customEv.detail) {
+        setComposerState({ ...customEv.detail });
+      }
+      const dims = (window as any).__getProjectBaseDims?.();
+      if (dims && dims.w && dims.h) {
+        setProjectBaseDims({ w: dims.w, h: dims.h });
+      }
+    };
+    window.addEventListener('projectcomposerchange', onComposerChange);
+    return () => {
+      window.removeEventListener('projectcomposerchange', onComposerChange);
+    };
   }, []);
+
+  useEffect(() => {
+    (window as any).__projectComposerPanelOpen = composerPanelOpen;
+    if (composerPanelOpen) {
+      const dims = (window as any).__getProjectBaseDims?.();
+      if (dims && dims.w && dims.h) {
+        setProjectBaseDims({ w: dims.w, h: dims.h });
+      }
+    }
+  }, [composerPanelOpen]);
 
   // Sync active language to Gift Studio embedded iframe
   useEffect(() => {
@@ -2017,6 +2059,84 @@ export default function App() {
               <div className="box" id="audBox">
                 {t.clickToAddAudio}
               </div>
+              <h4>
+                {isAr
+                  ? 'تحريك المشروع ودمج ملف ثاني (Project Composer)'
+                  : 'Move Project & Add Second File'}
+              </h4>
+              <div
+                className="box"
+                id="projectComposerBox"
+                onClick={() => setComposerPanelOpen((prev) => !prev)}
+                style={{
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '7px',
+                  borderColor:
+                    composerPanelOpen || hasActiveComposerModifications(composerState)
+                      ? '#a855f7'
+                      : 'rgba(139, 92, 246, 0.45)',
+                  background:
+                    composerPanelOpen || hasActiveComposerModifications(composerState)
+                      ? 'linear-gradient(135deg, rgba(139, 92, 246, 0.24), rgba(56, 189, 248, 0.14))'
+                      : 'linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(22, 22, 36, 0.9))',
+                  boxShadow:
+                    composerPanelOpen || hasActiveComposerModifications(composerState)
+                      ? '0 4px 16px rgba(139, 92, 246, 0.25)'
+                      : undefined,
+                  fontWeight: 700,
+                }}
+              >
+                <span style={{ fontSize: '14px', flexShrink: 0 }}>🎯</span>
+                <span style={{ color: '#f1f5f9', fontSize: '12px' }}>
+                  {hasActiveComposerModifications(composerState)
+                    ? isAr
+                      ? `نشط (${
+                          !isDefaultLayerTransform(composerState.primaryTransform)
+                            ? `Y:${composerState.primaryTransform.offsetY >= 0 ? '+' : ''}${composerState.primaryTransform.offsetY}px`
+                            : 'معدل'
+                        }${
+                          composerState.overlays.length > 0
+                            ? ` + ${composerState.overlays.length} ملف`
+                            : ''
+                        })`
+                      : `Active (${composerState.overlays.length} extra)`
+                    : isAr
+                    ? 'قائمة تحريك المشروع + إضافة ملف ثاني'
+                    : 'Move Project + Add Second File'}
+                </span>
+                {hasActiveComposerModifications(composerState) && (
+                  <button
+                    type="button"
+                    id="projectComposerResetQuickBtn"
+                    title={isAr ? 'إعادة ضبط موضع المشروع الأساسي' : 'Reset primary project transform'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const next: ProjectComposerState = {
+                        ...composerState,
+                        primaryTransform: { ...DEFAULT_LAYER_TRANSFORM },
+                      };
+                      setComposerState(next);
+                      (window as any).__setProjectComposerState?.(next);
+                    }}
+                    style={{
+                      marginInlineStart: '4px',
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.45)',
+                      color: '#fca5a5',
+                      borderRadius: '4px',
+                      padding: '0px 5px',
+                      fontSize: '12px',
+                      lineHeight: '16px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
               <h4>{t.edgeFeather}</h4>
               <div
                 className="box"
@@ -2331,14 +2451,7 @@ export default function App() {
               <div
                 id="view"
                 data-placeholder={t.dropToPreview}
-                style={{ cursor: leftClickExportEnabled ? 'pointer' : 'default' }}
-                title={
-                  leftClickExportEnabled
-                    ? isAr
-                      ? '🖱️ اضغط كليك شمال لتصدير الملف فوراً بالصيغة المحددة (أو اضغط زر Tab)'
-                      : '🖱️ Left-Click to export immediately in selected format (or press Tab)'
-                    : undefined
-                }
+                style={{ cursor: 'default' }}
               ></div>
               <div className="bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <button className="pill" id="pp" style={{ padding: '3px 10px' }}>
@@ -2374,6 +2487,40 @@ export default function App() {
                 >
                   <span>📸</span>
                   <span>{t.snapshotGift || (isAr ? 'لقطة شاشة للهدية' : 'Gift Snapshot')}</span>
+                </button>
+                <button
+                  type="button"
+                  className="pill"
+                  id="openComposerStageBtn"
+                  onClick={() => setComposerPanelOpen((prev) => !prev)}
+                  title={
+                    isAr
+                      ? 'فتح قائمة تحريك المشروع للأعلى والأسفل وإضافة ملف ثاني داخل المقاس الأساسي'
+                      : 'Open Project Mover & Second File Overlay Studio'
+                  }
+                  style={{
+                    padding: '3px 10px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    borderColor:
+                      composerPanelOpen || hasActiveComposerModifications(composerState)
+                        ? '#38bdf8'
+                        : 'rgba(139, 92, 246, 0.55)',
+                    background:
+                      composerPanelOpen || hasActiveComposerModifications(composerState)
+                        ? 'linear-gradient(135deg, rgba(56, 189, 248, 0.25), rgba(139, 92, 246, 0.28))'
+                        : 'linear-gradient(135deg, rgba(139, 92, 246, 0.22), #181828)',
+                    color: '#f8fafc',
+                    boxShadow: '0 2px 10px rgba(139, 92, 246, 0.2)',
+                  }}
+                >
+                  <span>🎯</span>
+                  <span>
+                    {isAr ? 'تحريك المشروع + ملف ثاني' : 'Move Project + 2nd File'}
+                  </span>
                 </button>
               </div>
               <div className="pill" style={{ cursor: 'pointer' }} id="again">
@@ -2595,11 +2742,11 @@ export default function App() {
                 id="start"
                 title={
                   isAr
-                    ? 'اختصار التصدير السريع: اضغط زر Tab أو كليك شمال على المعاينة'
-                    : 'Quick export shortcut: Press Tab or Left-Click on preview'
+                    ? 'اضغط هنا أو على زر Tab لتصدير الملف فوراً بالصيغة المحددة'
+                    : 'Click here or press Tab to export the file in selected format'
                 }
               >
-                {t.startConversion} ⚡ [{isAr ? 'Tab / كليك شمال' : 'Tab / Left-Click'}]
+                {t.startConversion} ⚡ [Tab]
               </button>
 
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
@@ -2701,6 +2848,32 @@ export default function App() {
         isAr={isAr}
         onClose={() => setEdgeFeatherModalOpen(false)}
         onApply={handleApplyEdgeFeather}
+      />
+
+      {/* Interactive Project Mover & Second File Overlay Composer Panel */}
+      <ProjectComposerPanel
+        open={composerPanelOpen}
+        language={isAr ? 'ar' : 'en'}
+        composerState={composerState}
+        baseWidth={projectBaseDims.w}
+        baseHeight={projectBaseDims.h}
+        isUploadingOverlay={isUploadingSecondary}
+        onClose={() => setComposerPanelOpen(false)}
+        onChangeState={(nextState) => {
+          setComposerState(nextState);
+          (window as any).__setProjectComposerState?.(nextState);
+        }}
+        onUploadSecondaryFile={async (file, replaceLayerId) => {
+          setIsUploadingSecondary(true);
+          try {
+            await (window as any).__loadSecondaryOverlayFile?.(file, replaceLayerId);
+          } finally {
+            setIsUploadingSecondary(false);
+          }
+        }}
+        onRemoveSecondaryFile={(layerId) => {
+          (window as any).__removeSecondaryOverlayFile?.(layerId);
+        }}
       />
 
       {/* Headless Bridge for Direct After Effects Script & Package Export */}

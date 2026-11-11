@@ -29,6 +29,7 @@ export default function EdgeFeatherModal({
   const [rightMargin, setRightMargin] = useState<number>(config.rightMargin);
   const [featherRadius, setFeatherRadius] = useState<number>(config.featherRadius);
   const [draggingSide, setDraggingSide] = useState<DragSide>(null);
+  const [isBaking, setIsBaking] = useState<boolean>(false);
 
   // Time & Duration Trim state
   const [trimEnabled, setTrimEnabled] = useState<boolean>(Boolean(config.trimEnabled));
@@ -559,8 +560,21 @@ export default function EdgeFeatherModal({
   const selectedSpanSec = Math.max(0.01, trimEndTime - trimStartTime);
   const selectedSpanFrames = Math.max(1, Math.round(selectedSpanSec * fps));
 
-  const handleApplyClick = () => {
-    onApply({
+  const triggerToast = (msg: string) => {
+    if (typeof (window as any).toast === 'function') {
+      (window as any).toast(msg);
+    } else {
+      const t = document.getElementById('toast');
+      if (t) {
+        t.textContent = msg;
+        t.classList.add('on');
+        setTimeout(() => t.classList.remove('on'), 2200);
+      }
+    }
+  };
+
+  const handleBakeTransparency = async () => {
+    const nextCfg: EdgeFeatherConfig = {
       enabled: true,
       topMargin,
       bottomMargin,
@@ -575,7 +589,84 @@ export default function EdgeFeatherModal({
       totalDuration: Number(totalDuration.toFixed(2)),
       totalFrames,
       fps,
-    });
+    };
+
+    setIsBaking(true);
+    try {
+      if (typeof (window as any).__bakeEdgeFeatherIntoLayers === 'function') {
+        const count = await (window as any).__bakeEdgeFeatherIntoLayers(nextCfg);
+        if (count > 0) {
+          triggerToast(
+            isAr
+              ? `✅ تم حفظ وتثبيت الشفافية في ${count} من طبقات الصور الأساسية بنجاح! الآن عند تحريك التصميم لأعلى أو لأسفل ستظل الشفافية ثابتة على التصميم.`
+              : `✅ Successfully baked transparency into ${count} primary image layers!`
+          );
+          // Transparency is now permanently embedded in image layer pixels
+          onApply({ ...nextCfg, enabled: false });
+          onClose();
+          return;
+        }
+      }
+      onApply(nextCfg);
+      onClose();
+    } catch (err) {
+      console.error('Failed to bake feather transparency into layers:', err);
+      onApply(nextCfg);
+      onClose();
+    } finally {
+      setIsBaking(false);
+    }
+  };
+
+  const handleApplyClick = async () => {
+    const nextCfg: EdgeFeatherConfig = {
+      enabled: true,
+      topMargin,
+      bottomMargin,
+      leftMargin,
+      rightMargin,
+      featherRadius,
+      trimEnabled,
+      trimStartTime: Number(trimStartTime.toFixed(2)),
+      trimEndTime: Number(trimEndTime.toFixed(2)),
+      trimStartFrame: Math.round(trimStartTime * fps),
+      trimEndFrame: Math.round(trimEndTime * fps),
+      totalDuration: Number(totalDuration.toFixed(2)),
+      totalFrames,
+      fps,
+    };
+
+    // If active SVGA movie has decomposed image layers, also automatically bake into primary image layers
+    // so moving upwards/downwards in Project Composer permanently keeps the transparency on the design!
+    const sv = (window as any).SV;
+    if (
+      sv &&
+      sv.m &&
+      sv.m.im &&
+      Object.keys(sv.m.im).length > 0 &&
+      typeof (window as any).__bakeEdgeFeatherIntoLayers === 'function'
+    ) {
+      setIsBaking(true);
+      try {
+        const count = await (window as any).__bakeEdgeFeatherIntoLayers(nextCfg);
+        if (count > 0) {
+          triggerToast(
+            isAr
+              ? `✅ تم حفظ وتثبيت الشفافية في ${count} من طبقات الصور وتطبيق الإعدادات بنجاح!`
+              : `✅ Successfully applied & baked transparency into ${count} image layers!`
+          );
+          onApply({ ...nextCfg, enabled: false });
+          onClose();
+          return;
+        }
+      } catch (e) {
+        console.warn('Auto bake skipped or encountered error:', e);
+      } finally {
+        setIsBaking(false);
+      }
+    }
+
+    onApply(nextCfg);
     onClose();
   };
 
@@ -1870,19 +1961,60 @@ export default function EdgeFeatherModal({
               }}
             />
 
+            {/* Info notice about baking transparency */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '9px 12px',
+                background: 'rgba(139, 92, 246, 0.1)',
+                border: '1px solid rgba(139, 92, 246, 0.28)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                color: '#ddd6fe',
+                margin: '10px 0 6px',
+                lineHeight: 1.5,
+              }}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flexShrink: 0, color: '#a78bfa' }}
+              >
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+              </svg>
+              <span>
+                {isAr
+                  ? '💡 عند النقر على "حفظ وتثبيت الشفافية"، يتم دمج تدرج الشفافية مباشرة داخل بكسلات طبقات الصور الأساسية؛ بحيث عند تحريك المشروع للأعلى أو للأسفل في قائمة تحريك المشروع، تظل الشفافية ثابتة على التصميم تماماً دون أي تشوه عند التصدير.'
+                  : '💡 Baking transparency embeds the gradient directly into the primary image layer pixels, so shifting the design up/down preserves the shape perfectly upon export.'}
+              </span>
+            </div>
+
             {/* Footer Action Buttons */}
             <div
               style={{
                 display: 'flex',
-                justifyContent: 'flex-end',
+                justifyContent: 'space-between',
                 alignItems: 'center',
                 gap: '12px',
+                flexWrap: 'wrap',
+                marginTop: '6px',
               }}
             >
               <button
                 type="button"
                 id="efCancelBtn"
                 onClick={onClose}
+                disabled={isBaking}
                 style={{
                   padding: '9px 18px',
                   borderRadius: '7px',
@@ -1891,10 +2023,11 @@ export default function EdgeFeatherModal({
                   color: '#e4e4e7',
                   fontSize: '13px',
                   fontWeight: 500,
-                  cursor: 'pointer',
+                  cursor: isBaking ? 'not-allowed' : 'pointer',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '6px',
+                  opacity: isBaking ? 0.6 : 1,
                 }}
               >
                 <svg
@@ -1913,39 +2046,92 @@ export default function EdgeFeatherModal({
                 <span>{isAr ? 'إلغاء' : 'Cancel'}</span>
               </button>
 
-              <button
-                type="button"
-                id="efApplyBtn"
-                onClick={handleApplyClick}
-                style={{
-                  padding: '9px 22px',
-                  borderRadius: '7px',
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                  border: '1px solid #34d399',
-                  color: '#ffffff',
-                  fontSize: '13.5px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '7px',
-                  boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
-                }}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  type="button"
+                  id="efBakeBtn"
+                  onClick={handleBakeTransparency}
+                  disabled={isBaking}
+                  title={
+                    isAr
+                      ? 'تثبيت وحفظ تدرج الشفافية مباشرة داخل طبقات الصور الأساسية للمشروع'
+                      : 'Bake transparency directly into primary layer image pixels'
+                  }
+                  style={{
+                    padding: '9px 20px',
+                    borderRadius: '7px',
+                    background: 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)',
+                    border: '1px solid #a78bfa',
+                    color: '#ffffff',
+                    fontSize: '13.5px',
+                    fontWeight: 700,
+                    cursor: isBaking ? 'wait' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    boxShadow: '0 4px 14px rgba(139, 92, 246, 0.35)',
+                    opacity: isBaking ? 0.75 : 1,
+                  }}
                 >
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                <span>{isAr ? 'تطبيق وقص العرض' : 'Apply Settings'}</span>
-              </button>
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                    <polyline points="17 21 17 13 7 13 7 21" />
+                    <polyline points="7 3 7 8 15 8" />
+                  </svg>
+                  <span>
+                    {isBaking
+                      ? (isAr ? 'جارٍ الحفظ في الطبقات...' : 'Baking into layers...')
+                      : (isAr
+                          ? '💾 حفظ وتثبيت الشفافية في طبقات الصور الأساسية'
+                          : '💾 Bake into Primary Layer Images')}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  id="efApplyBtn"
+                  onClick={handleApplyClick}
+                  disabled={isBaking}
+                  style={{
+                    padding: '9px 20px',
+                    borderRadius: '7px',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    border: '1px solid #34d399',
+                    color: '#ffffff',
+                    fontSize: '13.5px',
+                    fontWeight: 700,
+                    cursor: isBaking ? 'wait' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
+                    opacity: isBaking ? 0.75 : 1,
+                  }}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <span>{isAr ? 'تطبيق وقص العرض' : 'Apply Settings'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

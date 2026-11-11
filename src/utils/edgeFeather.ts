@@ -326,4 +326,243 @@ export function calculateTrimRange(params: {
   };
 }
 
+/**
+ * Samples the feather alpha multiplier (0..1) at canvas coordinate (cx, cy).
+ */
+export function getFeatherAlphaAtCoord(
+  cx: number,
+  cy: number,
+  canvasW: number,
+  canvasH: number,
+  profileX: Float32Array,
+  profileY: Float32Array,
+  cfg: EdgeFeatherConfig
+): number {
+  const w = Math.max(1, canvasW);
+  const h = Math.max(1, canvasH);
+
+  let ax = 1;
+  if (cx < 0) {
+    ax = cfg.leftMargin > 0 ? 0 : profileX[0];
+  } else if (cx >= w) {
+    ax = cfg.rightMargin > 0 ? 0 : profileX[w - 1];
+  } else {
+    const idxX = Math.max(0, Math.min(w - 1, Math.floor(cx)));
+    ax = profileX[idxX];
+  }
+
+  let ay = 1;
+  if (cy < 0) {
+    ay = cfg.topMargin > 0 ? 0 : profileY[0];
+  } else if (cy >= h) {
+    ay = cfg.bottomMargin > 0 ? 0 : profileY[h - 1];
+  } else {
+    const idxY = Math.max(0, Math.min(h - 1, Math.floor(cy)));
+    ay = profileY[idxY];
+  }
+
+  return Math.max(0, Math.min(1, ax * ay));
+}
+
+/**
+ * Applies the Edge Feather transparency mask in-place onto the raw RGBA pixels of an image layer.
+ * Coordinates are mapped to canvas space using the sprite's transform matrix and bounds.
+ */
+export function applyFeatherToRgbaPixels(
+  rgba: Uint8ClampedArray | Uint8Array,
+  imgW: number,
+  imgH: number,
+  canvasW: number,
+  canvasH: number,
+  transform: [number, number, number, number, number, number] = [1, 0, 0, 1, 0, 0],
+  bounds: { x: number; y: number; w: number; h: number } = { x: 0, y: 0, w: imgW, h: imgH },
+  cfg: EdgeFeatherConfig
+): boolean {
+  if (
+    !cfg ||
+    (cfg.topMargin <= 0 &&
+      cfg.bottomMargin <= 0 &&
+      cfg.leftMargin <= 0 &&
+      cfg.rightMargin <= 0 &&
+      cfg.featherRadius <= 0)
+  ) {
+    return false;
+  }
+  const allZero =
+    cfg.topMargin <= 0 &&
+    cfg.bottomMargin <= 0 &&
+    cfg.leftMargin <= 0 &&
+    cfg.rightMargin <= 0;
+
+  const profileX = compute1DFeatherProfile(
+    canvasW,
+    cfg.leftMargin,
+    cfg.rightMargin,
+    cfg.featherRadius,
+    allZero
+  );
+  const profileY = compute1DFeatherProfile(
+    canvasH,
+    cfg.topMargin,
+    cfg.bottomMargin,
+    cfg.featherRadius,
+    allZero
+  );
+
+  const [a, b, c, d, tx, ty] = transform;
+  const fw = bounds.w > 0 ? bounds.w : imgW;
+  const fh = bounds.h > 0 ? bounds.h : imgH;
+  const fx = bounds.x || 0;
+  const fy = bounds.y || 0;
+
+  const scaleX = fw / Math.max(1, imgW);
+  const scaleY = fh / Math.max(1, imgH);
+
+  let modified = false;
+
+  for (let y = 0; y < imgH; y++) {
+    const py = fy + y * scaleY;
+    const rowOffset = y * imgW * 4;
+    for (let x = 0; x < imgW; x++) {
+      const p = rowOffset + x * 4;
+      const origAlpha = rgba[p + 3];
+      if (origAlpha === 0) continue;
+
+      const px = fx + x * scaleX;
+      const cx = a * px + c * py + tx;
+      const cy = b * px + d * py + ty;
+
+      const alphaMult = getFeatherAlphaAtCoord(cx, cy, canvasW, canvasH, profileX, profileY, cfg);
+      if (alphaMult < 0.999) {
+        rgba[p + 3] = Math.round(origAlpha * alphaMult);
+        modified = true;
+      }
+    }
+  }
+
+  return modified;
+}
+
+export interface BakeSvgaFeatherResult {
+  updatedImages: Record<string, Uint8Array>;
+  updatedBitmaps?: Record<string, any>;
+  bakedCount: number;
+}
+
+/**
+ * Bakes the Edge Feather transparency directly into all decomposed image layers of an SVGA movie.
+ * This ensures transparency is permanently fixed to the design pixels so that moving the design
+ * (e.g. upwards in Project Composer) preserves the exact transparency without distortion.
+ */
+export async function bakeEdgeFeatherIntoSvgaMovie(
+  movie: any,
+  cfg: EdgeFeatherConfig,
+  existingBitmaps?: Record<string, any>
+): Promise<BakeSvgaFeatherResult> {
+  const canvasW = Math.max(1, Math.round(movie?.w || 300));
+  const canvasH = Math.max(1, Math.round(movie?.h || 300));
+  const images = movie?.im || {};
+  const sprites = movie?.sp || [];
+
+  const updatedImages: Record<string, Uint8Array> = {};
+  const updatedBitmaps: Record<string, any> = {};
+  let bakedCount = 0;
+
+  for (const [key, rawBytes] of Object.entries(images as Record<string, Uint8Array>)) {
+    if (!rawBytes || rawBytes.length < 8) continue;
+
+    // Skip audio files
+    const isId3 =
+      rawBytes.length >= 3 && rawBytes[0] === 0x49 && rawBytes[1] === 0x44 && rawBytes[2] === 0x33;
+    const isMp3Sync =
+      rawBytes.length >= 4 &&
+      rawBytes[0] === 0xff &&
+      rawBytes[1] !== 0xd8 &&
+      (rawBytes[1] & 0xe0) === 0xe0;
+    if (isId3 || isMp3Sync || /^audio[_-]/i.test(key)) continue;
+
+    // Locate sprite reference frame
+    let refFrame: any = null;
+    for (const sp of sprites) {
+      if (sp.key === key) {
+        for (const fr of sp.fr || []) {
+          if ((fr.a ?? 1) > 0.01) {
+            refFrame = fr;
+            break;
+          }
+        }
+        if (refFrame) break;
+      }
+    }
+
+    // Decode image to ImageData
+    let bmp: any = existingBitmaps?.[key] || null;
+    if (!bmp && typeof createImageBitmap === 'function') {
+      try {
+        const mime = rawBytes[0] === 0xff && rawBytes[1] === 0xd8 ? 'image/jpeg' : 'image/png';
+        bmp = await createImageBitmap(new Blob([rawBytes as unknown as BlobPart], { type: mime }));
+      } catch (_) {}
+    }
+
+    if (!bmp || !bmp.width || !bmp.height) continue;
+
+    const imgW = bmp.width;
+    const imgH = bmp.height;
+    if (typeof document === 'undefined') continue;
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = imgW;
+    offCanvas.height = imgH;
+    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+    if (!offCtx) continue;
+
+    offCtx.drawImage(bmp, 0, 0);
+    const imgData = offCtx.getImageData(0, 0, imgW, imgH);
+
+    const transform: [number, number, number, number, number, number] =
+      refFrame?.t && refFrame.t.length === 6 ? refFrame.t : [1, 0, 0, 1, 0, 0];
+    const bounds = {
+      x: refFrame?.x || 0,
+      y: refFrame?.y || 0,
+      w: refFrame?.w > 0 ? refFrame.w : imgW,
+      h: refFrame?.h > 0 ? refFrame.h : imgH,
+    };
+
+    const modified = applyFeatherToRgbaPixels(
+      imgData.data,
+      imgW,
+      imgH,
+      canvasW,
+      canvasH,
+      transform,
+      bounds,
+      cfg
+    );
+
+    if (modified) {
+      offCtx.putImageData(imgData, 0, 0);
+      const newPngBytes = await new Promise<Uint8Array>((resolve) => {
+        offCanvas.toBlob((blob) => {
+          if (!blob) {
+            resolve(rawBytes);
+            return;
+          }
+          blob.arrayBuffer().then((ab) => resolve(new Uint8Array(ab)));
+        }, 'image/png');
+      });
+
+      updatedImages[key] = newPngBytes;
+      if (typeof createImageBitmap === 'function') {
+        try {
+          const newBmp = await createImageBitmap(new Blob([newPngBytes as unknown as BlobPart], { type: 'image/png' }));
+          updatedBitmaps[key] = newBmp;
+        } catch (_) {}
+      }
+      bakedCount++;
+    }
+  }
+
+  return { updatedImages, updatedBitmaps, bakedCount };
+}
+
 

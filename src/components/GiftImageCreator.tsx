@@ -1147,8 +1147,8 @@ export default function GiftImageCreator({
             onClick={() => handleBatchExportZip(false)}
             title={
               isAr
-                ? 'اختصار التصدير الفوري: اضغط زر Tab أو كليك شمال للتصدير بالصيغة المحددة'
-                : 'Quick export shortcut: Press Tab or Left-Click to export in selected format'
+                ? 'اضغط هنا أو على زر Tab للتصدير بالصيغة المحددة'
+                : 'Click here or press Tab to export in selected format'
             }
             style={{
               padding: '7px 16px',
@@ -1169,11 +1169,11 @@ export default function GiftImageCreator({
             <span>
               {items.length <= 1
                 ? isAr
-                  ? `تنزيل الصورة (${settings.exportFormat.toUpperCase()}) ⚡ [Tab / كليك شمال]`
-                  : `Download Image (${settings.exportFormat.toUpperCase()}) ⚡ [Tab / Left-Click]`
+                  ? `تنزيل الصورة (${settings.exportFormat.toUpperCase()}) ⚡ [Tab]`
+                  : `Download Image (${settings.exportFormat.toUpperCase()}) ⚡ [Tab]`
                 : isAr
-                  ? `تنزيل جميع الصور ZIP (${items.length}) ⚡ [Tab / كليك شمال]`
-                  : `Download All ZIP (${items.length}) ⚡ [Tab / Left-Click]`}
+                  ? `تنزيل جميع الصور ZIP (${items.length}) ⚡ [Tab]`
+                  : `Download All ZIP (${items.length}) ⚡ [Tab]`}
             </span>
           </button>
         </div>

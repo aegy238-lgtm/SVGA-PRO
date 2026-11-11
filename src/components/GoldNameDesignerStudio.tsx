@@ -1256,12 +1256,6 @@ export default function GoldNameDesignerStudio({
               <canvas
                 ref={previewCanvasRef}
                 id="goldDesignerPreviewCanvas"
-                onClick={() => handleExportDesign()}
-                title={
-                  isAr
-                    ? 'اضغط كليك شمال على التصميم لتحميله فوراً بالصيغة المحددة'
-                    : 'Left-click on the design to download immediately in selected format'
-                }
                 style={{
                   maxHeight: previewZoom === 100 ? '310px' : 'none',
                   maxWidth: '100%',

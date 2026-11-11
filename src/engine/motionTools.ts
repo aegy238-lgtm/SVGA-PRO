@@ -78,6 +78,27 @@ import {
   renderSvgaMovieToWebpFrames,
   isPagBinary,
 } from '../utils/pagEngine';
+import {
+  ProjectComposerState,
+  SecondaryOverlayLayer,
+  INITIAL_PROJECT_COMPOSER_STATE,
+  DEFAULT_LAYER_TRANSFORM,
+  hasActiveComposerModifications,
+  isDefaultLayerTransform,
+  nudgeLayerTransform,
+  computeLayerDrawGeometry,
+  buildPrimaryPreviewCssTransform,
+  clampTransformValues,
+  composeDecomposedSvgaMovie,
+} from '../utils/projectComposer';
+import { serializeDecomposedSvga } from '../utils/svgaEditorLogic';
+import {
+  EdgeFeatherConfig,
+  applyEdgeFeatherToContext,
+  applyEdgeFeatherToStageView,
+  bakeEdgeFeatherIntoSvgaMovie,
+  applyFeatherToRgbaPixels,
+} from '../utils/edgeFeather';
 
 let initialized = false;
 
@@ -167,6 +188,7 @@ export function initMotionToolsFixed() {
     clearTimeout(tt);
     tt = setTimeout(() => t.classList.remove('on'), 2200);
   }
+  (window as any).toast = toast;
   function show(v) {
     $$('.view').forEach((e) => e.classList.toggle('on', e.id === v));
     $$('nav a[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === v));
@@ -415,14 +437,30 @@ export function initMotionToolsFixed() {
       v.style.width = `${displayW}px`;
       v.style.height = `${displayH}px`;
       v.style.aspectRatio = 'unset';
+      v.style.position = 'relative';
+      v.style.overflow = 'hidden';
 
       Array.from(v.children).forEach((child) => {
         const el = child as HTMLElement;
         if (el.style.display === 'none') return;
+        if (
+          el.id === 'stageWatermarkOverlay' ||
+          el.id === 'projectComposerUnderlayCanvas' ||
+          el.id === 'projectComposerOverlayCanvas'
+        ) {
+          el.style.width = `${displayW}px`;
+          el.style.height = `${displayH}px`;
+          return;
+        }
+        // Skip hidden offscreen video (width: 2px; opacity: 0.001)
+        if (el.tagName === 'VIDEO' && el.style.opacity === '0.001') return;
+
         el.style.width = `${displayW}px`;
         el.style.height = `${displayH}px`;
         el.style.maxWidth = 'none';
         el.style.maxHeight = 'none';
+        el.style.position = 'relative';
+        el.style.zIndex = '2';
         if (el.tagName === 'VIDEO' || el.tagName === 'IMG' || el.tagName === 'CANVAS') {
           el.style.display = 'block';
           el.style.objectFit = 'fill';
@@ -452,6 +490,9 @@ export function initMotionToolsFixed() {
       const boxPx = Math.max(120, Math.round(420 * previewZoom));
       v.style.width = `${boxPx}px`;
       v.style.height = `${boxPx}px`;
+    }
+    if (typeof (window as any).__syncComposerStagePreview === 'function') {
+      (window as any).__syncComposerStagePreview();
     }
     if (typeof (window as any).__reapplyStageEdgeFeather === 'function') {
       (window as any).__reapplyStageEdgeFeather();
@@ -1146,6 +1187,9 @@ export function initMotionToolsFixed() {
     for (let k = 0; k < nk; k++) {
       const t = performance.now();
       await S.set(Math.min(S.n - 1, Math.round((k * S.fps) / fps)));
+      if (typeof (window as any).__seekComposerOverlays === 'function') {
+        await (window as any).__seekComposerOverlays((k + 0.5) / Math.max(1, fps));
+      }
       x.clearRect(0, 0, W, H);
       S.draw(x, W, H);
       await cb(c, x, k, t);
@@ -3396,6 +3440,7 @@ export function initMotionToolsFixed() {
           Boolean((window as any).__WATERMARK_LAYERS?.length) ||
           Boolean((window as any).__chromaKey?.enabled) ||
           Boolean((window as any).__edgeFeather?.enabled) ||
+          hasActiveComposerModifications((window as any).__projectComposerState) ||
           (S &&
             ((+$('#w').value && +$('#w').value !== S.w) ||
               (+$('#h').value && +$('#h').value !== S.h) ||
@@ -3423,7 +3468,8 @@ export function initMotionToolsFixed() {
             ($('#mirror').value && $('#mirror').value !== 'none') ||
             ($('#fit').value && $('#fit').value !== 'stretch') ||
             Boolean($('#trim')?.checked) ||
-            Boolean((window as any).__edgeFeather?.enabled);
+            Boolean((window as any).__edgeFeather?.enabled) ||
+            hasActiveComposerModifications((window as any).__projectComposerState);
 
           const audioPayload =
             typeof (window as any).svgaPrepareAudioPayload === 'function'
@@ -4222,6 +4268,53 @@ export function initMotionToolsFixed() {
         return b;
       }
     };
+
+    const bakeEdgeFeatherIntoActiveMovie = async (cfg: EdgeFeatherConfig): Promise<number> => {
+      let bakedCount = 0;
+      if (window.SV && window.SV.m && window.SV.m.im && Object.keys(window.SV.m.im).length > 0) {
+        const movie = window.SV.m;
+        const bitmaps = window.SV.bm || {};
+
+        const res = await bakeEdgeFeatherIntoSvgaMovie(movie, cfg, bitmaps);
+        if (res.bakedCount > 0) {
+          bakedCount = res.bakedCount;
+          if (!window.EDIT) window.EDIT = {};
+          for (const [k, u8] of Object.entries(res.updatedImages)) {
+            movie.im[k] = u8;
+            if (res.updatedBitmaps?.[k]) {
+              window.SV.bm[k] = res.updatedBitmaps[k];
+            }
+            const blob = new Blob([u8 as unknown as BlobPart], { type: 'image/png' });
+            window.EDIT[k] = URL.createObjectURL(blob);
+          }
+        }
+      }
+
+      // Store persistent baked edge feather configuration for all project types (VAP, MP4, Canvas, Video, GIF, PAG, APNG, Lottie, etc.)
+      (window as any).__bakedEdgeFeather = { ...cfg, enabled: true };
+      (window as any).__edgeFeather = { ...cfg, enabled: true };
+
+      // Re-apply stage feather view
+      if (typeof (window as any).__reapplyStageEdgeFeather === 'function') {
+        (window as any).__reapplyStageEdgeFeather();
+      }
+
+      // Update layers panel thumbnails
+      try {
+        buildAssets();
+      } catch (_) {}
+
+      // Refresh SVG player if active
+      if (window.SVP && typeof window.SVP.stepToFrame === 'function') {
+        const cf = window.SVP.currentFrame || 0;
+        window.SVP.stepToFrame(cf, false);
+      }
+
+      return Math.max(1, bakedCount);
+    };
+
+    (window as any).__bakeEdgeFeatherIntoLayers = bakeEdgeFeatherIntoActiveMovie;
+
     window.withAudio = async (st) => {
       window.__aStart = window.__aStop = null;
       const a = finalAudio();
@@ -4251,6 +4344,167 @@ export function initMotionToolsFixed() {
       }
       return st;
     };
+    const exportDecomposedSvgaProject = async (
+      baseMovie: any,
+      targetW: number,
+      targetH: number,
+      targetFps: number,
+      qualityPercent: number = 100
+    ): Promise<Blob> => {
+      const composerState: ProjectComposerState =
+        (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+
+      // 1. Collect image edits from window.EDIT
+      const imageReplacements: Record<string, Uint8Array> = {};
+      if (window.EDIT) {
+        for (const [k, url] of Object.entries(window.EDIT)) {
+          try {
+            const resp = await fetch(url as string);
+            const ab = await resp.arrayBuffer();
+            imageReplacements[k] = new Uint8Array(ab);
+          } catch (_) {}
+        }
+      }
+
+      // 1b. If Edge Feather is active and hasn't been baked yet, bake it into layer images now
+      const activeFeather: EdgeFeatherConfig | undefined = (window as any).__edgeFeather;
+      if (
+        activeFeather?.enabled &&
+        (activeFeather.topMargin > 0 ||
+          activeFeather.bottomMargin > 0 ||
+          activeFeather.leftMargin > 0 ||
+          activeFeather.rightMargin > 0 ||
+          activeFeather.featherRadius > 0)
+      ) {
+        try {
+          const baked = await bakeEdgeFeatherIntoSvgaMovie(baseMovie, activeFeather, window.SV?.bm);
+          if (baked.bakedCount > 0) {
+            for (const [k, u8] of Object.entries(baked.updatedImages)) {
+              imageReplacements[k] = u8;
+            }
+          }
+        } catch (e) {
+          console.warn('Edge feather auto-bake during export:', e);
+        }
+      }
+
+      // 2. Handle audio
+      let finalAudiosRaw = Array.isArray(baseMovie.audiosRaw) ? [...baseMovie.audiosRaw] : undefined;
+      if (AU.dirty) {
+        if (AU.del) {
+          finalAudiosRaw = [];
+          for (const k of Object.keys(baseMovie.im || {})) {
+            if (/^audio[_-]/i.test(k)) {
+              delete baseMovie.im[k];
+            }
+          }
+        } else if (AU.add || AU.vol !== 1) {
+          const a = finalAudio();
+          if (a) {
+            const mp3Bytes = await mp3For(a);
+            if (mp3Bytes && mp3Bytes.length > 0) {
+              imageReplacements['audio_main'] = mp3Bytes;
+              finalAudiosRaw = [];
+            }
+          }
+        }
+      }
+
+      // 3. Handle secondary overlay layers
+      const overlayMovies = new Map<string, any>();
+      const overlayRenderedFrames = new Map<string, { width: number; height: number; frames: Uint8Array[] }>();
+
+      const overlays = composerState.overlays || [];
+      for (const layer of overlays) {
+        if (layer.transform?.visible === false) continue;
+        const rt = (window as any).__getSecondaryOverlayRuntime?.(layer.id);
+        if (!rt) continue;
+
+        if (rt.parsedMovie && rt.parsedMovie.im && rt.parsedMovie.sp) {
+          overlayMovies.set(layer.id, rt.parsedMovie);
+        } else if (typeof rt.drawAtTime === 'function') {
+          const lw = Math.max(1, Math.round(rt.width || layer.width || 300));
+          const lh = Math.max(1, Math.round(rt.height || layer.height || 300));
+          const nFrames = Math.max(1, rt.totalFrames || 1);
+          const scratch = mk(lw, lh);
+          const sCtx = scratch.getContext('2d', { willReadFrequently: true })!;
+          const frames: Uint8Array[] = [];
+
+          for (let fi = 0; fi < nFrames; fi++) {
+            const tSec = fi / Math.max(1, rt.fps || 25);
+            sCtx.clearRect(0, 0, lw, lh);
+            rt.drawAtTime(sCtx, lw, lh, tSec, layer.alphaMode || 'auto');
+            const pngBytes = await new Promise<Uint8Array>((resolve) => {
+              scratch.toBlob((blob) => {
+                if (!blob) {
+                  resolve(new Uint8Array());
+                  return;
+                }
+                blob.arrayBuffer().then((ab) => resolve(new Uint8Array(ab)));
+              }, 'image/png');
+            });
+            if (pngBytes.length > 0) {
+              frames.push(pngBytes);
+            }
+          }
+
+          if (frames.length > 0) {
+            overlayRenderedFrames.set(layer.id, {
+              width: lw,
+              height: lh,
+              frames,
+            });
+          }
+        }
+      }
+
+      // 4. Global scale and mirror options
+      const globalScalePercent = Number(($('#scale') as HTMLInputElement)?.value) || 100;
+      const globalMirror = ((($('#mirror') as HTMLSelectElement)?.value || 'none') as
+        | 'none'
+        | 'horizontal'
+        | 'vertical');
+
+      // 5. Compose full unflattened movie (Zero canvas rasterization of primary layers!)
+      const compositeMovie = composeDecomposedSvgaMovie(
+        { ...baseMovie, audiosRaw: finalAudiosRaw },
+        composerState,
+        {
+          targetW,
+          targetH,
+          targetFps,
+          globalScalePercent,
+          globalMirror,
+          imageReplacements,
+          overlayMovies,
+          overlayRenderedFrames,
+        }
+      );
+
+      // 6. Serialize into native SVGA 2.0 protobuf
+      const rawProto = serializeDecomposedSvga(compositeMovie);
+
+      // 7. Deflate
+      const deflated = pako?.deflate ? pako.deflate(rawProto, { level: 9 }) : await inf2(rawProto);
+
+      // 8. Quality compression if requested
+      if (qualityPercent < 100) {
+        try {
+          const compReady = await window.cmpReady();
+          if (compReady && typeof window.compressSvga2Binary === 'function') {
+            const compressed = await window.compressSvga2Binary(deflated, qualityPercent);
+            if (compressed && compressed.size > 0) {
+              return compressed;
+            }
+          }
+        } catch (e) {
+          console.warn('SVGA compression fallback', e);
+        }
+      }
+
+      return new Blob([deflated], { type: 'application/octet-stream' });
+    };
+
     const prevS = $('#start').onclick;
     $('#start').onclick = async () => {
       const F = $('#fmt').value,
@@ -4264,14 +4518,15 @@ export function initMotionToolsFixed() {
           ($('#mirror').value && $('#mirror').value !== 'none') ||
           ($('#fit').value && $('#fit').value !== 'stretch') ||
           Boolean($('#trim')?.checked) ||
-          Boolean((window as any).__edgeFeather?.trimEnabled));
+          Boolean((window as any).__edgeFeather?.trimEnabled) ||
+          hasActiveComposerModifications((window as any).__projectComposerState));
 
+      // If source has an unflattened SVGA movie (or is an SVGA file) and export format is SVGA or Original:
+      // ALWAYS export as decomposed layers (طبقات متفككة) - NEVER rasterize frames to images!
       if (
         cur &&
-        ext === 'svga' &&
-        (F === 'orig' || F === 'svga') &&
-        !geomChanged &&
-        !(window as any).__edgeFeather?.enabled
+        (ext === 'svga' || (window.SV && window.SV.m)) &&
+        (F === 'orig' || F === 'svga')
       ) {
         const b = $('#start');
         b.disabled = true;
@@ -4282,37 +4537,41 @@ export function initMotionToolsFixed() {
             AU.dirty ||
             Object.keys(window.EDIT || {}).length > 0 ||
             Boolean((window as any).__WATERMARK_LAYERS?.length);
+          const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
 
-          if (!wantCompress && !hasEdits) {
+          if (!geomChanged && !wantCompress && !hasEdits && !hasComposerEdits && ext === 'svga') {
             await dl(cur, cur.name);
             return;
           }
 
-          const compReady = wantCompress ? await window.cmpReady() : false;
-          let audio = null;
-          if (AU.dirty) {
-            if (AU.del) audio = { del: 1 };
-            else if (AU.add || AU.vol !== 1) {
-              const a = finalAudio();
-              audio = a ? { set: await mp3For(a), dur: a.buf.duration } : { del: 1 };
-            }
-          }
-          const eb = {};
-          for (const k in window.EDIT) eb[k] = await (await fetch(window.EDIT[k])).blob();
           const stEl = document.getElementById('exportStatus');
           if (stEl) {
             stEl.textContent = wantCompress
-              ? `جاري ضغط ملف SVGA (${cfg.qualityPercent}%)…`
-              : 'جاري تصدير ملف SVGA بالجودة الأصلية (100%)…';
+              ? `جاري حفظ ملف SVGA كطبقات متفككة وضغط (${cfg.qualityPercent}%)…`
+              : 'جاري حفظ ملف SVGA كطبقات متفككة بالجودة الأصلية (100%)…';
           }
-          const outName = wantCompress
-            ? cur.name.replace(/\.svga$/i, '') + '_compressed.svga'
-            : cur.name.replace(/\.svga$/i, '') + '.svga';
-          await dl(
-            await svgaPatch(cur, { edits: eb, comp: wantCompress && compReady, audio, fps: S.fps, n: S.n }),
-            outName
+
+          const targetW = +$('#w').value || S?.w || 300;
+          const targetH = +$('#h').value || S?.h || 300;
+          const targetFps = +$('#fps').value || S?.fps || 30;
+
+          const baseMovie =
+            window.SV?.m ||
+            (await parseMovie(await inf(new Uint8Array(await cur.arrayBuffer()), 'deflate')));
+
+          const blob = await exportDecomposedSvgaProject(
+            baseMovie,
+            targetW,
+            targetH,
+            targetFps,
+            cfg.qualityPercent
           );
-        } catch (e) {
+
+          const baseName = cur.name.replace(/\.svga$/i, '').replace(/\.[^.]+$/, '');
+          const outName = wantCompress ? `${baseName}_compressed.svga` : `${baseName}.svga`;
+
+          await dl(blob, outName);
+        } catch (e: any) {
           toast(e.message || 'Export failed');
         } finally {
           b.disabled = false;
@@ -5949,24 +6208,73 @@ export function initMotionToolsFixed() {
     }
     function contentDraw(draw, x, W, H) {
       const g = geometry(W, H);
-      x.save();
-      x.translate(W / 2, H / 2);
-      x.scale(g.sx, g.sy);
-      x.translate(-g.w / 2, -g.h / 2);
-      draw(x, g.w, g.h);
-      x.restore();
+      const compState: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      const pTrans = compState?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+      const baseW = Math.max(1, (S && S.w) || W);
+      const baseH = Math.max(1, (S && S.h) || H);
+
+      if (typeof (window as any).__drawComposerOverlays === 'function') {
+        (window as any).__drawComposerOverlays(x, W, H, 'below');
+      }
+
+      if (pTrans.visible !== false && (Number(pTrans.opacity ?? 100) || 0) > 0.001) {
+        const dx = (Number(pTrans.offsetX) || 0) * (W / baseW);
+        const dy = (Number(pTrans.offsetY) || 0) * (H / baseH);
+        const pScale = Math.max(0.05, Math.min(5, (Number(pTrans.scale) || 100) / 100));
+        const pRot = ((Number(pTrans.rotation) || 0) * Math.PI) / 180;
+        const pFlipX = pTrans.flipH ? -1 : 1;
+        const pFlipY = pTrans.flipV ? -1 : 1;
+        const pAlpha = Math.max(0, Math.min(1, (Number(pTrans.opacity ?? 100) || 0) / 100));
+
+        x.save();
+        x.globalAlpha = pAlpha;
+        x.translate(W / 2 + dx, H / 2 + dy);
+        if (Math.abs(pRot) > 0.0001) x.rotate(pRot);
+        x.scale(g.sx * pFlipX * pScale, g.sy * pFlipY * pScale);
+        x.translate(-g.w / 2, -g.h / 2);
+
+        const featherCfg = (window as any).__edgeFeather || (window as any).__bakedEdgeFeather;
+        if (
+          featherCfg?.enabled &&
+          (featherCfg.topMargin > 0 ||
+            featherCfg.bottomMargin > 0 ||
+            featherCfg.leftMargin > 0 ||
+            featherCfg.rightMargin > 0 ||
+            featherCfg.featherRadius > 0)
+        ) {
+          const pCv = document.createElement('canvas');
+          pCv.width = Math.max(1, Math.round(g.w));
+          pCv.height = Math.max(1, Math.round(g.h));
+          const pCtx = pCv.getContext('2d');
+          if (pCtx) {
+            draw(pCtx, g.w, g.h);
+            applyEdgeFeatherToContext(pCtx, g.w, g.h, featherCfg);
+            x.drawImage(pCv, 0, 0, g.w, g.h);
+          } else {
+            draw(x, g.w, g.h);
+          }
+        } else {
+          draw(x, g.w, g.h);
+        }
+        x.restore();
+      }
+
+      if (typeof (window as any).__drawComposerOverlays === 'function') {
+        (window as any).__drawComposerOverlays(x, W, H, 'above');
+      }
+
       const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
       if (wmLayers.length > 0) {
-        const baseW = (S && S.w) || wmLayers[0]?.animWidth || W;
-        const baseH = (S && S.h) || wmLayers[0]?.animHeight || H;
+        const wmBaseW = (S && S.w) || wmLayers[0]?.animWidth || W;
+        const wmBaseH = (S && S.h) || wmLayers[0]?.animHeight || H;
         for (const wm of wmLayers) {
           const imSource = wm._bmp || wm._img;
           if (!imSource) continue;
           const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
-            wm.x * (W / Math.max(1, baseW)),
-            wm.y * (H / Math.max(1, baseH)),
-            wm.width * (W / Math.max(1, baseW)),
-            wm.height * (H / Math.max(1, baseH)),
+            wm.x * (W / Math.max(1, wmBaseW)),
+            wm.y * (H / Math.max(1, wmBaseH)),
+            wm.width * (W / Math.max(1, wmBaseW)),
+            wm.height * (H / Math.max(1, wmBaseH)),
             wm.scale,
             wm.rotation
           );
@@ -5977,20 +6285,14 @@ export function initMotionToolsFixed() {
             imSource,
             0,
             0,
-            wm.width * (W / Math.max(1, baseW)),
-            wm.height * (H / Math.max(1, baseH))
+            wm.width * (W / Math.max(1, wmBaseW)),
+            wm.height * (H / Math.max(1, wmBaseH))
           );
           x.restore();
         }
       }
       if ((window as any).__chromaKey?.enabled) {
         applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
-      }
-      if (
-        (window as any).__edgeFeather?.enabled &&
-        typeof (window as any).__applyEdgeFeatherToContext === 'function'
-      ) {
-        (window as any).__applyEdgeFeatherToContext(x, W, H);
       }
     }
     function exportOptions() {
@@ -6312,6 +6614,7 @@ export function initMotionToolsFixed() {
           Array.isArray((window as any).__WATERMARK_LAYERS) &&
           (window as any).__WATERMARK_LAYERS.length > 0
         ),
+        hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState),
         direct = !!(
           M &&
           m &&
@@ -6321,7 +6624,8 @@ export function initMotionToolsFixed() {
           !(window as any).__edgeFeather?.enabled &&
           !(window as any).__chromaKey?.enabled &&
           !hasVapMaskEdits &&
-          !hasWatermarkLayers
+          !hasWatermarkLayers &&
+          !hasComposerEdits
         );
       const out = await encodeMP4({
         ...o,
@@ -6331,6 +6635,9 @@ export function initMotionToolsFixed() {
           const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
           if (m) await seekVideo(m, t);
           else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
+          if (typeof (window as any).__seekComposerOverlays === 'function') {
+            await (window as any).__seekComposerOverlays(t);
+          }
           x.fillStyle = '#000';
           x.fillRect(0, 0, VW, VH);
           x.imageSmoothingQuality = 'high';
@@ -6408,6 +6715,9 @@ export function initMotionToolsFixed() {
           const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
           if (S.vid) await seekVideo(S.vid, t);
           else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
+          if (typeof (window as any).__seekComposerOverlays === 'function') {
+            await (window as any).__seekComposerOverlays(t);
+          }
           x.clearRect(0, 0, W, H);
           contentDraw(raw, x, W, H);
           out.fillStyle = '#000';
@@ -6474,7 +6784,8 @@ export function initMotionToolsFixed() {
         const featherCfg = (window as any).__edgeFeather;
         const featherOn = !!featherCfg?.enabled;
         const chromaOn = !!(window as any).__chromaKey?.enabled;
-        if (F === 'orig' && (featherOn || chromaOn) && !source.meta && cur) {
+        const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
+        if (F === 'orig' && (featherOn || chromaOn || hasComposerEdits) && !source.meta && cur) {
           const ext = cur.name.split('.').pop()?.toLowerCase() || 'svga';
           const extMap: Record<string, string> = {
             svga: 'svga',
@@ -6640,7 +6951,8 @@ export function initMotionToolsFixed() {
               !featherOn &&
               !chromaOn &&
               !hasVapMaskEdits &&
-              !hasWatermarkLayers;
+              !hasWatermarkLayers &&
+              !hasComposerEdits;
             if (unchanged) await dl(cur, cur.name);
             else await exportVY(source.meta.kind.toLowerCase());
           } else {
@@ -6688,18 +7000,15 @@ export function initMotionToolsFixed() {
       }
     };
 
-    // Left-Click ("تريك شمال / كليك شمال") instant export on #view preview stage
+    // Disabled Left-Click export on #view preview stage so user interactions, pause/play, and dragging don't trigger file export
     const stageViewEl = $('#view');
     if (stageViewEl) {
       stageViewEl.addEventListener('click', (ev: MouseEvent) => {
+        // Prevent click on stage from triggering file conversion/export
         if (ev.button !== 0) return;
-        if ((window as any).__leftClickExportEnabled === false) return;
-        if (working || !cur || !S) return;
-        const fmtSelect = $('#fmt') as HTMLSelectElement | null;
-        const selectedFmtLabel =
-          fmtSelect?.options?.[fmtSelect.selectedIndex]?.text || fmtSelect?.value || 'Original';
-        toast('⚡ تصدير فوري (كليك شمال): ' + selectedFmtLabel);
-        $('#start')?.click();
+        if ((window as any).__leftClickExportEnabled === true && !(window as any).__composerMenuOpen && !(window as any).__composerJustDragged) {
+          // Left click export is explicitly disabled by default for user preference
+        }
       });
     }
 
@@ -6988,23 +7297,32 @@ export function initMotionToolsFixed() {
           return toast('يرجى رفع ملف هدية للمعاينة أولاً');
         }
         try {
-          const W = Math.max(1, S.w || 400);
-          const H = Math.max(1, S.h || 400);
+          const W = Math.max(1, +($('#w') as HTMLInputElement)?.value || S.w || 400);
+          const H = Math.max(1, +($('#h') as HTMLInputElement)?.value || S.h || 400);
           const snapCanvas = mk(W, H);
           const snapCtx = snapCanvas.getContext('2d', { willReadFrequently: true });
           if (!snapCtx) throw new Error('Could not create canvas context');
 
           snapCtx.clearRect(0, 0, W, H);
           if (typeof S.draw === 'function') {
-            S.draw(snapCtx, W, H);
+            contentDraw(S.draw, snapCtx, W, H);
           } else {
-            const liveCanvas = document.querySelector('#view canvas') as HTMLCanvasElement | null;
-            const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
-            if (liveCanvas) {
-              snapCtx.drawImage(liveCanvas, 0, 0, W, H);
-            } else if (liveVid) {
-              snapCtx.drawImage(liveVid, 0, 0, W, H);
-            }
+            contentDraw(
+              (x: CanvasRenderingContext2D, w: number, h: number) => {
+                const liveCanvas = document.querySelector(
+                  '#view canvas:not(#projectComposerUnderlayCanvas):not(#projectComposerOverlayCanvas)'
+                ) as HTMLCanvasElement | null;
+                const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
+                if (liveCanvas) {
+                  x.drawImage(liveCanvas, 0, 0, w, h);
+                } else if (liveVid) {
+                  x.drawImage(liveVid, 0, 0, w, h);
+                }
+              },
+              snapCtx,
+              W,
+              H
+            );
           }
 
           // Apply any active watermark layers if present
@@ -7045,6 +7363,1035 @@ export function initMotionToolsFixed() {
           e.stopPropagation();
           captureGiftSnapshot();
         };
+      }
+
+      /* ═══════════════════════════════════════════════════════════════════════
+       * PROJECT COMPOSER & SECONDARY FILE OVERLAY ENGINE
+       * ═══════════════════════════════════════════════════════════════════════ */
+      interface SecondaryOverlayRuntime {
+        id: string;
+        file: File;
+        width: number;
+        height: number;
+        fps: number;
+        totalFrames: number;
+        durationSec: number;
+        formatLabel: string;
+        parsedMovie?: any;
+        drawAtTime: (
+          ctx: CanvasRenderingContext2D,
+          w: number,
+          h: number,
+          timeSec: number,
+          alphaMode?: 'auto' | 'none' | 'right' | 'left'
+        ) => void;
+        seekToTime?: (timeSec: number) => Promise<void>;
+        dispose?: () => void;
+      }
+
+      const overlayRuntimes = new Map<string, SecondaryOverlayRuntime>();
+      (window as any).__getSecondaryOverlayRuntime = (id: string) => overlayRuntimes.get(id);
+      (window as any).__getAllSecondaryOverlayRuntimes = () => overlayRuntimes;
+      if (!(window as any).__projectComposerState) {
+        (window as any).__projectComposerState = {
+          ...INITIAL_PROJECT_COMPOSER_STATE,
+          primaryTransform: { ...DEFAULT_LAYER_TRANSFORM },
+          overlays: [],
+        };
+      }
+
+      const emitComposerChange = () => {
+        const st: ProjectComposerState = (window as any).__projectComposerState;
+        window.dispatchEvent(new CustomEvent('projectcomposerchange', { detail: st }));
+      };
+
+      const syncComposerStagePreview = () => {
+        const v = document.getElementById('view') as HTMLElement | null;
+        if (!v) return;
+        const st: ProjectComposerState =
+          (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+        const pTrans = st.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+
+        v.style.position = 'relative';
+        v.style.overflow = 'hidden';
+
+        const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 400);
+        const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 400);
+
+        const globalScalePct = Number(($('#scale') as HTMLInputElement)?.value) || 100;
+        const globalMirror =
+          ((($('#mirror') as HTMLSelectElement)?.value || 'none') as
+            | 'none'
+            | 'horizontal'
+            | 'vertical');
+
+        const cssRes = buildPrimaryPreviewCssTransform(
+          pTrans,
+          baseW,
+          baseH,
+          globalScalePct,
+          globalMirror
+        );
+
+        const isDefault = isDefaultLayerTransform(pTrans) && globalScalePct === 100 && globalMirror === 'none';
+
+        const children = Array.from(v.children) as HTMLElement[];
+        for (const ch of children) {
+          if (
+            ch.id === 'projectComposerUnderlayCanvas' ||
+            ch.id === 'projectComposerOverlayCanvas'
+          ) {
+            continue;
+          }
+          if (ch.tagName === 'VIDEO' && ch.style.width === '2px') {
+            continue;
+          }
+          ch.style.position = 'relative';
+          ch.style.zIndex = '2';
+          ch.style.transformOrigin = 'center center';
+          ch.style.transform = isDefault ? '' : cssRes.transform;
+          ch.style.opacity = cssRes.opacity;
+          ch.style.visibility = cssRes.visibility;
+        }
+
+        // Ensure underlay & overlay canvases exist when secondary layers are present
+        const hasSecondary = Array.isArray(st.overlays) && st.overlays.length > 0;
+        let underlayCv = document.getElementById(
+          'projectComposerUnderlayCanvas'
+        ) as HTMLCanvasElement | null;
+        let overlayCv = document.getElementById(
+          'projectComposerOverlayCanvas'
+        ) as HTMLCanvasElement | null;
+
+        if (!hasSecondary) {
+          if (underlayCv) underlayCv.style.display = 'none';
+          if (overlayCv) overlayCv.style.display = 'none';
+          return;
+        }
+
+        const [hiW, hiH] = getHiResCanvasDims(baseW, baseH);
+        const ensureOverlayCanvas = (
+          id: string,
+          zIndex: string
+        ): HTMLCanvasElement => {
+          let c = document.getElementById(id) as HTMLCanvasElement | null;
+          if (!c || c.parentElement !== v) {
+            if (c) c.remove();
+            c = mk(hiW, hiH);
+            c.id = id;
+            v.appendChild(c);
+          }
+          if (c.width !== hiW) c.width = hiW;
+          if (c.height !== hiH) c.height = hiH;
+          c.style.cssText = `position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:${zIndex};background:transparent;display:block;`;
+          return c;
+        };
+
+        underlayCv = ensureOverlayCanvas('projectComposerUnderlayCanvas', '1');
+        overlayCv = ensureOverlayCanvas('projectComposerOverlayCanvas', '10');
+      };
+
+      (window as any).__syncComposerStagePreview = syncComposerStagePreview;
+
+      (window as any).__setProjectComposerState = (nextState: ProjectComposerState) => {
+        (window as any).__projectComposerState = nextState;
+        syncComposerStagePreview();
+        emitComposerChange();
+      };
+
+      (window as any).__getProjectBaseDims = () => {
+        const w = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 750);
+        const h = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 1334);
+        return { w, h };
+      };
+
+      // Hook scale, fit, mirror inputs so live preview updates immediately
+      ['scale', 'fit', 'mirror'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('input', () => syncComposerStagePreview());
+          el.addEventListener('change', () => syncComposerStagePreview());
+        }
+      });
+
+      const getCurrentPrimaryTimeSec = (): number => {
+        if (!S) return performance.now() / 1000;
+        const fps = Math.max(1, S.fps || 25);
+        if (S.vid && Number.isFinite(S.vid.currentTime)) {
+          return S.vid.currentTime;
+        }
+        if (typeof (window as any).__svgaCurrentFrame === 'number') {
+          return (window as any).__svgaCurrentFrame / fps;
+        }
+        if (window.SVP) {
+          const cf =
+            window.SVP.currentFrame ??
+            (window.SVP as any)._currentFrame ??
+            (window.SVP._renderer?.currentFrame || 0);
+          return cf / fps;
+        }
+        if (typeof (window as any).__currentAnimationStepIdx === 'number') {
+          return (window as any).__currentAnimationStepIdx / fps;
+        }
+        return performance.now() / 1000;
+      };
+
+      const drawComposerOverlaysForPass = (
+        ctx: CanvasRenderingContext2D,
+        W: number,
+        H: number,
+        pass: 'below' | 'above',
+        overrideTimeSec?: number
+      ) => {
+        const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+        if (!st || !Array.isArray(st.overlays) || st.overlays.length === 0) return;
+
+        const baseW = Math.max(1, (S && S.w) || W);
+        const baseH = Math.max(1, (S && S.h) || H);
+        const nowSec =
+          typeof overrideTimeSec === 'number' ? overrideTimeSec : getCurrentPrimaryTimeSec();
+
+        for (const layer of st.overlays) {
+          if ((layer.zOrder || 'above') !== pass) continue;
+          if (layer.transform?.visible === false) continue;
+          const rt = overlayRuntimes.get(layer.id);
+          if (!rt) continue;
+
+          const geom = computeLayerDrawGeometry(
+            Math.max(1, rt.width || layer.width || W),
+            Math.max(1, rt.height || layer.height || H),
+            baseW,
+            baseH,
+            W,
+            H,
+            layer.fitMode || 'contain',
+            layer.transform || DEFAULT_LAYER_TRANSFORM
+          );
+          if (!geom.visible || geom.opacity <= 0.001 || geom.drawWidth <= 0 || geom.drawHeight <= 0) {
+            continue;
+          }
+
+          ctx.save();
+          ctx.globalAlpha = geom.opacity;
+          ctx.translate(geom.centerX, geom.centerY);
+          if (geom.rotationRad) ctx.rotate(geom.rotationRad);
+          ctx.scale(geom.scaleX, geom.scaleY);
+
+          const lw = Math.max(1, Math.round(geom.drawWidth));
+          const lh = Math.max(1, Math.round(geom.drawHeight));
+          rt.drawAtTime(ctx, lw, lh, nowSec, layer.alphaMode || 'auto');
+          ctx.restore();
+        }
+      };
+
+      (window as any).__drawComposerOverlays = (
+        ctx: CanvasRenderingContext2D,
+        W: number,
+        H: number,
+        pass: 'below' | 'above'
+      ) => {
+        drawComposerOverlaysForPass(ctx, W, H, pass);
+      };
+
+      (window as any).__seekComposerOverlays = async (timeSec: number) => {
+        const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+        if (!st || !Array.isArray(st.overlays) || st.overlays.length === 0) return;
+        for (const layer of st.overlays) {
+          if (layer.transform?.visible === false) continue;
+          const rt = overlayRuntimes.get(layer.id);
+          if (rt && typeof rt.seekToTime === 'function') {
+            try {
+              await rt.seekToTime(timeSec);
+            } catch (_) {}
+          }
+        }
+      };
+
+      // Continuous live preview loop for secondary overlay layers inside #view
+      (function renderComposerStageLoop() {
+        const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+        if (!window.__busy && st && Array.isArray(st.overlays) && st.overlays.length > 0) {
+          const underlayCv = document.getElementById(
+            'projectComposerUnderlayCanvas'
+          ) as HTMLCanvasElement | null;
+          const overlayCv = document.getElementById(
+            'projectComposerOverlayCanvas'
+          ) as HTMLCanvasElement | null;
+
+          if (!underlayCv || !overlayCv) {
+            syncComposerStagePreview();
+          } else {
+            const uCtx = underlayCv.getContext('2d');
+            if (uCtx) {
+              uCtx.clearRect(0, 0, underlayCv.width, underlayCv.height);
+              drawComposerOverlaysForPass(uCtx, underlayCv.width, underlayCv.height, 'below');
+            }
+            const oCtx = overlayCv.getContext('2d');
+            if (oCtx) {
+              oCtx.clearRect(0, 0, overlayCv.width, overlayCv.height);
+              drawComposerOverlaysForPass(oCtx, overlayCv.width, overlayCv.height, 'above');
+            }
+          }
+        }
+        requestAnimationFrame(renderComposerStageLoop);
+      })();
+
+      // Decode any supported secondary file into a SecondaryOverlayRuntime
+      const buildSecondaryOverlayRuntime = async (
+        file: File,
+        id: string
+      ): Promise<SecondaryOverlayRuntime> => {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const rawBuf = new Uint8Array(await file.arrayBuffer());
+
+        // 1. Check PAG binary (.pag or PAG magic bytes)
+        const pagEng = (window as any).__pagEngine;
+        if (ext === 'pag' || (pagEng?.isPagBinary && pagEng.isPagBinary(rawBuf))) {
+          const decoded = await decodePagWithLibpagFallback(rawBuf, file.name);
+          const movie = decoded.movie;
+          const w = Math.max(1, Math.round(movie.w || 400));
+          const h = Math.max(1, Math.round(movie.h || 400));
+          const fps = Math.max(1, Math.round(movie.fps || 25));
+          const n = Math.max(1, Math.round(movie.n || 1));
+
+          const bmMap: Record<string, ImageBitmap> = {};
+          for (const k in movie.im || {}) {
+            const d = movie.im[k];
+            if (!d || !d.length) continue;
+            const mt =
+              d[0] === 0x89 && d[1] === 0x50
+                ? 'image/png'
+                : d[0] === 0xff && d[1] === 0xd8
+                ? 'image/jpeg'
+                : d[0] === 0x52 && d.length >= 12 && d[8] === 0x57 && d[9] === 0x45
+                ? 'image/webp'
+                : 'image/png';
+            try {
+              bmMap[k] = await createImageBitmap(new Blob([d], { type: mt }));
+            } catch (_) {}
+          }
+
+          const scratch = mk(w, h);
+          const sCtx = scratch.getContext('2d')!;
+          return {
+            id,
+            file,
+            width: w,
+            height: h,
+            fps,
+            totalFrames: n,
+            durationSec: n / fps,
+            formatLabel: 'PAG',
+            drawAtTime: (ctx, dw, dh, timeSec) => {
+              const frameIdx = ((Math.floor(Math.max(0, timeSec) * fps) % n) + n) % n;
+              sCtx.clearRect(0, 0, w, h);
+              sCtx.save();
+              for (const s of movie.sp || []) {
+                const fr = s.fr?.[frameIdx];
+                const b = bmMap[s.key];
+                if (!fr || !b || fr.a <= 0.001) continue;
+                sCtx.globalAlpha = Math.min(1, fr.a);
+                sCtx.save();
+                if (fr.t) sCtx.transform(...(fr.t as [number, number, number, number, number, number]));
+                if (fr.clipPath) {
+                  try {
+                    sCtx.clip(new Path2D(fr.clipPath), 'evenodd');
+                  } catch (_) {}
+                }
+                sCtx.drawImage(b, fr.x || 0, fr.y || 0, fr.w || b.width, fr.h || b.height);
+                sCtx.restore();
+              }
+              sCtx.restore();
+              sCtx.globalAlpha = 1;
+              ctx.drawImage(scratch, -dw / 2, -dh / 2, dw, dh);
+            },
+            dispose: () => {
+              Object.values(bmMap).forEach((b) => b.close?.());
+            },
+          };
+        }
+
+        // 2. SVGA 2.x (.svga)
+        if (ext === 'svga') {
+          const movie = parseMovie(await inf(rawBuf, 'deflate'));
+          const w = Math.max(1, Math.round(movie.w || 400));
+          const h = Math.max(1, Math.round(movie.h || 400));
+          const fps = Math.max(1, Math.round(movie.fps || 25));
+          const n = Math.max(
+            1,
+            movie.n || Math.max(...(movie.sp || []).map((s: any) => s.fr.length), 1)
+          );
+          const bmMap: Record<string, ImageBitmap> = {};
+          for (const k in movie.im || {}) {
+            const d = movie.im[k];
+            if (!d || !d.length) continue;
+            const mt =
+              d[0] === 0x89 && d[1] === 0x50
+                ? 'image/png'
+                : d[0] === 0xff && d[1] === 0xd8
+                ? 'image/jpeg'
+                : d[0] === 0x52 && d.length >= 12 && d[8] === 0x57 && d[9] === 0x45
+                ? 'image/webp'
+                : 'image/png';
+            try {
+              bmMap[k] = await createImageBitmap(new Blob([d], { type: mt }));
+            } catch (_) {}
+          }
+          const scratch = mk(w, h);
+          const sCtx = scratch.getContext('2d')!;
+          return {
+            id,
+            file,
+            width: w,
+            height: h,
+            fps,
+            totalFrames: n,
+            durationSec: n / fps,
+            formatLabel: 'SVGA',
+            parsedMovie: movie,
+            drawAtTime: (ctx, dw, dh, timeSec) => {
+              const frameIdx = ((Math.floor(Math.max(0, timeSec) * fps) % n) + n) % n;
+              sCtx.clearRect(0, 0, w, h);
+              sCtx.save();
+              for (const s of movie.sp || []) {
+                const fr = s.fr?.[frameIdx];
+                const b = bmMap[s.key];
+                if (!fr || !b || fr.a <= 0.001) continue;
+                sCtx.globalAlpha = Math.min(1, fr.a);
+                sCtx.save();
+                if (fr.t) sCtx.transform(...(fr.t as [number, number, number, number, number, number]));
+                if (fr.clipPath) {
+                  try {
+                    sCtx.clip(new Path2D(fr.clipPath), 'evenodd');
+                  } catch (_) {}
+                }
+                sCtx.drawImage(b, fr.x || 0, fr.y || 0, fr.w || b.width, fr.h || b.height);
+                sCtx.restore();
+              }
+              sCtx.restore();
+              sCtx.globalAlpha = 1;
+              ctx.drawImage(scratch, -dw / 2, -dh / 2, dw, dh);
+            },
+            dispose: () => {
+              Object.values(bmMap).forEach((b) => b.close?.());
+            },
+          };
+        }
+
+        // 3. Video / VAP / YYEVA (.mp4, .webm, .mov, .vap, .yyeva)
+        if (/^(mp4|mov|webm|vap|yyeva)$/.test(ext)) {
+          let videoBytes = rawBuf;
+          let zipMeta: any = null;
+          if (rawBuf[0] === 0x50 && rawBuf[1] === 0x4b && window.JSZip) {
+            const z = await window.JSZip.loadAsync(file);
+            const allNames = Object.keys(z.files).filter((n) => !/__MACOSX/.test(n));
+            const vidEntry = allNames.find((n) => /\.(mp4|mov|webm|vap|yyeva)$/i.test(n));
+            const jsonEntries = allNames.filter((n) => /\.json$/i.test(n));
+            for (const jn of jsonEntries) {
+              try {
+                const jTxt = await z.file(jn).async('string');
+                const parsed = JSON.parse(jTxt);
+                const zm = metaFromAnyObject(parsed, ext === 'vap' ? 'VAP' : 'YYEVA');
+                if (zm) {
+                  zipMeta = zm;
+                  break;
+                }
+              } catch (_) {}
+            }
+            if (vidEntry) {
+              const vb = await z.file(vidEntry).async('blob');
+              videoBytes = new Uint8Array(await vb.arrayBuffer());
+            }
+          }
+          const ftypPos = bidx(videoBytes, 'ftyp');
+          if (ftypPos > 4 && ftypPos < 65536) {
+            videoBytes = videoBytes.subarray(ftypPos - 4);
+          }
+          const mimeType =
+            ext === 'webm' ? 'video/webm' : ext === 'mov' ? 'video/quicktime' : 'video/mp4';
+          const videoUrl = URL.createObjectURL(new Blob([videoBytes], { type: mimeType }));
+          const vid = document.createElement('video');
+          vid.src = videoUrl;
+          vid.loop = true;
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          await new Promise((ok, no) => {
+            vid.onloadedmetadata = ok;
+            vid.onerror = () => no(new Error('تعذر قراءة ملف الفيديو الإضافي'));
+          });
+          vid.play().catch(() => {});
+
+          let detectedMeta = zipMeta || (await readMediaMeta(rawBuf));
+          if (!detectedMeta && vid.videoWidth >= 4 && vid.videoHeight >= 4) {
+            try {
+              await Promise.race([seekVideo(vid, Math.min(0.2, (vid.duration || 1) * 0.25)), sleep(400)]);
+              if (vid.readyState >= 2) {
+                const tc = mk(vid.videoWidth, vid.videoHeight);
+                const tx = tc.getContext('2d', { willReadFrequently: true })!;
+                tx.drawImage(vid, 0, 0);
+                const idData = tx.getImageData(0, 0, tc.width, tc.height);
+                const det = detectAlphaLayoutFromRgbaFrame(idData.data, tc.width, tc.height, ext);
+                if (det.layout !== 'n' && det.meta) detectedMeta = det.meta;
+              }
+              vid.play().catch(() => {});
+            } catch (_) {}
+          }
+
+          const clampedMeta = detectedMeta
+            ? clampMetaToVideoBounds(detectedMeta, vid.videoWidth, vid.videoHeight)
+            : null;
+
+          const vw = Math.max(1, vid.videoWidth || 400);
+          const vh = Math.max(1, vid.videoHeight || 400);
+          const contentW = clampedMeta ? clampedMeta.c[2] : vw;
+          const contentH = clampedMeta ? clampedMeta.c[3] : vh;
+          const fps = clampedMeta?.fps || 30;
+          const dur = Math.max(0.1, Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 3);
+          const totalFrames = clampedMeta?.frames || Math.max(1, Math.round(dur * fps));
+
+          const scratch = mk(vw, vh);
+          const sCtx = scratch.getContext('2d', { willReadFrequently: true })!;
+
+          return {
+            id,
+            file,
+            width: contentW,
+            height: contentH,
+            fps,
+            totalFrames,
+            durationSec: dur,
+            formatLabel: clampedMeta?.kind || ext.toUpperCase(),
+            seekToTime: async (timeSec: number) => {
+              const targetT = dur > 0.05 ? timeSec % dur : 0;
+              await seekVideo(vid, targetT);
+            },
+            drawAtTime: (ctx, dw, dh, _timeSec, alphaMode = 'auto') => {
+              if (vid.readyState < 2) return;
+              let activeMeta = clampedMeta;
+              if (alphaMode === 'none') {
+                activeMeta = null;
+              } else if (alphaMode === 'right' || alphaMode === 'left') {
+                const sideCode = alphaMode === 'right' ? 'r' : 'l';
+                const hw = Math.max(2, Math.floor(vw / 2));
+                activeMeta = {
+                  kind: 'VAP',
+                  c: sideCode === 'r' ? [0, 0, hw, vh] : [hw, 0, hw, vh],
+                  a: sideCode === 'r' ? [hw, 0, hw, vh] : [0, 0, hw, vh],
+                  fps,
+                  frames: totalFrames,
+                  alphaLayout: sideCode,
+                };
+              }
+              if (activeMeta) {
+                if (scratch.width !== dw || scratch.height !== dh) {
+                  scratch.width = dw;
+                  scratch.height = dh;
+                }
+                sCtx.clearRect(0, 0, dw, dh);
+                vapDraw(sCtx, dw, dh, vid, activeMeta);
+                ctx.drawImage(scratch, -dw / 2, -dh / 2, dw, dh);
+              } else {
+                ctx.drawImage(vid, -dw / 2, -dh / 2, dw, dh);
+              }
+            },
+            dispose: () => {
+              try {
+                vid.pause();
+                vid.removeAttribute('src');
+                vid.load();
+              } catch (_) {}
+              URL.revokeObjectURL(videoUrl);
+            },
+          };
+        }
+
+        // 4. Lottie JSON (.json)
+        if (ext === 'json') {
+          await LIBS.all;
+          const data = JSON.parse(await file.text());
+          const w = Math.max(1, Math.round(data.w || 400));
+          const h = Math.max(1, Math.round(data.h || 400));
+          const fps = Math.max(1, Math.round(data.fr || 30));
+          const n = Math.max(1, Math.round((data.op || 60) - (data.ip || 0)));
+          const holder = document.createElement('div');
+          holder.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${w}px;height:${h}px;pointer-events:none;opacity:0;`;
+          document.body.appendChild(holder);
+          const lottieAnim = lottie.loadAnimation({
+            container: holder,
+            renderer: 'canvas',
+            loop: true,
+            autoplay: true,
+            animationData: data,
+          });
+          return {
+            id,
+            file,
+            width: w,
+            height: h,
+            fps,
+            totalFrames: n,
+            durationSec: n / fps,
+            formatLabel: 'LOTTIE',
+            seekToTime: async (timeSec: number) => {
+              const fi = ((Math.floor(Math.max(0, timeSec) * fps) % n) + n) % n;
+              lottieAnim.goToAndStop(fi, true);
+            },
+            drawAtTime: (ctx, dw, dh) => {
+              const cv = holder.querySelector('canvas');
+              if (cv) {
+                ctx.drawImage(cv, -dw / 2, -dh / 2, dw, dh);
+              }
+            },
+            dispose: () => {
+              try {
+                lottieAnim.destroy();
+                holder.remove();
+              } catch (_) {}
+            },
+          };
+        }
+
+        // 5. GIF / WebP / APNG / PNG / JPG / SVG / ZIP / DotLottie
+        let w = 0,
+          h = 0,
+          fps = 15;
+        let frameBitmaps: ImageBitmap[] = [];
+        let frameDurationsMs: number[] = [];
+
+        const isPngSig =
+          rawBuf.length > 8 &&
+          rawBuf[0] === 0x89 &&
+          rawBuf[1] === 0x50 &&
+          rawBuf[2] === 0x4e &&
+          rawBuf[3] === 0x47;
+        const isWebpSig =
+          rawBuf.length > 12 &&
+          TD.decode(rawBuf.subarray(0, 4)) === 'RIFF' &&
+          TD.decode(rawBuf.subarray(8, 12)) === 'WEBP';
+
+        if (isPngSig) {
+          try {
+            const apngInfo = parseApngInfo(rawBuf);
+            if (apngInfo && apngInfo.isApng && apngInfo.numFrames > 1) {
+              const decoded = decodeApngFramesRgba(rawBuf);
+              w = decoded.width;
+              h = decoded.height;
+              frameDurationsMs = decoded.delaysMs;
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+              for (const rgba of decoded.frames) {
+                const c = mk(w, h);
+                const cx = c.getContext('2d')!;
+                const idData = new ImageData(
+                  new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength),
+                  w,
+                  h
+                );
+                cx.putImageData(idData, 0, 0);
+                frameBitmaps.push(await createImageBitmap(c));
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (frameBitmaps.length === 0 && window.ImageDecoder && /^(gif|webp|png|apng)$/.test(ext)) {
+          try {
+            const mimeType = isPngSig
+              ? 'image/png'
+              : isWebpSig
+              ? 'image/webp'
+              : ext === 'gif'
+              ? 'image/gif'
+              : 'image/png';
+            const dec = new window.ImageDecoder({ data: rawBuf.slice().buffer, type: mimeType });
+            await dec.tracks.ready;
+            const total = dec.tracks.selectedTrack?.frameCount || 1;
+            if (total > 1) {
+              for (let fi = 0; fi < total; fi++) {
+                const r = await dec.decode({ frameIndex: fi });
+                if (!w) {
+                  w = r.image.displayWidth || r.image.codedWidth;
+                  h = r.image.displayHeight || r.image.codedHeight;
+                }
+                const durMs = r.image.duration ? Math.max(10, r.image.duration / 1000) : 67;
+                frameDurationsMs.push(durMs);
+                const c = mk(w, h);
+                c.getContext('2d')!.drawImage(r.image, 0, 0, w, h);
+                r.image.close();
+                frameBitmaps.push(await createImageBitmap(c));
+              }
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+            }
+            dec.close?.();
+          } catch (_) {}
+        }
+
+        if (frameBitmaps.length === 0 && isWebpSig) {
+          try {
+            const wInfo = parseAnimatedWebPInfo(rawBuf);
+            if (wInfo && wInfo.isAnimated && wInfo.frameCount > 1) {
+              const demuxed = demuxAnimatedWebPToSingleFrames(rawBuf);
+              w = demuxed.width;
+              h = demuxed.height;
+              frameDurationsMs = demuxed.durationsMs;
+              for (const sf of demuxed.frames) {
+                const bm = await createImageBitmap(new Blob([sf], { type: 'image/webp' }));
+                frameBitmaps.push(bm);
+              }
+              const avgMs =
+                frameDurationsMs.reduce((a, b) => a + b, 0) / Math.max(1, frameDurationsMs.length);
+              fps = Math.max(1, Math.min(60, Math.round(1000 / Math.max(10, avgMs))));
+            }
+          } catch (_) {}
+        }
+
+        if (frameBitmaps.length === 0) {
+          const blobUrl = URL.createObjectURL(file);
+          try {
+            const img = new Image();
+            img.src = blobUrl;
+            await img.decode();
+            w = img.naturalWidth || 400;
+            h = img.naturalHeight || 400;
+            frameBitmaps = [await createImageBitmap(img)];
+            frameDurationsMs = [67];
+          } finally {
+            URL.revokeObjectURL(blobUrl);
+          }
+        }
+
+        const n = Math.max(1, frameBitmaps.length);
+        const totalDurMs = frameDurationsMs.reduce((a, b) => a + (b || 67), 0) || 1000;
+
+        return {
+          id,
+          file,
+          width: w || 400,
+          height: h || 400,
+          fps,
+          totalFrames: n,
+          durationSec: n > 1 ? totalDurMs / 1000 : 1,
+          formatLabel: (ext || 'IMG').toUpperCase(),
+          drawAtTime: (ctx, dw, dh, timeSec) => {
+            if (n === 1) {
+              ctx.drawImage(frameBitmaps[0], -dw / 2, -dh / 2, dw, dh);
+              return;
+            }
+            const tMs = ((Math.max(0, timeSec) * 1000) % totalDurMs + totalDurMs) % totalDurMs;
+            let acc = 0;
+            let idx = 0;
+            for (let i = 0; i < n; i++) {
+              acc += frameDurationsMs[i] || 67;
+              if (tMs < acc) {
+                idx = i;
+                break;
+              }
+            }
+            const bm = frameBitmaps[idx] || frameBitmaps[0];
+            if (bm) {
+              ctx.drawImage(bm, -dw / 2, -dh / 2, dw, dh);
+            }
+          },
+          dispose: () => {
+            frameBitmaps.forEach((b) => b.close?.());
+          },
+        };
+      };
+
+      (window as any).__loadSecondaryOverlayFile = async (
+        file: File,
+        replaceLayerId?: string
+      ) => {
+        try {
+          toast(`⏳ جاري تحميل الملف الإضافي: ${file.name}...`);
+          const layerId = replaceLayerId || `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const runtime = await buildSecondaryOverlayRuntime(file, layerId);
+
+          if (replaceLayerId && overlayRuntimes.has(replaceLayerId)) {
+            overlayRuntimes.get(replaceLayerId)?.dispose?.();
+          }
+          overlayRuntimes.set(layerId, runtime);
+
+          const st: ProjectComposerState =
+            (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+
+          const existingIdx = st.overlays.findIndex((l) => l.id === replaceLayerId);
+          const newLayerMeta: SecondaryOverlayLayer = {
+            id: layerId,
+            name: file.name,
+            format: runtime.formatLabel,
+            width: runtime.width,
+            height: runtime.height,
+            fps: runtime.fps,
+            frames: runtime.totalFrames,
+            duration: runtime.durationSec,
+            zOrder:
+              existingIdx >= 0 ? st.overlays[existingIdx].zOrder : 'above',
+            fitMode:
+              existingIdx >= 0 ? st.overlays[existingIdx].fitMode : 'contain',
+            alphaMode:
+              existingIdx >= 0 ? st.overlays[existingIdx].alphaMode : 'auto',
+            transform:
+              existingIdx >= 0
+                ? { ...st.overlays[existingIdx].transform }
+                : { ...DEFAULT_LAYER_TRANSFORM },
+          };
+
+          const nextOverlays =
+            existingIdx >= 0
+              ? st.overlays.map((l, idx) => (idx === existingIdx ? newLayerMeta : l))
+              : [...st.overlays, newLayerMeta];
+
+          const nextState: ProjectComposerState = {
+            ...st,
+            activeTargetId: layerId,
+            overlays: nextOverlays,
+          };
+
+          (window as any).__setProjectComposerState(nextState);
+          toast(`✅ تم إضافة الملف الثاني بنجاح (${runtime.formatLabel} · ${runtime.width}×${runtime.height})`);
+        } catch (err: any) {
+          toast(`❌ تعذر تحميل الملف الثاني: ${err?.message || err}`);
+        }
+      };
+
+      (window as any).__removeSecondaryOverlayFile = (layerId: string) => {
+        const rt = overlayRuntimes.get(layerId);
+        if (rt) {
+          rt.dispose?.();
+          overlayRuntimes.delete(layerId);
+        }
+        const st: ProjectComposerState =
+          (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+        const remaining = st.overlays.filter((l) => l.id !== layerId);
+        const nextActive =
+          st.activeTargetId === layerId
+            ? remaining.length > 0
+              ? remaining[remaining.length - 1].id
+              : 'primary'
+            : st.activeTargetId;
+        (window as any).__setProjectComposerState({
+          ...st,
+          activeTargetId: nextActive,
+          overlays: remaining,
+        });
+        toast('🗑️ تم حذف الملف الإضافي من المشروع');
+      };
+
+      // Direct mouse / touch drag & mouse wheel scaling inside #view
+      const viewStageEl = document.getElementById('view');
+      if (viewStageEl) {
+        let dragActive = false;
+        let dragMoved = false;
+        let dragMode: 'move' | 'scale' = 'move';
+        let startClientX = 0;
+        let startClientY = 0;
+        let startOffsetX = 0;
+        let startOffsetY = 0;
+        let startScale = 100;
+        let startDistFromCenter = 1;
+
+        // 1. Mouse Wheel Scale (عجلة الماوس لتكبير وتصغير الطبقة النشطة فوراً)
+        viewStageEl.addEventListener(
+          'wheel',
+          (e: WheelEvent) => {
+            const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+            const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
+            if (!st || !st.directDragEnabled) return;
+            if (!panelOpen && !hasActiveComposerModifications(st)) return;
+
+            e.preventDefault();
+
+            const activeTransform =
+              st.activeTargetId === 'primary'
+                ? st.primaryTransform
+                : st.overlays.find((l) => l.id === st.activeTargetId)?.transform ||
+                  st.primaryTransform;
+
+            const curScale = activeTransform.scale || 100;
+            const delta = e.deltaY < 0 ? 5 : -5;
+            const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 750);
+            const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 1334);
+
+            const nextScale = Math.max(5, Math.min(500, Math.round(curScale + delta)));
+
+            if (st.activeTargetId === 'primary') {
+              (window as any).__setProjectComposerState({
+                ...st,
+                primaryTransform: clampTransformValues(
+                  { ...st.primaryTransform, scale: nextScale },
+                  baseW,
+                  baseH
+                ),
+              });
+            } else {
+              (window as any).__setProjectComposerState({
+                ...st,
+                overlays: st.overlays.map((l) =>
+                  l.id === st.activeTargetId
+                    ? {
+                        ...l,
+                        transform: clampTransformValues(
+                          { ...l.transform, scale: nextScale },
+                          baseW,
+                          baseH
+                        ),
+                      }
+                    : l
+                ),
+              });
+            }
+          },
+          { passive: false }
+        );
+
+        // 2. Direct Pointer Down (Shift key held = scale mode, Normal = position move mode)
+        viewStageEl.addEventListener('pointerdown', (e: PointerEvent) => {
+          const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+          const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
+          if (!st || !st.directDragEnabled) return;
+          if (!panelOpen && !hasActiveComposerModifications(st)) return;
+          if (e.button !== 0) return;
+
+          const activeTransform =
+            st.activeTargetId === 'primary'
+              ? st.primaryTransform
+              : st.overlays.find((l) => l.id === st.activeTargetId)?.transform ||
+                st.primaryTransform;
+
+          dragActive = true;
+          dragMoved = false;
+          dragMode = e.shiftKey ? 'scale' : 'move';
+          startClientX = e.clientX;
+          startClientY = e.clientY;
+          startOffsetX = activeTransform.offsetX || 0;
+          startOffsetY = activeTransform.offsetY || 0;
+          startScale = activeTransform.scale || 100;
+
+          const rect = viewStageEl.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+          startDistFromCenter = Math.hypot(e.clientX - centerX, e.clientY - centerY) || 1;
+
+          try {
+            viewStageEl.setPointerCapture(e.pointerId);
+          } catch (_) {}
+        });
+
+        // 3. Pointer Move (handles position move or mouse drag scale)
+        viewStageEl.addEventListener('pointermove', (e: PointerEvent) => {
+          if (!dragActive) return;
+          const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+          if (!st) return;
+
+          const dxScreen = e.clientX - startClientX;
+          const dyScreen = e.clientY - startClientY;
+          if (Math.abs(dxScreen) > 3 || Math.abs(dyScreen) > 3) {
+            dragMoved = true;
+            (window as any).__composerStageJustDragged = true;
+          }
+          if (!dragMoved) return;
+
+          const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 750);
+          const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 1334);
+          const rect = viewStageEl.getBoundingClientRect();
+
+          if (dragMode === 'scale') {
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const currentDist = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+            const scaleRatio = currentDist / Math.max(10, startDistFromCenter);
+            const nextScale = Math.max(5, Math.min(500, Math.round(startScale * scaleRatio)));
+
+            if (st.activeTargetId === 'primary') {
+              (window as any).__setProjectComposerState({
+                ...st,
+                primaryTransform: clampTransformValues(
+                  { ...st.primaryTransform, scale: nextScale },
+                  baseW,
+                  baseH
+                ),
+              });
+            } else {
+              (window as any).__setProjectComposerState({
+                ...st,
+                overlays: st.overlays.map((l) =>
+                  l.id === st.activeTargetId
+                    ? {
+                        ...l,
+                        transform: clampTransformValues(
+                          { ...l.transform, scale: nextScale },
+                          baseW,
+                          baseH
+                        ),
+                      }
+                    : l
+                ),
+              });
+            }
+          } else {
+            const ratioX = baseW / Math.max(1, rect.width);
+            const ratioY = baseH / Math.max(1, rect.height);
+
+            const nextOffsetX = Math.round(startOffsetX + dxScreen * ratioX);
+            const nextOffsetY = Math.round(startOffsetY + dyScreen * ratioY);
+
+            if (st.activeTargetId === 'primary') {
+              (window as any).__setProjectComposerState({
+                ...st,
+                primaryTransform: clampTransformValues(
+                  {
+                    ...st.primaryTransform,
+                    offsetX: nextOffsetX,
+                    offsetY: nextOffsetY,
+                  },
+                  baseW,
+                  baseH
+                ),
+              });
+            } else {
+              (window as any).__setProjectComposerState({
+                ...st,
+                overlays: st.overlays.map((l) =>
+                  l.id === st.activeTargetId
+                    ? {
+                        ...l,
+                        transform: clampTransformValues(
+                          {
+                            ...l.transform,
+                            offsetX: nextOffsetX,
+                            offsetY: nextOffsetY,
+                          },
+                          baseW,
+                          baseH
+                        ),
+                      }
+                    : l
+                ),
+              });
+            }
+          }
+        });
+
+        const endPointerDrag = (e: PointerEvent) => {
+          if (!dragActive) return;
+          dragActive = false;
+          try {
+            viewStageEl.releasePointerCapture(e.pointerId);
+          } catch (_) {}
+          if (dragMoved) {
+            setTimeout(() => {
+              (window as any).__composerStageJustDragged = false;
+            }, 140);
+          }
+        };
+
+        viewStageEl.addEventListener('pointerup', endPointerDrag);
+        viewStageEl.addEventListener('pointercancel', endPointerDrag);
       }
     })();
 
