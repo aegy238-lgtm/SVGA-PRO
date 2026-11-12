@@ -107,6 +107,7 @@ import {
   extractShineConfigFromExistingSprite,
   applySmartSoftFeatherMatteToMaskCanvas,
   computeFullLayerShineSweepAndSize,
+  CloneLayerColorAdjustments,
 } from '../utils/svgaShineEngine';
 import { SvgaShineStudioPanel, ShineTargetOption } from './SvgaShineStudioPanel';
 import { SvgaTimelinePanel } from './SvgaTimelinePanel';
@@ -578,8 +579,13 @@ export default function SvgaAeEditor({
         setFileSize(reportedSize ?? buf.byteLength);
         setCurrentFrame(0);
         setMergedGroups([initialGroup]);
-        setSelectedTarget(initialGroupId);
-        setSelectedAssetKey(null);
+        if (m.sp.length > 0) {
+          setSelectedTarget('sprite_0');
+          setSelectedAssetKey(m.sp[0]?.key || null);
+        } else {
+          setSelectedTarget(initialGroupId);
+          setSelectedAssetKey(null);
+        }
         setDocTransform({ ...DEFAULT_TRANSFORM });
         setLayerTransforms({});
         setLayerKeyframes({});
@@ -4928,51 +4934,173 @@ export default function SvgaAeEditor({
   );
 
   /**
-   * Converts an existing uploaded AddedLayer directly into a Same-Layer Color-Clone Shine Layer (System 2),
-   * keeping its exact user-modified colors and placement while enabling sweep/pulse shine masking!
+   * Core feature for ANY layer (original SVGA `sprite_*` layer inside the main `.svga` file OR uploaded `layer_*`):
+   * Automatically duplicates the selected layer into a second layer directly above the original layer,
+   * applies the Same-Layer Shine + Soft Feather (الفيذر / الفيزا) effect onto the new copy,
+   * and opens the Shine Studio panel so the user can immediately tune feathering, colors, and motion.
+   * Also supports `{ inPlace: true }` for converting an already-uploaded layer directly without duplicating.
    */
   const handleConvertAddedLayerToColorCloneShine = useCallback(
-    (layerId: string) => {
-      const targetLayer = addedLayers.find((l) => l.id === layerId);
-      if (!targetLayer) return;
-
-      // Find an underlying base layer if available, or use the layer itself
-      const idxInOrder = effectiveLayerOrder.indexOf(layerId);
-      let baseTargetId = layerId;
-      if (idxInOrder > 0) {
-        const belowId = effectiveLayerOrder[idxInOrder - 1];
-        if (belowId) baseTargetId = belowId;
+    async (
+      preferredLayerId?: string,
+      options?: { inPlace?: boolean }
+    ): Promise<string | undefined> => {
+      let resolvedTargetId = preferredLayerId || selectedTarget;
+      const selectedAdded = addedLayers.find((l) => l.id === resolvedTargetId);
+      if (selectedAdded?.shineConfig?.enabled) {
+        resolvedTargetId = selectedAdded.shineConfig.targetLayerId || resolvedTargetId;
+      }
+      if (
+        !resolvedTargetId ||
+        resolvedTargetId === 'DOCUMENT' ||
+        resolvedTargetId.startsWith('merged_group_')
+      ) {
+        const nonShineAdded = [...addedLayers]
+          .reverse()
+          .find((l) => !l.shineConfig?.enabled && !hiddenLayerIds.has(l.id));
+        if (nonShineAdded) {
+          resolvedTargetId = nonShineAdded.id;
+        } else if (spriteLayers.length > 0) {
+          resolvedTargetId = spriteLayers[0].id;
+        } else {
+          return undefined;
+        }
       }
 
-      const { contours, bounds } = traceContoursFromLayerTarget(layerId, true, 28);
+      if (options?.inPlace) {
+        const targetLayer = addedLayers.find((l) => l.id === resolvedTargetId);
+        if (targetLayer) {
+          const idxInOrder = effectiveLayerOrder.indexOf(resolvedTargetId);
+          let baseTargetId = resolvedTargetId;
+          if (idxInOrder > 0) {
+            const belowId = effectiveLayerOrder[idxInOrder - 1];
+            if (belowId) baseTargetId = belowId;
+          }
+
+          const { contours, bounds } = traceContoursFromLayerTarget(resolvedTargetId, true, 28);
+          const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
+          const originalCustomPreset =
+            CLONE_COLOR_PRESETS.find((p) => p.id === 'original_custom')?.adjustments ||
+            DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+
+          const shineConfig: ShineLayerConfig = {
+            enabled: true,
+            shineSystemMode: 'layer_color_clone',
+            cloneAnimStyle: 'sweep_reveal',
+            colorAdjustments: { ...originalCustomPreset },
+            targetLayerId: baseTargetId,
+            followTargetLayerTransform: false,
+            exactLayerAlphaMask: true,
+            metallicSurfaceRelief: false,
+            edgeFeather: 8,
+            shineOpacity: 100,
+            blendMode: 'source-over',
+            maskMode: 'auto_layer_contour',
+            maskContours: contours,
+            motionPoints: fullSweep.motionPoints,
+            presetId: 'custom_image',
+            colorPrimary: '#fbbf24',
+            colorSecondary: '#ffffff',
+            beamAngleDeg: fullSweep.beamAngleDeg,
+            beamWidthRatio: 0.28,
+            beamSoftness: 0.92,
+            shineWidth: targetLayer.width,
+            shineHeight: targetLayer.height,
+            startFrame: 0,
+            endFrame: Math.max(1, totalFrames - 1),
+            loopCount: 1,
+            pauseFrames: 0,
+            referenceFrame: currentFrame,
+          };
+
+          setAddedLayers((prev) =>
+            prev.map((l) =>
+              l.id === resolvedTargetId
+                ? {
+                    ...l,
+                    name: l.name.startsWith('🎨') ? l.name : `🎨 لمعة: ${l.name}`,
+                    cloneBaseBitmap: l.cloneBaseBitmap || l.originalBitmap || l.bitmap,
+                    shineConfig,
+                  }
+                : l
+            )
+          );
+          setSelectedTarget(resolvedTargetId);
+          setSelectedAssetKey(null);
+          setShineEditSubmode('motion_points');
+          setActiveTool('Shine');
+          setLastAction(
+            `🎨 تم تحويل الطبقة (${targetLayer.name}) مباشرة إلى طبقة لامعة مع تفعيل الفيذر الناعم`
+          );
+          return resolvedTargetId;
+        }
+      }
+
+      const { contours, bounds } = traceContoursFromLayerTarget(resolvedTargetId, true, 28);
       const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
-      const originalCustomPreset =
-        CLONE_COLOR_PRESETS.find((p) => p.id === 'original_custom')?.adjustments ||
-        DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+      const srcInfo = extractSourceLayerCloneInfo(resolvedTargetId);
+
+      const seqNum = addedLayers.filter((l) => l.shineConfig?.enabled).length + 1;
+      const id = `layer_shine_${Date.now()}_${seqNum}`;
+      const adjustments: CloneLayerColorAdjustments = {
+        ...DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+      };
+
+      let rendered: {
+        bitmap: ImageBitmap;
+        pngBytes: Uint8Array;
+        dataUrl: string;
+        width: number;
+        height: number;
+      };
+
+      if (srcInfo.sourceBitmap) {
+        rendered = await renderColorAdjustedLayerBitmapAndBytes({
+          sourceBitmap: srcInfo.sourceBitmap,
+          width: srcInfo.width,
+          height: srcInfo.height,
+          adjustments,
+        });
+      } else {
+        rendered = await renderProceduralShineBitmapAndBytes({
+          presetId: 'royal_gold',
+          width: fullSweep.shineWidth,
+          height: fullSweep.shineHeight,
+          colorPrimary: '#fbbf24',
+          colorSecondary: '#ffffff',
+          beamAngleDeg: fullSweep.beamAngleDeg,
+          beamWidthRatio: 0.28,
+          beamSoftness: 0.92,
+        });
+      }
+
+      const assetKey = `shine_clone_${seqNum}`;
+      const cleanLabel = (srcInfo.label || bounds.label || 'Layer').slice(0, 18);
+      const name = `🌟 نسخة لامعة + فيذر ${seqNum} (${cleanLabel})`;
 
       const shineConfig: ShineLayerConfig = {
         enabled: true,
         shineSystemMode: 'layer_color_clone',
         cloneAnimStyle: 'sweep_reveal',
-        colorAdjustments: { ...originalCustomPreset },
-        targetLayerId: baseTargetId,
-        followTargetLayerTransform: false,
+        colorAdjustments: adjustments,
+        targetLayerId: resolvedTargetId,
+        followTargetLayerTransform: true,
         exactLayerAlphaMask: true,
         metallicSurfaceRelief: false,
-        edgeFeather: 3,
+        edgeFeather: 8,
         shineOpacity: 100,
         blendMode: 'source-over',
         maskMode: 'auto_layer_contour',
         maskContours: contours,
         motionPoints: fullSweep.motionPoints,
-        presetId: 'custom_image',
+        presetId: 'royal_gold',
         colorPrimary: '#fbbf24',
         colorSecondary: '#ffffff',
         beamAngleDeg: fullSweep.beamAngleDeg,
-        beamWidthRatio: 0.24,
-        beamSoftness: 0.85,
-        shineWidth: targetLayer.width,
-        shineHeight: targetLayer.height,
+        beamWidthRatio: 0.28,
+        beamSoftness: 0.92,
+        shineWidth: rendered.width,
+        shineHeight: rendered.height,
         startFrame: 0,
         endFrame: Math.max(1, totalFrames - 1),
         loopCount: 1,
@@ -4980,27 +5108,91 @@ export default function SvgaAeEditor({
         referenceFrame: currentFrame,
       };
 
-      setAddedLayers((prev) =>
-        prev.map((l) =>
-          l.id === layerId
-            ? {
-                ...l,
-                name: l.name.startsWith('🎨') ? l.name : `🎨 لمعة: ${l.name}`,
-                cloneBaseBitmap: l.cloneBaseBitmap || l.originalBitmap || l.bitmap,
-                shineConfig,
-              }
-            : l
-        )
-      );
-      setSelectedTarget(layerId);
+      const newShineLayer: AddedLayer = {
+        id,
+        assetKey,
+        name,
+        bitmap: rendered.bitmap,
+        originalBitmap: rendered.bitmap,
+        cloneBaseBitmap: srcInfo.sourceBitmap || rendered.bitmap,
+        originalWidth: rendered.width,
+        originalHeight: rendered.height,
+        pngBytes: rendered.pngBytes,
+        dataUrl: rendered.dataUrl,
+        width: rendered.width,
+        height: rendered.height,
+        bytes: rendered.pngBytes.byteLength,
+        transform: {
+          ...srcInfo.transform,
+          opacity: 100,
+        },
+        inFrame: 0,
+        outFrame: totalFrames - 1,
+        copiedFrames: srcInfo.copiedFrames,
+        copiedFromKey: srcInfo.copiedFromKey,
+        copiedFromDisplayNum: srcInfo.copiedFromDisplayNum,
+        shineConfig,
+      };
+
+      const targetIdxInOrder = effectiveLayerOrder.indexOf(resolvedTargetId);
+      const nextLayerOrder = [...effectiveLayerOrder];
+      if (targetIdxInOrder !== -1) {
+        nextLayerOrder.splice(targetIdxInOrder + 1, 0, id);
+      } else {
+        nextLayerOrder.push(id);
+      }
+      setLayerOrder(nextLayerOrder);
+
+      let nextAdded: AddedLayer[];
+      const targetInAddedIdx = addedLayers.findIndex((l) => l.id === resolvedTargetId);
+      if (targetInAddedIdx !== -1) {
+        nextAdded = [...addedLayers];
+        nextAdded.splice(targetInAddedIdx + 1, 0, newShineLayer);
+      } else {
+        nextAdded = [...addedLayers, newShineLayer];
+      }
+
+      const nextKfs = {
+        ...layerKeyframes,
+        ...(srcInfo.keyframes ? { [id]: srcInfo.keyframes } : {}),
+      };
+      setAddedLayers(nextAdded);
+      setLayerKeyframes(nextKfs);
+      setExpandedTimelineLayerIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      setSelectedTarget(id);
       setSelectedAssetKey(null);
       setShineEditSubmode('motion_points');
       setActiveTool('Shine');
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+        layerKeyframes: nextKfs,
+        layerOrder: nextLayerOrder,
+      });
       setLastAction(
-        `🎨 تم تحويل الطبقة (${targetLayer.name}) إلى طبقة لامعة ملونة (لمعة ٢) مع الحفاظ على ألوانها وموضعها 100%`
+        `🌟 تم نسخ الطبقة (${cleanLabel}) تلقائياً وإضافة طبقة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)`
       );
+      return id;
     },
-    [addedLayers, effectiveLayerOrder, traceContoursFromLayerTarget, totalFrames, currentFrame]
+    [
+      selectedTarget,
+      addedLayers,
+      hiddenLayerIds,
+      spriteLayers,
+      effectiveLayerOrder,
+      traceContoursFromLayerTarget,
+      extractSourceLayerCloneInfo,
+      totalFrames,
+      currentFrame,
+      layerKeyframes,
+      pushHistory,
+      docTransform,
+      layerTransforms,
+      deletedSpriteIndices,
+    ]
   );
 
   /**
@@ -7362,9 +7554,18 @@ export default function SvgaAeEditor({
     });
   };
 
+  const effectiveSelectedAssetKey = useMemo(() => {
+    if (selectedTarget.startsWith('sprite_')) {
+      const sIdx = Number(selectedTarget.replace('sprite_', ''));
+      const spKey = movie.sp[sIdx]?.key;
+      if (spKey) return spKey;
+    }
+    return selectedAssetKey;
+  }, [selectedTarget, movie.sp, selectedAssetKey]);
+
   const selectedAssetStat = useMemo(
-    () => assetStats.assets.find((a) => a.key === selectedAssetKey) || null,
-    [assetStats.assets, selectedAssetKey]
+    () => assetStats.assets.find((a) => a.key === effectiveSelectedAssetKey) || null,
+    [assetStats.assets, effectiveSelectedAssetKey]
   );
 
   const selectedAddedLayer = useMemo(
@@ -7749,7 +7950,7 @@ export default function SvgaAeEditor({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            gap: '5px',
             flexShrink: 0,
             whiteSpace: 'nowrap',
           }}
@@ -7768,7 +7969,7 @@ export default function SvgaAeEditor({
               title="رجوع للخلف / تراجع (Undo — Ctrl+Z أو كليك يمين بالماوس)"
               onClick={handleUndo}
               style={{
-                padding: '0 8px',
+                padding: '0 7px',
                 height: '28px',
                 border: 0,
                 borderRight: '1px solid #232332',
@@ -7776,12 +7977,12 @@ export default function SvgaAeEditor({
                 color: historyIdx > 0 ? '#e8e8ee' : '#555566',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                gap: '3px',
                 fontSize: '11px',
                 cursor: 'pointer',
               }}
             >
-              <Undo2 size={13} />
+              <Undo2 size={12} />
               <span>رجوع</span>
             </button>
             <button
@@ -7789,19 +7990,19 @@ export default function SvgaAeEditor({
               title="تقدم للأمام / إعادة (Redo — Ctrl+Y)"
               onClick={handleRedo}
               style={{
-                padding: '0 8px',
+                padding: '0 7px',
                 height: '28px',
                 border: 0,
                 background: 'transparent',
                 color: historyIdx + 1 < history.length ? '#e8e8ee' : '#555566',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                gap: '3px',
                 fontSize: '11px',
                 cursor: 'pointer',
               }}
             >
-              <Redo2 size={13} />
+              <Redo2 size={12} />
               <span>إعادة</span>
             </button>
           </div>
@@ -7822,7 +8023,7 @@ export default function SvgaAeEditor({
               id="edOpenSvga"
               onClick={() => openSvgaInputRef.current?.click()}
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -7830,12 +8031,12 @@ export default function SvgaAeEditor({
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
-                fontSize: '12px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <FolderOpen size={13} color="#a0a0b4" />
+              <FolderOpen size={12} color="#a0a0b4" />
               <span>Open SVGA</span>
             </button>
             <button
@@ -7843,7 +8044,7 @@ export default function SvgaAeEditor({
               id="edAddImageLayer"
               onClick={() => addLayerInputRef.current?.click()}
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -7851,13 +8052,13 @@ export default function SvgaAeEditor({
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
-                fontSize: '12px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <ImagePlus size={13} color="#a0a0b4" />
-              <span>Add image layer</span>
+              <ImagePlus size={12} color="#a0a0b4" />
+              <span>Add image</span>
             </button>
             <button
               type="button"
@@ -7869,7 +8070,7 @@ export default function SvgaAeEditor({
               }}
               title="تحديد مقاسات مشروع العمل أو استدعاء صورة وتعديل مقاسات المشروع تلقائياً على مقاساتها الأصلية"
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
                 border: '1px solid rgba(167, 139, 250, 0.45)',
                 background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.22), rgba(99, 102, 241, 0.14))',
@@ -7878,21 +8079,21 @@ export default function SvgaAeEditor({
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '5px',
-                fontSize: '11.5px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <Scaling size={13} color="#c084fc" />
-              <span>📐 مقاسات المشروع والصورة</span>
+              <Scaling size={12} color="#c084fc" />
+              <span>📐 مقاسات المشروع</span>
             </button>
             <button
               type="button"
               id="edAddShineLayerBtn"
-              onClick={() => handleCreateShineLayer( undefined, 'beam_sweep')}
+              onClick={() => handleCreateShineLayer(undefined, 'beam_sweep')}
               title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
                 border: '1px solid rgba(167, 139, 250, 0.45)',
                 background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(99, 102, 241, 0.16))',
@@ -7901,43 +8102,43 @@ export default function SvgaAeEditor({
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '5px',
-                fontSize: '11.5px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <Sparkles size={13} color="#c084fc" />
-              <span>✨ إضافة لمعة (Shine)</span>
+              <Sparkles size={12} color="#c084fc" />
+              <span>✨ إضافة لمعة</span>
             </button>
             <button
               type="button"
               id="edAddCloneColorShineBtn"
-              onClick={() => handleCreateShineLayer(undefined, 'layer_color_clone')}
-              title="إضافة لمعة ثانية من نفس الطبقة الأساسية بألوان متغيرة قابلة للتحديد والتحكم"
+              onClick={() => handleConvertAddedLayerToColorCloneShine(selectedTarget)}
+              title="نسخ الطبقة المحددة تلقائياً (سواء من ملف SVGA الأساسي أو المرفوعة) وإضافة نسخة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)"
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
-                border: '1px solid rgba(167, 139, 250, 0.45)',
-                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(99, 102, 241, 0.16))',
+                border: '1px solid rgba(167, 139, 250, 0.5)',
+                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
                 color: '#f3e8ff',
                 fontWeight: 700,
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '5px',
-                fontSize: '11.5px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <Palette size={13} color="#c084fc" />
-              <span>🎨 لمعة ٢ (نفس الطبقة ملونة)</span>
+              <Palette size={12} color="#c084fc" />
+              <span>🎨 نسخ الطبقة + لمعة وفيذر</span>
             </button>
             <button
               type="button"
               id="edMergeSvga"
               onClick={() => mergeSvgaInputRef.current?.click()}
               style={{
-                padding: '5px 10px',
+                padding: '4px 8px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -7945,12 +8146,12 @@ export default function SvgaAeEditor({
                 cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
-                fontSize: '12px',
+                gap: '4px',
+                fontSize: '11px',
                 whiteSpace: 'nowrap',
               }}
             >
-              <Upload size={13} color="#a0a0b4" />
+              <Upload size={12} color="#a0a0b4" />
               <span>Merge SVGA</span>
             </button>
           </div>
@@ -7960,7 +8161,7 @@ export default function SvgaAeEditor({
             id="edSyncMotionTools"
             onClick={handleSyncToMotionTools}
             style={{
-              padding: '6px 12px',
+              padding: '5px 9px',
               borderRadius: '8px',
               border: '1px solid #242434',
               background: '#12121a',
@@ -7968,13 +8169,13 @@ export default function SvgaAeEditor({
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '6px',
-              fontSize: '12px',
+              gap: '5px',
+              fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
           >
-            <ArrowLeftRight size={13} color="#a0a0b4" />
-            <span>Sync to Motion Tools</span>
+            <ArrowLeftRight size={12} color="#a0a0b4" />
+            <span>Sync</span>
           </button>
 
           <button
@@ -7983,21 +8184,21 @@ export default function SvgaAeEditor({
             onClick={handleExportPag}
             title="تصدير المشروع وجميع الطبقات بصيغة PAG (.pag)"
             style={{
-              padding: '6px 12px',
+              padding: '5px 10px',
               borderRadius: '8px',
-              border: '1px solid rgba(16, 185, 129, 0.55)',
-              background: 'linear-gradient(135deg, #059669, #10b981)',
-              color: '#ffffff',
+              border: '1px solid rgba(167, 139, 250, 0.55)',
+              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(99, 102, 241, 0.25))',
+              color: '#f3e8ff',
               fontWeight: 700,
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '6px',
-              fontSize: '12px',
+              gap: '5px',
+              fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
           >
-            <Download size={13} />
+            <Download size={12} color="#c084fc" />
             <span>Export PAG</span>
           </button>
 
@@ -8006,21 +8207,21 @@ export default function SvgaAeEditor({
             id="edExportSvga"
             onClick={handleExportSvga}
             style={{
-              padding: '6px 14px',
+              padding: '5px 11px',
               borderRadius: '8px',
               border: '1px solid #7c5cff',
               background: '#7c5cff',
               color: '#ffffff',
-              fontWeight: 600,
+              fontWeight: 700,
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '6px',
-              fontSize: '12px',
+              gap: '5px',
+              fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
           >
-            <Download size={13} />
+            <Download size={12} />
             <span>Export SVGA</span>
           </button>
         </div>
@@ -9261,15 +9462,16 @@ export default function SvgaAeEditor({
                                 </button>
                                 <button
                                   type="button"
+                                  className="btn-make-shine-added"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleConvertAddedLayerToColorCloneShine(al.id);
                                   }}
-                                  title="تحويل هذه الطبقة نفسها إلى طبقة لامعة (إذا كنت قد عدلت ألوانها ورفعتها)"
+                                  title="نسخ هذه الطبقة تلقائياً وإضافة طبقة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)"
                                   style={{
-                                    background: 'rgba(124, 92, 255, 0.16)',
-                                    border: '1px solid rgba(167, 139, 250, 0.45)',
-                                    color: '#e9d5ff',
+                                    background: 'rgba(124, 92, 255, 0.2)',
+                                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                                    color: '#f3e8ff',
                                     borderRadius: '6px',
                                     padding: '4px 7px',
                                     fontSize: '10px',
@@ -9719,6 +9921,32 @@ export default function SvgaAeEditor({
                           >
                             <Palette size={11} color="#c084fc" />
                             <span>لمعة ٢ ملونة</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-make-shine-sprite"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleConvertAddedLayerToColorCloneShine(sl.id);
+                            }}
+                            title="نسخ هذه الطبقة الأساسية تلقائياً وإضافة طبقة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)"
+                            style={{
+                              background: 'rgba(124, 92, 255, 0.2)',
+                              border: '1px solid rgba(167, 139, 250, 0.5)',
+                              color: '#f3e8ff',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '10.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <Sparkles size={11} color="#c084fc" />
+                            <span>جعلها لامعة</span>
                           </button>
                           <button
                             type="button"
@@ -10663,7 +10891,8 @@ export default function SvgaAeEditor({
           }}
         >
           {selectedTarget === 'GROUP_ALL' ||
-          (selectedAssetKey && selectedAssetStat) ||
+          selectedTarget.startsWith('sprite_') ||
+          (effectiveSelectedAssetKey && selectedAssetStat) ||
           selectedAddedLayer ||
           selectedShapeLayer ? (
             <>
@@ -11076,30 +11305,60 @@ export default function SvgaAeEditor({
                             <span>🎨 إضافة لمعة (٢): نفس الطبقة بألوان متغيرة</span>
                           </button>
 
+                          <button
+                            type="button"
+                            id="edInspectorConvertLayerToCloneShineBtn"
+                            onClick={() => handleConvertAddedLayerToColorCloneShine(selectedTarget)}
+                            title="نسخ الطبقة المحددة تلقائياً (سواء من ملف الـ SVGA الأساسي أو المرفوعة) وإضافة نسخة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)"
+                            style={{
+                              width: '100%',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(167, 139, 250, 0.65)',
+                              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(99, 102, 241, 0.2))',
+                              color: '#f3e8ff',
+                              fontWeight: 800,
+                              fontSize: '10.5px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                              boxShadow: '0 2px 10px rgba(124, 92, 255, 0.18)',
+                            }}
+                          >
+                            <Sparkles size={13} color="#c084fc" />
+                            <span>🌟 نسخ الطبقة تلقائياً وإضافة تأثير اللمعة والفيذر عليها</span>
+                          </button>
+
                           {selectedAddedLayer && (
                             <button
                               type="button"
-                              id="edInspectorConvertLayerToCloneShineBtn"
-                              onClick={() => handleConvertAddedLayerToColorCloneShine(selectedAddedLayer.id)}
-                              title="تحويل هذه الطبقة المرفوعة نفسها إلى طبقة لامعة (إذا كنت قد غيرت ألوانها ورفعتها)"
+                              id="edInspectorConvertLayerInPlaceBtn"
+                              onClick={() =>
+                                handleConvertAddedLayerToColorCloneShine(selectedAddedLayer.id, {
+                                  inPlace: true,
+                                })
+                              }
+                              title="تحويل هذه الطبقة المرفوعة نفسها مباشرة إلى طبقة لامعة (بدون إنشاء نسخة إضافية)"
                               style={{
                                 width: '100%',
-                                padding: '7px 10px',
-                                borderRadius: '8px',
-                                border: '1px solid rgba(167, 139, 250, 0.55)',
-                                background: 'rgba(124, 92, 255, 0.18)',
+                                padding: '6px 9px',
+                                borderRadius: '7px',
+                                border: '1px solid rgba(167, 139, 250, 0.45)',
+                                background: 'rgba(124, 92, 255, 0.15)',
                                 color: '#e9d5ff',
-                                fontWeight: 800,
-                                fontSize: '10.5px',
+                                fontWeight: 700,
+                                fontSize: '10px',
                                 cursor: 'pointer',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                gap: '6px',
+                                gap: '5px',
                               }}
                             >
-                              <Sparkles size={12} color="#c084fc" />
-                              <span>🌟 تحويل هذه الطبقة المحددة نفسها إلى طبقة لامعة</span>
+                              <Sparkles size={11} color="#c084fc" />
+                              <span>تحويل هذه الطبقة المرفوعة نفسها مباشرة (بدون نسخ)</span>
                             </button>
                           )}
 
@@ -11609,9 +11868,9 @@ export default function SvgaAeEditor({
                             width: '100%',
                             padding: '5px 8px',
                             borderRadius: '6px',
-                            border: '1px solid rgba(16, 185, 129, 0.45)',
-                            background: 'rgba(16, 185, 129, 0.14)',
-                            color: '#6ee7b7',
+                            border: '1px solid rgba(167, 139, 250, 0.5)',
+                            background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.24), rgba(99, 102, 241, 0.16))',
+                            color: '#f3e8ff',
                             fontSize: '10.5px',
                             fontWeight: 700,
                             cursor: 'pointer',
@@ -11621,7 +11880,7 @@ export default function SvgaAeEditor({
                             gap: '5px',
                           }}
                         >
-                          <Check size={12} />
+                          <Check size={12} color="#c084fc" />
                           <span>
                             📌 تثبيت المقاسات والأبعاد الحالية ({curPixelW}×{curPixelH}px)
                           </span>

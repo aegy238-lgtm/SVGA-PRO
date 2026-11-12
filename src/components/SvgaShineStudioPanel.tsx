@@ -298,6 +298,111 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
         </div>
       </div>
 
+      {/* Soft Feathered Edge Transparency Control (التحكم المباشر في الفيذر / الفيزا وشفافية حواف اللمعة في العرض والتصدير SVGA) */}
+      <div
+        id="edCloneEdgeFeatherControlBox"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.2), rgba(99, 102, 241, 0.12))',
+          border: '1px solid rgba(167, 139, 250, 0.5)',
+          borderRadius: '8px',
+          padding: '8px 9px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+          <span style={{ fontSize: '10px', fontWeight: 800, color: '#f3e8ff' }}>
+            🪶 التحكم في الفيذر (Feather) وشفافية حواف اللمعة:
+          </span>
+          <span
+            style={{
+              fontSize: '9.5px',
+              fontWeight: 800,
+              color: '#f3e8ff',
+              background: 'rgba(124, 92, 255, 0.28)',
+              border: '1px solid rgba(167, 139, 250, 0.5)',
+              padding: '1px 6px',
+              borderRadius: '4px',
+            }}
+          >
+            {Math.round((config.beamSoftness ?? 0.92) * 100)}% ({config.edgeFeather ?? 8}px)
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+          {[
+            { id: 'edCloneFeatherUltraSoftBtn', label: '☁️ فائقة 100%', soft: 1.0, feather: 10 },
+            { id: 'edCloneFeatherSmoothBtn', label: '✨ ناعمة 88%', soft: 0.88, feather: 7 },
+            { id: 'edCloneFeatherMediumBtn', label: '💎 متوسطة 55%', soft: 0.55, feather: 4 },
+            { id: 'edCloneFeatherSharpBtn', label: '⚡ محددة 20%', soft: 0.2, feather: 1.5 },
+          ].map((preset) => {
+            const curSoft = config.beamSoftness ?? 0.92;
+            const isActive = Math.abs(curSoft - preset.soft) < 0.08;
+            return (
+              <button
+                key={preset.id}
+                id={preset.id}
+                type="button"
+                onClick={() =>
+                  onUpdateConfig(
+                    {
+                      beamSoftness: preset.soft,
+                      edgeFeather: preset.feather,
+                    },
+                    {
+                      regenerateBitmap: !isColorClone,
+                      actionLabel: `🪶 ضبط الفيذر وشفافية حواف اللمعة (${Math.round(preset.soft * 100)}%) — مطابق في العرض وتصدير SVGA`,
+                    }
+                  )
+                }
+                style={{
+                  padding: '5px 4px',
+                  borderRadius: '6px',
+                  border: isActive
+                    ? '1.5px solid #a78bfa'
+                    : '1px solid rgba(124, 92, 255, 0.28)',
+                  background: isActive
+                    ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(99, 102, 241, 0.24))'
+                    : '#151522',
+                  color: isActive ? '#f3e8ff' : '#cbd5e1',
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  textAlign: 'center',
+                }}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <input
+          type="range"
+          id="edCloneEdgeSoftnessRange"
+          min="5"
+          max="100"
+          step="1"
+          aria-label="درجة الفيذر وشفافية حواف اللمعة"
+          value={Math.max(5, Math.min(100, Math.round((config.beamSoftness ?? 0.92) * 100)))}
+          onChange={(e) => {
+            const pct = Number(e.target.value);
+            onUpdateConfig(
+              {
+                beamSoftness: pct / 100,
+                edgeFeather: Math.max(1, Math.round((pct / 100) * 10)),
+              },
+              {
+                regenerateBitmap: !isColorClone,
+                actionLabel: `🪶 ضبط الفيذر وتلاشي حواف اللمعة (${pct}%) في العرض والتصدير`,
+              }
+            );
+          }}
+          style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer', height: '4px' }}
+        />
+      </div>
+
       {/* 1. Target Layer Selection (استدعاء الطبقة المستهدفة) */}
       <div
         style={{
@@ -480,49 +585,58 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           <span>👑 عزل ذكي للمعادن والذهب (لمعة SVGA أصلية بدون تغبيش الخلفية الداكنة)</span>
         </label>
 
-        {/* Automatic Soft Edge Feather Control (تنعيم وتلاشي حواف القص التلقائي) */}
+        {/* Automatic Soft Edge Feather Control (تنعيم وتلاشي حواف القص التلقائي — الفيذر / Feather) */}
         <div
           style={{
             display: 'flex',
             flexDirection: 'column',
             gap: '4px',
-            background: 'rgba(124, 92, 255, 0.09)',
-            border: '1px solid rgba(124, 92, 255, 0.3)',
+            background: 'rgba(124, 92, 255, 0.14)',
+            border: '1px solid rgba(167, 139, 250, 0.4)',
             borderRadius: '6px',
-            padding: '5px 7px',
+            padding: '6px 8px',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#e9d5ff' }}>
-              🪶 نعومة وتلاشي حواف القص التلقائي (بدون حواف حادة):
+            <span style={{ fontSize: '9.5px', fontWeight: 800, color: '#f3e8ff' }}>
+              🪶 تدريج الفيذر ونعومة الحواف (Feather — بدون حواف حادة):
             </span>
             <span
               style={{
                 fontSize: '9.5px',
                 fontWeight: 800,
-                color: '#c084fc',
-                background: 'rgba(124, 92, 255, 0.2)',
+                color: '#f3e8ff',
+                background: 'rgba(124, 92, 255, 0.28)',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
                 padding: '1px 6px',
                 borderRadius: '4px',
               }}
             >
-              {config.edgeFeather ?? 5}px
+              {config.edgeFeather ?? 8}px ({Math.round((config.beamSoftness ?? 0.92) * 100)}%)
             </span>
           </div>
           <input
             type="range"
             id="edShineEdgeFeatherRange"
-            aria-label="نعومة وتلاشي حواف القص التلقائي"
+            aria-label="تدريج الفيذر ونعومة حواف اللمعة"
             min={0}
             max={16}
             step={0.5}
-            value={config.edgeFeather ?? 5}
-            onChange={(e) =>
+            value={config.edgeFeather ?? 8}
+            onChange={(e) => {
+              const featherVal = Number(e.target.value);
+              const softVal = Math.max(0.05, Math.min(1, Number((featherVal / 10).toFixed(2))));
               onUpdateConfig(
-                { edgeFeather: Number(e.target.value) },
-                { actionLabel: `ضبط نعومة وتلاشي حواف قص اللمعة (${e.target.value}px)` }
-              )
-            }
+                {
+                  edgeFeather: featherVal,
+                  beamSoftness: softVal,
+                },
+                {
+                  regenerateBitmap: !isColorClone,
+                  actionLabel: `🪶 ضبط تدريج الفيذر ونعومة حواف اللمعة (${featherVal}px / ${Math.round(softVal * 100)}%)`,
+                }
+              );
+            }}
             style={{ width: '100%', accentColor: '#7c5cff', height: '4px', cursor: 'pointer' }}
           />
         </div>
@@ -1709,114 +1823,6 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
         </div>
       </div>
       )}
-
-      {/* Soft Feathered Edge Transparency Control (شفافية وتنعيم حواف اللمعة لمنع الحواف الحادة في العرض والتصدير SVGA — متاح في كلا نظامي اللمعة وبنفس لون الموقع) */}
-      <div
-        id="edCloneEdgeFeatherControlBox"
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '6px',
-          background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(99, 102, 241, 0.1))',
-          border: '1px solid rgba(167, 139, 250, 0.45)',
-          borderRadius: '8px',
-          padding: '8px 9px',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
-          <span style={{ fontSize: '10px', fontWeight: 800, color: '#f3e8ff' }}>
-            🪶 شفافية وتنعيم حواف اللمعة (تصدير SVGA مطابق بدون حواف حادة):
-          </span>
-          <span
-            style={{
-              fontSize: '9.5px',
-              fontWeight: 800,
-              color: '#f3e8ff',
-              background: 'rgba(124, 92, 255, 0.28)',
-              border: '1px solid rgba(167, 139, 250, 0.5)',
-              padding: '1px 6px',
-              borderRadius: '4px',
-            }}
-          >
-            {Math.round((config.beamSoftness ?? 0.92) * 100)}%
-          </span>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
-          {[
-            { id: 'edCloneFeatherUltraSoftBtn', label: '☁️ فائقة 100%', soft: 1.0, feather: 10 },
-            { id: 'edCloneFeatherSmoothBtn', label: '✨ ناعمة 88%', soft: 0.88, feather: 7 },
-            { id: 'edCloneFeatherMediumBtn', label: '💎 متوسطة 55%', soft: 0.55, feather: 4 },
-            { id: 'edCloneFeatherSharpBtn', label: '⚡ محددة 20%', soft: 0.2, feather: 1.5 },
-          ].map((preset) => {
-            const curSoft = config.beamSoftness ?? 0.92;
-            const isActive = Math.abs(curSoft - preset.soft) < 0.08;
-            return (
-              <button
-                key={preset.id}
-                id={preset.id}
-                type="button"
-                onClick={() =>
-                  onUpdateConfig(
-                    {
-                      beamSoftness: preset.soft,
-                      edgeFeather: preset.feather,
-                    },
-                    {
-                      regenerateBitmap: !isColorClone,
-                      actionLabel: `🪶 ضبط شفافية وتنعيم حواف اللمعة (${Math.round(preset.soft * 100)}%) — مطابق في العرض وتصدير SVGA`,
-                    }
-                  )
-                }
-                style={{
-                  padding: '5px 4px',
-                  borderRadius: '6px',
-                  border: isActive
-                    ? '1.5px solid #a78bfa'
-                    : '1px solid rgba(124, 92, 255, 0.28)',
-                  background: isActive
-                    ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(99, 102, 241, 0.24))'
-                    : '#151522',
-                  color: isActive ? '#f3e8ff' : '#cbd5e1',
-                  fontSize: '9px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  textAlign: 'center',
-                }}
-              >
-                {preset.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <input
-          type="range"
-          id="edCloneEdgeSoftnessRange"
-          min="5"
-          max="100"
-          step="1"
-          aria-label="درجة شفافية وتنعيم حواف اللمعة"
-          value={Math.max(5, Math.min(100, Math.round((config.beamSoftness ?? 0.92) * 100)))}
-          onChange={(e) => {
-            const pct = Number(e.target.value);
-            onUpdateConfig(
-              {
-                beamSoftness: pct / 100,
-                edgeFeather: Math.max(1, Math.round((pct / 100) * 10)),
-              },
-              {
-                regenerateBitmap: !isColorClone,
-                actionLabel: `🪶 ضبط شفافية وتلاشي حواف اللمعة (${pct}%) في العرض والتصدير`,
-              }
-            );
-          }}
-          style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer', height: '4px' }}
-        />
-        <span style={{ fontSize: '8.5px', color: '#c4b5fd', lineHeight: 1.3 }}>
-          ✅ يتم حفظ وتصدير نفس التدرج الشفاف الناعم للحواف داخل ملف الـ SVGA المصدر تلقائياً.
-        </span>
-      </div>
 
       {/* 4. Shine Sweep Timing & Loops (توقيت وسرعة اللمعة عبر الفريمات) */}
       <div
