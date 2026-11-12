@@ -1930,7 +1930,7 @@ export default function EdgeFeatherModal({
                 </div>
               </div>
 
-              {/* Green Range Slider */}
+              {/* Purple Range Slider */}
               <div style={{ padding: '2px 0 10px' }}>
                 <input
                   type="range"
@@ -1944,8 +1944,8 @@ export default function EdgeFeatherModal({
                     borderRadius: '99px',
                     appearance: 'none',
                     WebkitAppearance: 'none',
-                    background: `linear-gradient(90deg, #10b981 ${sliderPct}%, #272730 ${sliderPct}%)`,
-                    accentColor: '#10b981',
+                    background: `linear-gradient(90deg, #7c5cff ${sliderPct}%, #272730 ${sliderPct}%)`,
+                    accentColor: '#7c5cff',
                     cursor: 'pointer',
                     outline: 'none',
                   }}
@@ -2104,8 +2104,8 @@ export default function EdgeFeatherModal({
                   style={{
                     padding: '9px 20px',
                     borderRadius: '7px',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    border: '1px solid #34d399',
+                    background: 'linear-gradient(135deg, #7c5cff 0%, #4f46e5 100%)',
+                    border: '1px solid #a78bfa',
                     color: '#ffffff',
                     fontSize: '13.5px',
                     fontWeight: 700,
@@ -2113,7 +2113,7 @@ export default function EdgeFeatherModal({
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '7px',
-                    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)',
+                    boxShadow: '0 4px 14px rgba(124, 92, 255, 0.35)',
                     opacity: isBaking ? 0.75 : 1,
                   }}
                 >

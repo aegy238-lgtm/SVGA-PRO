@@ -9,6 +9,13 @@ import {
   buildClippedShineSvgaFrames,
   interpolateMotionPathPoint,
   computeFullLayerShineSweepAndSize,
+  evaluateShineSweepAtFrame,
+  buildSlantedSweepBandPolygon,
+  clipPolygonWithConvexQuad,
+  computeShineBandFeatherAlphaAt,
+  buildFeatheredCloneShineSvgaFramesList,
+  applyColorAdjustmentsToRgbaBytes,
+  DEFAULT_CLONE_COLOR_ADJUSTMENTS,
   ShineLayerConfig,
 } from './svgaShineEngine';
 import {
@@ -456,6 +463,191 @@ test('computeFullLayerShineSweepAndSize: scales shine dimensions and sweep path 
     'Sweep end point must finish past the bottom-right corner of the large layer'
   );
 });
+
+test('System 2 (layer_color_clone): applyColorAdjustmentsToRgbaBytes, polygon clipping, and SVGA 2.0 clipPath export', () => {
+  // 1. Test applyColorAdjustmentsToRgbaBytes (mutates RGBA buffer in-place)
+  const origRgba = new Uint8ClampedArray([
+    160, 110, 40, 255, // warm bronze pixel
+    0, 0, 0, 0,        // transparent pixel
+  ]);
+
+  const adjustedGold = new Uint8ClampedArray(origRgba);
+  applyColorAdjustmentsToRgbaBytes(adjustedGold, DEFAULT_CLONE_COLOR_ADJUSTMENTS);
+  assert.ok(adjustedGold[0] > origRgba[0], 'Bright royal gold preset must increase R luminance');
+  assert.ok(adjustedGold[1] > origRgba[1], 'Bright royal gold preset must increase G luminance');
+  assert.equal(adjustedGold[3], 255, 'Opaque alpha must remain 255');
+  assert.equal(adjustedGold[7], 0, 'Transparent pixel alpha must remain 0');
+
+  // Preset: original_custom with neutral sliders preserves original RGB 100%
+  const preserved = new Uint8ClampedArray(origRgba);
+  applyColorAdjustmentsToRgbaBytes(preserved, {
+    presetId: 'original_custom',
+    hueRotateDeg: 0,
+    brightnessPct: 100,
+    saturationPct: 100,
+    contrastPct: 100,
+    tintColor: '#ffffff',
+    tintStrengthPct: 0,
+  });
+  assert.deepEqual([...preserved], [...origRgba], 'original_custom with neutral sliders must preserve original pixels');
+
+  // 2. Test buildSlantedSweepBandPolygon & clipPolygonWithConvexQuad (halfWidth = 60 -> band 190..310)
+  const bandQuad = buildSlantedSweepBandPolygon(250, 250, 0, 60, 600);
+  assert.equal(bandQuad.length, 4);
+  const maskBox = [
+    { x: 100, y: 100 },
+    { x: 400, y: 100 },
+    { x: 400, y: 400 },
+    { x: 100, y: 400 },
+  ];
+  const clipped = clipPolygonWithConvexQuad(maskBox, bandQuad);
+  assert.equal(clipped.length, 4);
+  for (const pt of clipped) {
+    assert.ok(pt.x >= 189.9 && pt.x <= 310.1, `Clipped X (${pt.x}) must lie inside vertical band 190..310`);
+    assert.ok(pt.y >= 99.9 && pt.y <= 400.1, `Clipped Y (${pt.y}) must lie inside maskBox 100..400`);
+  }
+
+  // 3. Test buildShineKeyframesFromMotionPoints & buildClippedShineSvgaFrames in layer_color_clone mode
+  const cloneConfig: ShineLayerConfig = {
+    enabled: true,
+    shineSystemMode: 'layer_color_clone',
+    cloneAnimStyle: 'sweep_reveal',
+    colorAdjustments: DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+    targetLayerId: 'sprite_0',
+    followTargetLayerTransform: true,
+    maskMode: 'interactive_points',
+    maskContours: [maskBox],
+    motionPoints: [
+      { x: 120, y: 250 },
+      { x: 380, y: 250 },
+    ],
+    presetId: 'royal_gold',
+    colorPrimary: '#fde047',
+    colorSecondary: '#ffffff',
+    beamAngleDeg: 0,
+    beamWidthRatio: 0.3,
+    beamSoftness: 0.75,
+    shineWidth: 300,
+    shineHeight: 300,
+    startFrame: 0,
+    endFrame: 19,
+    loopCount: 1,
+    pauseFrames: 0,
+    referenceFrame: 0,
+  };
+
+  const sweepMid = evaluateShineSweepAtFrame(cloneConfig, 10, 20, 500, 500);
+  assert.equal(sweepMid.active, true);
+  assert.ok(sweepMid.x > 200 && sweepMid.x < 300);
+
+  const cloneKfs = buildShineKeyframesFromMotionPoints(cloneConfig, 20, 500, 500, 100);
+  assert.equal(
+    cloneKfs.position,
+    undefined,
+    'In layer_color_clone mode, the cloned layer stays aligned with the base layer (no position keyframes)'
+  );
+  assert.ok(cloneKfs.opacity, 'Opacity keyframes must be generated for clone shine');
+
+  const cloneSvgaFrames = buildClippedShineSvgaFrames({
+    totalFrames: 20,
+    shineWidth: 300,
+    shineHeight: 300,
+    canvasW: 500,
+    canvasH: 500,
+    inFrame: 0,
+    outFrame: 19,
+    baseTransform: DEFAULT_TRANSFORM,
+    keyframes: cloneKfs,
+    docTransformAtFrame: () => DEFAULT_TRANSFORM,
+    config: cloneConfig,
+  });
+
+  assert.equal(cloneSvgaFrames.length, 20);
+  assert.ok(cloneSvgaFrames[5].clipPath && cloneSvgaFrames[5].clipPath.includes('M '));
+  assert.ok(cloneSvgaFrames[14].clipPath && cloneSvgaFrames[14].clipPath.includes('M '));
+  assert.notEqual(
+    cloneSvgaFrames[5].clipPath,
+    cloneSvgaFrames[14].clipPath,
+    'In sweep_reveal mode, the exported SVGA clipPath must sweep across the stationary color-cloned layer'
+  );
+
+  // 4. Test computeShineBandFeatherAlphaAt & buildFeatheredCloneShineSvgaFramesList (Soft Feathered Edges in SVGA Export)
+  assert.equal(computeShineBandFeatherAlphaAt(0, 0.92), 1);
+  assert.equal(computeShineBandFeatherAlphaAt(1, 0.92), 0);
+  const midFeather = computeShineBandFeatherAlphaAt(0.5, 0.92);
+  assert.ok(midFeather > 0.3 && midFeather < 0.7, `Mid feather alpha (${midFeather}) must smoothly taper`);
+
+  const featheredSlices = buildFeatheredCloneShineSvgaFramesList({
+    totalFrames: 20,
+    shineWidth: 300,
+    shineHeight: 300,
+    canvasW: 500,
+    canvasH: 500,
+    inFrame: 0,
+    outFrame: 19,
+    baseTransform: { ...DEFAULT_TRANSFORM, opacity: 90 },
+    keyframes: { opacity: { 0: 90 } },
+    docTransformAtFrame: () => DEFAULT_TRANSFORM,
+    config: {
+      ...cloneConfig,
+      beamSoftness: 0.92,
+      shineOpacity: 90,
+    },
+  });
+
+  assert.equal(featheredSlices.length, 14, 'High softness (0.92) must generate 14 concentric feathered slices');
+  assert.ok(
+    featheredSlices[0][10].a > 0 && featheredSlices[0][10].a < 0.05,
+    `Outermost slice alpha (${featheredSlices[0][10].a}) must start very transparent (no sharp edge)`
+  );
+
+  // Verify source-over composition of all 14 slices at frame 10 equals exact target opacity (0.90)
+  let compAlpha = 0;
+  for (let s = 0; s < featheredSlices.length; s++) {
+    const a = featheredSlices[s][10].a;
+    compAlpha = compAlpha + a * (1 - compAlpha);
+  }
+  assert.ok(
+    Math.abs(compAlpha - 0.9) < 0.005,
+    `Combined source-over alpha of all 14 slices (${compAlpha}) must equal 0.90`
+  );
+
+  // Verify serializeDecomposedSvga stores the PNG only once in movie.im while emitting all 14 feathered sprites in order
+  const dummyPng = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const protoBytes = serializeDecomposedSvga(
+    {
+      w: 500,
+      h: 500,
+      fps: 20,
+      n: 20,
+      im: {},
+      sp: [],
+    },
+    {
+      layerOrder: ['clone_shine_1'],
+      extraLayers: featheredSlices.map((sliceFrames, sIdx) => ({
+        id: sIdx === 0 ? 'clone_shine_1' : `clone_shine_1__feather_${sIdx}`,
+        parentLayerId: 'clone_shine_1',
+        assetKey: 'shared_clone_asset',
+        name: 'Clone Shine',
+        pngBytes: dummyPng,
+        width: 300,
+        height: 300,
+        transform: { ...DEFAULT_TRANSFORM, opacity: 90 },
+        inFrame: 0,
+        outFrame: 19,
+        copiedFrames: sliceFrames,
+        ignoreLayerOpacity: true,
+      })),
+    }
+  );
+
+  const parsed = parseMovie(protoBytes);
+  assert.equal(Object.keys(parsed.im).length, 1, 'All 14 feathered slices must share a single PNG in movie.im');
+  assert.equal(parsed.sp.length, 14, 'All 14 feathered slices must be emitted into movie.sp');
+  assert.ok(Math.abs(parsed.sp[0].fr[10].a - featheredSlices[0][10].a) < 0.001);
+});
+
 
 
 

@@ -472,7 +472,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
               style={{ width: '16px', height: '16px', accentColor: '#9a7cff', cursor: 'pointer' }}
             />
           </div>
-          <div style={{ fontSize: '10.5px', color: '#a7f3d0', lineHeight: '1.4' }}>
+          <div style={{ fontSize: '10.5px', color: '#c4b5fd', lineHeight: '1.4' }}>
             {isAr
               ? '💡 يمكنك تكبير وتصغير أي طبقة مضافة أو المشروع الأساسي مباشرة عبر عجلة الماوس (Wheel) أو بالضغط على زر Shift أثناء السحب بالماوس!'
               : '💡 Scale any layer up/down directly using mouse wheel scroll or Shift + Drag on preview stage!'}
@@ -569,6 +569,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                   return (
                     <div
                       key={ov.id}
+                      id={`composer_layer_row_${ov.id}`}
                       onClick={() =>
                         onChangeState({
                           ...composerState,
@@ -619,6 +620,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             onChangeState(moveOverlayLayerUp(composerState, ov.id));
+                            setTimeout(() => {
+                              document.getElementById(`composer_layer_row_${ov.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            }, 40);
                           }}
                           style={{
                             padding: '3px 5px',
@@ -638,6 +642,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             onChangeState(moveOverlayLayerDown(composerState, ov.id));
+                            setTimeout(() => {
+                              document.getElementById(`composer_layer_row_${ov.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                            }, 40);
                           }}
                           style={{
                             padding: '3px 5px',
@@ -729,6 +736,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                 return (
                   <div
                     key={item.id}
+                    id={`composer_stack_row_${item.id}`}
                     onClick={() =>
                       onChangeState({
                         ...composerState,
@@ -797,6 +805,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               onChangeState(moveOverlayLayerUp(composerState, item.id));
+                              setTimeout(() => {
+                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              }, 40);
                             }}
                             style={{
                               padding: '3px 6px',
@@ -816,6 +827,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               onChangeState(moveOverlayLayerDown(composerState, item.id));
+                              setTimeout(() => {
+                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              }, 40);
                             }}
                             style={{
                               padding: '3px 6px',
@@ -835,6 +849,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               onChangeState(moveOverlayLayerToTop(composerState, item.id));
+                              setTimeout(() => {
+                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              }, 40);
                             }}
                             style={{
                               padding: '3px 5px',
@@ -855,6 +872,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               onChangeState(moveOverlayLayerToBottom(composerState, item.id));
+                              setTimeout(() => {
+                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                              }, 40);
                             }}
                             style={{
                               padding: '3px 5px',
@@ -1112,9 +1132,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                   style={{
                     padding: '8px 6px',
                     borderRadius: '8px',
-                    border: '1px solid rgba(56, 189, 248, 0.4)',
-                    background: 'rgba(14, 165, 233, 0.15)',
-                    color: '#e0f2fe',
+                    border: '1px solid rgba(154, 124, 255, 0.45)',
+                    background: 'rgba(124, 92, 255, 0.18)',
+                    color: '#f3e8ff',
                     fontSize: '11.5px',
                     fontWeight: 700,
                     cursor: 'pointer',
@@ -1488,12 +1508,12 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                     padding: '6px 10px',
                     borderRadius: '7px',
                     border: activeTransform.visible
-                      ? '1px solid rgba(16, 185, 129, 0.4)'
+                      ? '1px solid rgba(154, 124, 255, 0.45)'
                       : '1px solid rgba(239, 68, 68, 0.4)',
                     background: activeTransform.visible
-                      ? 'rgba(16, 185, 129, 0.14)'
+                      ? 'rgba(124, 92, 255, 0.2)'
                       : 'rgba(239, 68, 68, 0.14)',
-                    color: activeTransform.visible ? '#a7f3d0' : '#fca5a5',
+                    color: activeTransform.visible ? '#f3e8ff' : '#fca5a5',
                     fontSize: '11px',
                     fontWeight: 600,
                     cursor: 'pointer',

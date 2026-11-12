@@ -14,12 +14,19 @@ import {
   Play,
   ArrowRightLeft,
   Layers,
+  Palette,
 } from 'lucide-react';
 import {
+  CLONE_COLOR_PRESETS,
+  CloneColorPresetId,
+  CloneLayerColorAdjustments,
+  CloneShineAnimStyle,
+  DEFAULT_CLONE_COLOR_ADJUSTMENTS,
   SHINE_PRESETS,
   ShineCanvasEditSubmode,
   ShineLayerConfig,
   ShinePresetId,
+  ShineSystemMode,
 } from '../utils/svgaShineEngine';
 
 export interface ShineTargetOption {
@@ -51,6 +58,10 @@ interface SvgaShineStudioPanelProps {
   onUploadCustomShineImage: (file: File) => void;
   onSelectSvgaAssetAsShineImage: (assetKey: string) => void;
   onTriggerPlayPreview: () => void;
+  onSwitchShineSystemMode?: (mode: ShineSystemMode) => void;
+  onRecloneFromTargetLayer?: () => void;
+  onUploadCloneColorImage?: (file: File) => void;
+  onSelectExistingLayerAsCloneSource?: (layerId: string) => void;
 }
 
 export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
@@ -72,11 +83,21 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
   onUploadCustomShineImage,
   onSelectSvgaAssetAsShineImage,
   onTriggerPlayPreview,
+  onSwitchShineSystemMode,
+  onRecloneFromTargetLayer,
+  onUploadCloneColorImage,
+  onSelectExistingLayerAsCloneSource,
 }) => {
   const customShineInputRef = useRef<HTMLInputElement | null>(null);
+  const cloneColorUploadInputRef = useRef<HTMLInputElement | null>(null);
   const outerPointsCount = config.maskContours[0]?.length || 0;
   const hasInnerHole = Boolean(config.maskContours[1] && config.maskContours[1].length >= 3);
   const motionPointsCount = config.motionPoints?.length || 0;
+  const isColorClone = config.shineSystemMode === 'layer_color_clone';
+  const colorAdj: CloneLayerColorAdjustments = {
+    ...DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+    ...config.colorAdjustments,
+  };
 
   return (
     <div
@@ -101,6 +122,23 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           const f = e.target.files?.[0];
           e.target.value = '';
           if (f) onUploadCustomShineImage(f);
+        }}
+      />
+      <input
+        ref={cloneColorUploadInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) {
+            if (onUploadCloneColorImage) {
+              onUploadCloneColorImage(f);
+            } else {
+              onUploadCustomShineImage(f);
+            }
+          }
         }}
       />
 
@@ -163,6 +201,101 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
           <Play size={10} />
           <span>معاينة</span>
         </button>
+      </div>
+
+      {/* Dual Shine System Switcher (اختيار نظام اللمعة: لمعة شعاع ١ أو لمعة نفس الطبقة بألوان متغيرة ٢) */}
+      <div
+        style={{
+          background: 'rgba(12, 12, 22, 0.88)',
+          border: '1px solid rgba(124, 92, 255, 0.4)',
+          borderRadius: '8px',
+          padding: '6px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '5px',
+        }}
+      >
+        <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#e9d5ff' }}>
+          ✨ اختر نوع ونظام اللمعة:
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
+          <button
+            type="button"
+            id="edShineSystemBeamBtn"
+            onClick={() => {
+              if (onSwitchShineSystemMode) {
+                onSwitchShineSystemMode('beam_sweep');
+              } else {
+                onUpdateConfig(
+                  { shineSystemMode: 'beam_sweep' },
+                  { regenerateBitmap: true, regenerateKeyframes: true, actionLabel: '✨ تم التبديل إلى نظام لمعة الشعاع الكلاسيكية' }
+                );
+              }
+            }}
+            style={{
+              padding: '6px 6px',
+              borderRadius: '6px',
+              border: !isColorClone ? '1.5px solid #a78bfa' : '1px solid #2b2b3e',
+              background: !isColorClone
+                ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.34), rgba(99, 102, 241, 0.24))'
+                : '#151522',
+              color: !isColorClone ? '#f3e8ff' : '#94a3b8',
+              fontSize: '10px',
+              fontWeight: 800,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px',
+            }}
+          >
+            <Sparkles size={11} color={!isColorClone ? '#c084fc' : '#94a3b8'} />
+            <span>لمعة ١: شعاع كلاسيكي</span>
+          </button>
+
+          <button
+            type="button"
+            id="edShineSystemCloneColorBtn"
+            onClick={() => {
+              if (onSwitchShineSystemMode) {
+                onSwitchShineSystemMode('layer_color_clone');
+              } else {
+                onUpdateConfig(
+                  {
+                    shineSystemMode: 'layer_color_clone',
+                    cloneAnimStyle: config.cloneAnimStyle || 'sweep_reveal',
+                    colorAdjustments: config.colorAdjustments || DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+                  },
+                  { regenerateBitmap: true, regenerateKeyframes: true, actionLabel: '🎨 تم التفعيل: لمعة نفس الطبقة الأساسية بألوان متغيرة' }
+                );
+              }
+            }}
+            style={{
+              padding: '6px 6px',
+              borderRadius: '6px',
+              border: isColorClone ? '1.5px solid #a78bfa' : '1px solid #2b2b3e',
+              background: isColorClone
+                ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.34), rgba(99, 102, 241, 0.24))'
+                : '#151522',
+              color: isColorClone ? '#f3e8ff' : '#94a3b8',
+              fontSize: '10px',
+              fontWeight: 800,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px',
+            }}
+          >
+            <Palette size={11} color={isColorClone ? '#c084fc' : '#94a3b8'} />
+            <span>لمعة ٢: نفس الطبقة ملونة</span>
+          </button>
+        </div>
+        <div style={{ fontSize: '9px', color: '#c4b5fd', lineHeight: 1.35 }}>
+          {isColorClone
+            ? '🎨 النظام الثاني: طبقة مطابقة للطبقة الأساسية بألوان مضيئة متغيرة (أو طبقة تحددها أنت) تبرق وتلمع فوق الطبقة الأصلية!'
+            : '✨ النظام الأول: شعاع بريق متحرك يمر فوق الطبقة المستهدفة مع قناع النقاط.'}
+        </div>
       </div>
 
       {/* 1. Target Layer Selection (استدعاء الطبقة المستهدفة) */}
@@ -242,17 +375,17 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: hasInnerHole ? 'rgba(34, 197, 94, 0.15)' : 'rgba(124, 92, 255, 0.08)',
-            border: hasInnerHole ? '1px solid rgba(34, 197, 94, 0.4)' : '1px solid rgba(124, 92, 255, 0.25)',
+            background: hasInnerHole ? 'rgba(124, 92, 255, 0.16)' : 'rgba(124, 92, 255, 0.08)',
+            border: hasInnerHole ? '1px solid rgba(167, 139, 250, 0.45)' : '1px solid rgba(124, 92, 255, 0.25)',
             borderRadius: '6px',
             padding: '5px 8px',
             fontSize: '10px',
-            color: hasInnerHole ? '#86efac' : '#cbd5e1',
+            color: hasInnerHole ? '#e9d5ff' : '#cbd5e1',
             fontWeight: 600,
           }}
         >
           <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <CircleDot size={11} color={hasInnerHole ? '#4ade80' : '#c084fc'} />
+            <CircleDot size={11} color={hasInnerHole ? '#c084fc' : '#a78bfa'} />
             <span>
               {hasInnerHole
                 ? '⭕ تم تفريغ منتصف الإطار تلقائياً (100% شفافة بدون تسريب للمعة)'
@@ -319,11 +452,11 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             alignItems: 'center',
             gap: '6px',
             fontSize: '10px',
-            color: '#fde68a',
+            color: '#e9d5ff',
             fontWeight: 700,
             cursor: 'pointer',
-            background: 'rgba(245, 158, 11, 0.12)',
-            border: '1px solid rgba(245, 158, 11, 0.38)',
+            background: 'rgba(124, 92, 255, 0.12)',
+            border: '1px solid rgba(124, 92, 255, 0.35)',
             borderRadius: '6px',
             padding: '5px 7px',
           }}
@@ -342,7 +475,7 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
                 }
               )
             }
-            style={{ width: 'auto', accentColor: '#f59e0b' }}
+            style={{ width: 'auto', accentColor: '#7c5cff' }}
           />
           <span>👑 عزل ذكي للمعادن والذهب (لمعة SVGA أصلية بدون تغبيش الخلفية الداكنة)</span>
         </label>
@@ -793,7 +926,441 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
         )}
       </div>
 
-      {/* 3. Shine Image Source & Procedural Generator (صورة الطبقة اللامعة) */}
+      {/* 3. Shine Image Source & Color Clone / Procedural Generator */}
+      {isColorClone ? (
+        <div
+          id="edShineCloneColorSection"
+          style={{
+            background: 'rgba(12, 12, 20, 0.85)',
+            border: '1px solid rgba(124, 92, 255, 0.38)',
+            borderRadius: '8px',
+            padding: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '7px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
+            <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#f3e8ff', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Palette size={12} color="#c084fc" />
+              <span>3. ألوان ومصدر الطبقة المطابقة اللامعة:</span>
+            </span>
+            <span style={{ fontSize: '9.5px', color: '#c084fc' }}>
+              {config.shineWidth}×{config.shineHeight}px
+            </span>
+          </div>
+
+          {/* Thumbnail + Upload / Re-clone / Pick Layer */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div
+              style={{
+                width: '48px',
+                height: '48px',
+                borderRadius: '7px',
+                background: 'repeating-conic-gradient(#22222c 0 25%, #14141c 0 50%) 0 0 / 8px 8px',
+                border: '1.5px solid rgba(167, 139, 250, 0.55)',
+                display: 'grid',
+                placeItems: 'center',
+                overflow: 'hidden',
+                flexShrink: 0,
+              }}
+            >
+              {shineThumbUrl && (
+                <img
+                  src={shineThumbUrl}
+                  alt={shineLayerName}
+                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                />
+              )}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                <button
+                  type="button"
+                  id="edUploadCloneColorImgBtn"
+                  onClick={() => cloneColorUploadInputRef.current?.click()}
+                  title="ارفع نفس الطبقة بعد تعديل ألوانها خارجياً لتعمل كطبقة لامعة"
+                  style={{
+                    padding: '5px 6px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                    background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                    color: '#f3e8ff',
+                    fontSize: '9.5px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <Upload size={10} color="#c084fc" />
+                  <span>رفع طبقة ملونة جاهزة</span>
+                </button>
+
+                {onRecloneFromTargetLayer && (
+                  <button
+                    type="button"
+                    id="edRecloneTargetLayerBtn"
+                    onClick={onRecloneFromTargetLayer}
+                    title="استنساخ صورة ومقاس وحركة الطبقة الأساسية المستهدفة من جديد"
+                    style={{
+                      padding: '5px 6px',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(124, 92, 255, 0.5)',
+                      background: 'rgba(124, 92, 255, 0.18)',
+                      color: '#e9d5ff',
+                      fontSize: '9.5px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <RotateCcw size={10} color="#c084fc" />
+                    <span>مزامنة الطبقة الأساسية</span>
+                  </button>
+                )}
+              </div>
+
+              {onSelectExistingLayerAsCloneSource && targetOptions.length > 1 && (
+                <select
+                  id="edSelectLayerAsCloneSourceSelect"
+                  aria-label="اختيار طبقة من المشروع لتعمل كطبقة لامعة"
+                  value={config.customCloneSourceLayerId || ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      onSelectExistingLayerAsCloneSource(e.target.value);
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    background: '#141420',
+                    border: '1px solid rgba(124, 92, 255, 0.45)',
+                    borderRadius: '5px',
+                    padding: '4px 6px',
+                    color: '#e9d5ff',
+                    fontSize: '9.5px',
+                    fontWeight: 600,
+                  }}
+                >
+                  <option value="">📂 أو حدد أي طبقة مرفوعة بالمشروع لتعمل كلمعة...</option>
+                  {targetOptions
+                    .filter((opt) => opt.id !== 'DOCUMENT')
+                    .map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {/* Clone Animation Style (طريقة عمل الطبقة اللامعة الملونة) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#e2e8f0' }}>
+              🎬 طريقة إضاءة وحركة الطبقة الملونة:
+            </span>
+            <select
+              id="edCloneAnimStyleSelect"
+              aria-label="طريقة إضاءة وحركة الطبقة الملونة"
+              value={config.cloneAnimStyle || 'sweep_reveal'}
+              onChange={(e) =>
+                onUpdateConfig(
+                  { cloneAnimStyle: e.target.value as CloneShineAnimStyle },
+                  {
+                    regenerateKeyframes: true,
+                    actionLabel: 'تحديث نمط حركة لمعة الطبقة الملونة',
+                  }
+                )
+              }
+              style={{
+                width: '100%',
+                background: '#141420',
+                border: '1px solid rgba(124, 92, 255, 0.45)',
+                borderRadius: '6px',
+                padding: '5px 8px',
+                color: '#f8fafc',
+                fontSize: '10px',
+                fontWeight: 700,
+              }}
+            >
+              <option value="sweep_reveal">✨ شعاع كاشف متحرك يمر على الطبقة الملونة (Sweep Reveal)</option>
+              <option value="pulse_glow">💫 نبض وتوهج متدرج للطبقة الملونة (Pulse Glow)</option>
+              <option value="static_region">🎯 إضاءة مستمرة للمنطقة المحددة بالقناع (Static Glow)</option>
+            </select>
+          </div>
+
+          {/* Ready-made Color-Clone Presets */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#cbd5e1' }}>
+              🎨 قوالب تغيير ألوان الطبقة اللامعة:
+            </span>
+            <select
+              id="edCloneColorPresetSelect"
+              aria-label="قالب ألوان الطبقة اللامعة"
+              value={colorAdj.presetId || 'bright_royal_gold'}
+              onChange={(e) => {
+                const pId = e.target.value as CloneColorPresetId;
+                const found = CLONE_COLOR_PRESETS.find((p) => p.id === pId);
+                if (found) {
+                  onUpdateConfig(
+                    {
+                      colorAdjustments: { ...found.adjustments },
+                    },
+                    {
+                      regenerateBitmap: true,
+                      actionLabel: `🎨 تطبيق ألوان الطبقة اللامعة: ${found.labelAr}`,
+                    }
+                  );
+                }
+              }}
+              style={{
+                width: '100%',
+                background: '#141420',
+                border: '1px solid rgba(124, 92, 255, 0.45)',
+                borderRadius: '6px',
+                padding: '5px 8px',
+                color: '#f3e8ff',
+                fontSize: '10px',
+                fontWeight: 700,
+              }}
+            >
+              {CLONE_COLOR_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.labelAr}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Live Color Adjustment Sliders */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+              background: 'rgba(20, 20, 32, 0.85)',
+              border: '1px solid rgba(124, 92, 255, 0.28)',
+              borderRadius: '7px',
+              padding: '7px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+              <span style={{ fontSize: '9.5px', color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+                🌈 تغيير درجة اللون ({Math.round(colorAdj.hueRotateDeg)}°)
+              </span>
+              <input
+                type="range"
+                id="edCloneHueRange"
+                min="-180"
+                max="180"
+                step="1"
+                aria-label="تغيير درجة لون الطبقة اللامعة"
+                value={Math.round(colorAdj.hueRotateDeg)}
+                onChange={(e) =>
+                  onUpdateConfig(
+                    {
+                      colorAdjustments: {
+                        ...colorAdj,
+                        hueRotateDeg: Number(e.target.value),
+                      },
+                    },
+                    { regenerateBitmap: true }
+                  )
+                }
+                style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+              <span style={{ fontSize: '9.5px', color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+                ☀️ السطوع والتوهج ({Math.round(colorAdj.brightnessPct)}%)
+              </span>
+              <input
+                type="range"
+                id="edCloneBrightnessRange"
+                min="60"
+                max="240"
+                step="2"
+                aria-label="سطوع وتوهج الطبقة اللامعة"
+                value={Math.round(colorAdj.brightnessPct)}
+                onChange={(e) =>
+                  onUpdateConfig(
+                    {
+                      colorAdjustments: {
+                        ...colorAdj,
+                        brightnessPct: Number(e.target.value),
+                      },
+                    },
+                    { regenerateBitmap: true }
+                  )
+                }
+                style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+              <span style={{ fontSize: '9.5px', color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+                🎨 تشبع الألوان ({Math.round(colorAdj.saturationPct)}%)
+              </span>
+              <input
+                type="range"
+                id="edCloneSaturationRange"
+                min="0"
+                max="280"
+                step="2"
+                aria-label="تشبع ألوان الطبقة اللامعة"
+                value={Math.round(colorAdj.saturationPct)}
+                onChange={(e) =>
+                  onUpdateConfig(
+                    {
+                      colorAdjustments: {
+                        ...colorAdj,
+                        saturationPct: Number(e.target.value),
+                      },
+                    },
+                    { regenerateBitmap: true }
+                  )
+                }
+                style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '85px 1fr', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <input
+                  type="color"
+                  id="edCloneTintColorInput"
+                  aria-label="لون الصبغة المضيئة"
+                  value={colorAdj.tintColor || '#fde047'}
+                  onChange={(e) =>
+                    onUpdateConfig(
+                      {
+                        colorAdjustments: {
+                          ...colorAdj,
+                          tintColor: e.target.value,
+                        },
+                      },
+                      { regenerateBitmap: true, actionLabel: 'تغيير لون صبغة الطبقة اللامعة' }
+                    )
+                  }
+                  style={{ width: '26px', height: '22px', cursor: 'pointer', flexShrink: 0 }}
+                />
+                <span style={{ fontSize: '9px', color: '#cbd5e1' }}>لون الصبغة</span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontSize: '9px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+                  قوة الصبغة ({Math.round(colorAdj.tintStrengthPct)}%)
+                </span>
+                <input
+                  type="range"
+                  id="edCloneTintStrengthRange"
+                  min="0"
+                  max="100"
+                  step="1"
+                  aria-label="قوة صبغة اللون للطبقة اللامعة"
+                  value={Math.round(colorAdj.tintStrengthPct)}
+                  onChange={(e) =>
+                    onUpdateConfig(
+                      {
+                        colorAdjustments: {
+                          ...colorAdj,
+                          tintStrengthPct: Number(e.target.value),
+                        },
+                      },
+                      { regenerateBitmap: true }
+                    )
+                  }
+                  style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Sweep Band Width & Angle when in sweep_reveal mode */}
+          {(config.cloneAnimStyle || 'sweep_reveal') === 'sweep_reveal' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+                  زاوية شعاع الكشف ({Math.max(-85, Math.min(85, Math.round(config.beamAngleDeg)))}°)
+                </span>
+                <input
+                  type="range"
+                  min="-85"
+                  max="85"
+                  step="1"
+                  aria-label="زاوية ميلان شعاع كشف الطبقة الملونة"
+                  value={Math.max(-85, Math.min(85, Math.round(config.beamAngleDeg)))}
+                  onChange={(e) =>
+                    onUpdateConfig({ beamAngleDeg: Number(e.target.value) })
+                  }
+                  style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                <span style={{ fontSize: '9.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+                  عرض مساحة اللمعة ({Math.round(config.beamWidthRatio * 100)}%)
+                </span>
+                <input
+                  type="range"
+                  min="6"
+                  max="75"
+                  step="1"
+                  aria-label="عرض مساحة اللمعة الكاشفة"
+                  value={Math.max(6, Math.min(75, Math.round(config.beamWidthRatio * 100)))}
+                  onChange={(e) =>
+                    onUpdateConfig({ beamWidthRatio: Number(e.target.value) / 100 })
+                  }
+                  style={{ flex: 1, accentColor: '#7c5cff', cursor: 'pointer' }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Opacity Control */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+              background: 'rgba(124, 92, 255, 0.12)',
+              border: '1px solid rgba(124, 92, 255, 0.38)',
+              borderRadius: '7px',
+              padding: '6px 8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap' }}>
+                ✨ شفافية وقوة الطبقة اللامعة ({Math.round(config.shineOpacity ?? 100)}%)
+              </span>
+            </div>
+            <input
+              type="range"
+              id="edShineOpacityRange"
+              min="5"
+              max="100"
+              step="1"
+              aria-label="شفافية وقوة اللمعة"
+              value={Math.round(config.shineOpacity ?? 100)}
+              onChange={(e) =>
+                onUpdateConfig(
+                  { shineOpacity: Number(e.target.value) },
+                  { actionLabel: `ضبط شفافية وقوة الطبقة اللامعة (${e.target.value}%)` }
+                )
+              }
+              style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer' }}
+            />
+          </div>
+        </div>
+      ) : (
       <div
         style={{
           background: 'rgba(12, 12, 20, 0.75)',
@@ -1140,6 +1707,115 @@ export const SvgaShineStudioPanel: React.FC<SvgaShineStudioPanelProps> = ({
             style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer' }}
           />
         </div>
+      </div>
+      )}
+
+      {/* Soft Feathered Edge Transparency Control (شفافية وتنعيم حواف اللمعة لمنع الحواف الحادة في العرض والتصدير SVGA — متاح في كلا نظامي اللمعة وبنفس لون الموقع) */}
+      <div
+        id="edCloneEdgeFeatherControlBox"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(99, 102, 241, 0.1))',
+          border: '1px solid rgba(167, 139, 250, 0.45)',
+          borderRadius: '8px',
+          padding: '8px 9px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+          <span style={{ fontSize: '10px', fontWeight: 800, color: '#f3e8ff' }}>
+            🪶 شفافية وتنعيم حواف اللمعة (تصدير SVGA مطابق بدون حواف حادة):
+          </span>
+          <span
+            style={{
+              fontSize: '9.5px',
+              fontWeight: 800,
+              color: '#f3e8ff',
+              background: 'rgba(124, 92, 255, 0.28)',
+              border: '1px solid rgba(167, 139, 250, 0.5)',
+              padding: '1px 6px',
+              borderRadius: '4px',
+            }}
+          >
+            {Math.round((config.beamSoftness ?? 0.92) * 100)}%
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+          {[
+            { id: 'edCloneFeatherUltraSoftBtn', label: '☁️ فائقة 100%', soft: 1.0, feather: 10 },
+            { id: 'edCloneFeatherSmoothBtn', label: '✨ ناعمة 88%', soft: 0.88, feather: 7 },
+            { id: 'edCloneFeatherMediumBtn', label: '💎 متوسطة 55%', soft: 0.55, feather: 4 },
+            { id: 'edCloneFeatherSharpBtn', label: '⚡ محددة 20%', soft: 0.2, feather: 1.5 },
+          ].map((preset) => {
+            const curSoft = config.beamSoftness ?? 0.92;
+            const isActive = Math.abs(curSoft - preset.soft) < 0.08;
+            return (
+              <button
+                key={preset.id}
+                id={preset.id}
+                type="button"
+                onClick={() =>
+                  onUpdateConfig(
+                    {
+                      beamSoftness: preset.soft,
+                      edgeFeather: preset.feather,
+                    },
+                    {
+                      regenerateBitmap: !isColorClone,
+                      actionLabel: `🪶 ضبط شفافية وتنعيم حواف اللمعة (${Math.round(preset.soft * 100)}%) — مطابق في العرض وتصدير SVGA`,
+                    }
+                  )
+                }
+                style={{
+                  padding: '5px 4px',
+                  borderRadius: '6px',
+                  border: isActive
+                    ? '1.5px solid #a78bfa'
+                    : '1px solid rgba(124, 92, 255, 0.28)',
+                  background: isActive
+                    ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(99, 102, 241, 0.24))'
+                    : '#151522',
+                  color: isActive ? '#f3e8ff' : '#cbd5e1',
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  textAlign: 'center',
+                }}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <input
+          type="range"
+          id="edCloneEdgeSoftnessRange"
+          min="5"
+          max="100"
+          step="1"
+          aria-label="درجة شفافية وتنعيم حواف اللمعة"
+          value={Math.max(5, Math.min(100, Math.round((config.beamSoftness ?? 0.92) * 100)))}
+          onChange={(e) => {
+            const pct = Number(e.target.value);
+            onUpdateConfig(
+              {
+                beamSoftness: pct / 100,
+                edgeFeather: Math.max(1, Math.round((pct / 100) * 10)),
+              },
+              {
+                regenerateBitmap: !isColorClone,
+                actionLabel: `🪶 ضبط شفافية وتلاشي حواف اللمعة (${pct}%) في العرض والتصدير`,
+              }
+            );
+          }}
+          style={{ width: '100%', accentColor: '#7c5cff', cursor: 'pointer', height: '4px' }}
+        />
+        <span style={{ fontSize: '8.5px', color: '#c4b5fd', lineHeight: 1.3 }}>
+          ✅ يتم حفظ وتصدير نفس التدرج الشفاف الناعم للحواف داخل ملف الـ SVGA المصدر تلقائياً.
+        </span>
       </div>
 
       {/* 4. Shine Sweep Timing & Loops (توقيت وسرعة اللمعة عبر الفريمات) */}

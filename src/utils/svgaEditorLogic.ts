@@ -567,6 +567,8 @@ export interface DecomposedExtraLayer {
   copiedFrames?: SvgaFrame[];
   copiedFromKey?: string;
   matteKey?: string;
+  parentLayerId?: string;
+  ignoreLayerOpacity?: boolean;
 }
 
 export function cloneSvgaFrame(f: SvgaFrame): SvgaFrame {
@@ -1266,8 +1268,12 @@ export function serializeDecomposedSvga(
 
     for (let i = 0; i < n; i++) {
       const docT = interpolateLayerTransform(docBase, layerKeyframes['DOCUMENT'], i);
-      const lt = interpolateLayerTransform(ex.transform, layerKeyframes[ex.id], i);
+      const kfSource =
+        layerKeyframes[ex.id] ||
+        (ex.parentLayerId ? layerKeyframes[ex.parentLayerId] : undefined);
+      const lt = interpolateLayerTransform(ex.transform, kfSource, i);
       const inRange = i >= inF && i <= outF;
+      const ltOpacityFactor = ex.ignoreLayerOpacity ? 1 : lt.opacity / 100;
 
       if (hasCopiedFrames) {
         const cf = ex.copiedFrames![Math.min(i, ex.copiedFrames!.length - 1)] || {
@@ -1283,7 +1289,7 @@ export function serializeDecomposedSvga(
         const fx = cf.x || 0;
         const fy = cf.y || 0;
         const finalAlpha = inRange
-          ? Math.max(0, Math.min(1, (cf.a ?? 0) * (lt.opacity / 100) * (docT.opacity / 100)))
+          ? Math.max(0, Math.min(1, (cf.a ?? 0) * ltOpacityFactor * (docT.opacity / 100)))
           : 0;
         const mat = computeSpriteFrameMatrix(cf, fw, fh, W, H, lt, docT);
         const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
@@ -1309,7 +1315,7 @@ export function serializeDecomposedSvga(
         frameMsgs.push(pb(2, cat(frameFields)));
       } else {
         const finalAlpha = inRange
-          ? Math.max(0, Math.min(1, (lt.opacity / 100) * (docT.opacity / 100)))
+          ? Math.max(0, Math.min(1, ltOpacityFactor * (docT.opacity / 100)))
           : 0;
         const mat = computeAddedLayerFrameMatrix(ex.width, ex.height, W, H, lt, docT);
         const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
@@ -1350,11 +1356,15 @@ export function serializeDecomposedSvga(
           if (msg) parts.push(pb(4, msg));
         }
       } else {
-        const ex = extraLayers.find((e) => e.id === lid);
-        if (ex && !emittedExtras.has(ex.id)) {
-          emittedExtras.add(ex.id);
-          const msg = buildExtraLayerEntityMsg(ex);
-          if (msg) parts.push(pb(4, msg));
+        const matchingExtras = extraLayers.filter(
+          (e) => e.id === lid || e.parentLayerId === lid
+        );
+        for (const ex of matchingExtras) {
+          if (!emittedExtras.has(ex.id)) {
+            emittedExtras.add(ex.id);
+            const msg = buildExtraLayerEntityMsg(ex);
+            if (msg) parts.push(pb(4, msg));
+          }
         }
       }
     }

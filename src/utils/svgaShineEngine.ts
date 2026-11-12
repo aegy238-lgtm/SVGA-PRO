@@ -35,8 +35,169 @@ export type ShineCanvasEditSubmode = 'mask_points' | 'motion_points' | 'none';
 
 export type ShineBlendMode = 'screen' | 'lighter' | 'source-over';
 
+export type ShineSystemMode = 'beam_sweep' | 'layer_color_clone';
+
+export type CloneShineAnimStyle = 'sweep_reveal' | 'pulse_glow' | 'static_region';
+
+export type CloneColorPresetId =
+  | 'bright_royal_gold'
+  | 'diamond_white_glow'
+  | 'fiery_crimson'
+  | 'electric_cyan'
+  | 'royal_purple_neon'
+  | 'emerald_glow'
+  | 'original_custom';
+
+export interface CloneLayerColorAdjustments {
+  presetId?: CloneColorPresetId;
+  hueRotateDeg: number; // -180 to 180
+  brightnessPct: number; // 50 to 250 (default 155)
+  saturationPct: number; // 0 to 300 (default 145)
+  contrastPct: number; // 50 to 250 (default 120)
+  tintColor: string; // e.g. '#fde047'
+  tintStrengthPct: number; // 0 to 100 (default 32)
+}
+
+export interface CloneColorPresetMeta {
+  id: CloneColorPresetId;
+  labelAr: string;
+  descAr: string;
+  adjustments: CloneLayerColorAdjustments;
+}
+
+export const DEFAULT_CLONE_COLOR_ADJUSTMENTS: CloneLayerColorAdjustments = {
+  presetId: 'bright_royal_gold',
+  hueRotateDeg: 0,
+  brightnessPct: 155,
+  saturationPct: 145,
+  contrastPct: 120,
+  tintColor: '#fde047',
+  tintStrengthPct: 32,
+};
+
+export const CLONE_COLOR_PRESETS: CloneColorPresetMeta[] = [
+  {
+    id: 'bright_royal_gold',
+    labelAr: '👑 ذهب ملكي مشع (توهج الطبقة الذهبية)',
+    descAr: 'نسخة مطابقة للطبقة الأساسية بسطوع وتوهج ذهبي ملكي ساطع',
+    adjustments: {
+      presetId: 'bright_royal_gold',
+      hueRotateDeg: 0,
+      brightnessPct: 155,
+      saturationPct: 145,
+      contrastPct: 120,
+      tintColor: '#fde047',
+      tintStrengthPct: 32,
+    },
+  },
+  {
+    id: 'diamond_white_glow',
+    labelAr: '💎 بريق أبيض ألماسي (إضاءة ساطعة للطبقة)',
+    descAr: 'نسخة مضيئة ببياض ألماسي فائق النقاء يبرق فوق تفاصيل الطبقة',
+    adjustments: {
+      presetId: 'diamond_white_glow',
+      hueRotateDeg: 0,
+      brightnessPct: 185,
+      saturationPct: 65,
+      contrastPct: 130,
+      tintColor: '#ffffff',
+      tintStrengthPct: 45,
+    },
+  },
+  {
+    id: 'fiery_crimson',
+    labelAr: '🔥 توهج ناري ياقوتي (أحمر / برتقالي مشع)',
+    descAr: 'تحويل ألوان الطبقة اللامعة إلى لهب ياقوتي متوهج',
+    adjustments: {
+      presetId: 'fiery_crimson',
+      hueRotateDeg: -28,
+      brightnessPct: 150,
+      saturationPct: 175,
+      contrastPct: 122,
+      tintColor: '#fb7185',
+      tintStrengthPct: 38,
+    },
+  },
+  {
+    id: 'electric_cyan',
+    labelAr: '⚡ سيان جليدي مشع (أزرق سماوي متوهج)',
+    descAr: 'تحويل ألوان الطبقة اللامعة إلى أزرق جليدي كهربائي ساطع',
+    adjustments: {
+      presetId: 'electric_cyan',
+      hueRotateDeg: 145,
+      brightnessPct: 155,
+      saturationPct: 165,
+      contrastPct: 120,
+      tintColor: '#38bdf8',
+      tintStrengthPct: 40,
+    },
+  },
+  {
+    id: 'royal_purple_neon',
+    labelAr: '🔮 نيون بنفسجي ملكي (ماجنتا متوهج)',
+    descAr: 'تحويل ألوان الطبقة اللامعة إلى بنفسجي نيون ملكي فاخر',
+    adjustments: {
+      presetId: 'royal_purple_neon',
+      hueRotateDeg: -95,
+      brightnessPct: 155,
+      saturationPct: 170,
+      contrastPct: 122,
+      tintColor: '#c084fc',
+      tintStrengthPct: 40,
+    },
+  },
+  {
+    id: 'emerald_glow',
+    labelAr: '💚 زمردي مشع (أخضر ملكي مضيء)',
+    descAr: 'تحويل ألوان الطبقة اللامعة إلى بريق زمردي أخضر متوهج',
+    adjustments: {
+      presetId: 'emerald_glow',
+      hueRotateDeg: 75,
+      brightnessPct: 150,
+      saturationPct: 165,
+      contrastPct: 120,
+      tintColor: '#34d399',
+      tintStrengthPct: 36,
+    },
+  },
+  {
+    id: 'original_custom',
+    labelAr: '🎨 ألوان الطبقة المرفوعة كما هي (بدون تعديل إضافي)',
+    descAr: 'استخدام الألوان الأصلية للطبقة التي قمت برفعها أو تعديلها بنفسك 100%',
+    adjustments: {
+      presetId: 'original_custom',
+      hueRotateDeg: 0,
+      brightnessPct: 100,
+      saturationPct: 100,
+      contrastPct: 100,
+      tintColor: '#fbbf24',
+      tintStrengthPct: 0,
+    },
+  },
+];
+
 export interface ShineLayerConfig {
   enabled: boolean;
+  /**
+   * Selects between System 1 ('beam_sweep': classic procedural/custom beam moving inside a mask)
+   * and System 2 ('layer_color_clone': same layer as base layer with modified colors acting as a shine layer).
+   */
+  shineSystemMode?: ShineSystemMode;
+  /**
+   * In 'layer_color_clone' mode, controls how the color-modified layer shines over the base layer:
+   * - 'sweep_reveal': stationary aligned color-clone layer revealed by a moving slanted shine band
+   * - 'pulse_glow': stationary aligned color-clone layer pulsing in opacity across loops
+   * - 'static_region': stationary aligned color-clone layer illuminating the selected mask region
+   */
+  cloneAnimStyle?: CloneShineAnimStyle;
+  /**
+   * Live color adjustments applied to the cloned base layer in 'layer_color_clone' mode.
+   */
+  colorAdjustments?: CloneLayerColorAdjustments;
+  /**
+   * Optional ID of an existing layer in the project chosen as the custom color-modified image source.
+   */
+  customCloneSourceLayerId?: string;
   targetLayerId: string; // 'DOCUMENT' | `sprite_${idx}` | `layer_${id}`
   followTargetLayerTransform: boolean;
   /**
@@ -1088,8 +1249,262 @@ export function interpolateMotionPathPoint(points: Point2D[], t: number): Point2
 }
 
 /**
+ * Evaluates the current shine sweep position `(x, y)`, active state, and opacity multiplier at `frame`
+ * across `startFrame .. endFrame`, `loopCount`, and `pauseFrames`.
+ */
+export function evaluateShineSweepAtFrame(
+  config: ShineLayerConfig,
+  frame: number,
+  totalFrames: number,
+  canvasW: number,
+  canvasH: number
+): {
+  active: boolean;
+  progress: number;
+  x: number;
+  y: number;
+  opacityFactor: number;
+} {
+  const n = Math.max(1, totalFrames);
+  const startF = Math.max(0, Math.min(n - 1, Math.round(config.startFrame)));
+  const endF = Math.max(startF, Math.min(n - 1, Math.round(config.endFrame)));
+  const pts =
+    config.motionPoints && config.motionPoints.length >= 2
+      ? config.motionPoints
+      : [
+          { x: canvasW * 0.15, y: canvasH * 0.15 },
+          { x: canvasW * 0.85, y: canvasH * 0.85 },
+        ];
+
+  if (frame < startF || frame > endF) {
+    return { active: false, progress: 0, x: pts[0].x, y: pts[0].y, opacityFactor: 0 };
+  }
+
+  const loops = Math.max(1, Math.min(20, Math.round(config.loopCount || 1)));
+  const pause = Math.max(0, Math.round(config.pauseFrames || 0));
+  const totalSpan = Math.max(1, endF - startF);
+  const cycleSpan = Math.max(2, Math.floor((totalSpan + pause) / loops));
+  const activeSweepSpan = Math.max(1, cycleSpan - pause);
+
+  const relFrame = frame - startF;
+  const loopIdx = Math.min(loops - 1, Math.floor(relFrame / cycleSpan));
+  const cycleStart = startF + loopIdx * cycleSpan;
+  const sweepEnd = Math.min(endF, cycleStart + activeSweepSpan);
+
+  if (frame < cycleStart || frame > sweepEnd) {
+    return { active: false, progress: 1, x: pts[pts.length - 1].x, y: pts[pts.length - 1].y, opacityFactor: 0 };
+  }
+
+  const progress =
+    sweepEnd > cycleStart
+      ? Math.max(0, Math.min(1, (frame - cycleStart) / (sweepEnd - cycleStart)))
+      : 0;
+
+  const animStyle = config.cloneAnimStyle || 'sweep_reveal';
+  if (config.shineSystemMode === 'layer_color_clone' && animStyle === 'pulse_glow') {
+    const pulse = Math.sin(progress * Math.PI);
+    const opa = Number(Math.max(0, Math.min(1, pulse)).toFixed(3));
+    return {
+      active: opa > 0.01,
+      progress,
+      x: canvasW / 2,
+      y: canvasH / 2,
+      opacityFactor: opa,
+    };
+  }
+
+  if (config.shineSystemMode === 'layer_color_clone' && animStyle === 'static_region') {
+    return {
+      active: true,
+      progress,
+      x: canvasW / 2,
+      y: canvasH / 2,
+      opacityFactor: 1,
+    };
+  }
+
+  const pt = interpolateMotionPathPoint(pts, progress);
+  return {
+    active: true,
+    progress,
+    x: pt.x,
+    y: pt.y,
+    opacityFactor: 1,
+  };
+}
+
+/**
+ * Builds a 4-corner rotated rectangle polygon (clockwise in Canvas space) representing
+ * the moving shine reveal band centered at `(centerX, centerY)` with tilt `beamAngleDeg`.
+ */
+export function buildSlantedSweepBandPolygon(
+  centerX: number,
+  centerY: number,
+  beamAngleDeg: number,
+  bandHalfWidth: number,
+  bandHalfLength: number
+): Point2D[] {
+  const angleRad = (-(beamAngleDeg ?? -30) * Math.PI) / 180;
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  const hw = Math.max(4, bandHalfWidth);
+  const hl = Math.max(16, bandHalfLength);
+
+  const localCorners = [
+    { x: -hw, y: -hl },
+    { x: hw, y: -hl },
+    { x: hw, y: hl },
+    { x: -hw, y: hl },
+  ];
+
+  return localCorners.map((c) => ({
+    x: Number((centerX + c.x * cos - c.y * sin).toFixed(2)),
+    y: Number((centerY + c.x * sin + c.y * cos).toFixed(2)),
+  }));
+}
+
+/**
+ * Sutherland-Hodgman polygon clipper: clips an arbitrary polygon `subjectPoly`
+ * against a convex polygon `clipConvexPoly` (such as the 4-corner slanted shine band).
+ */
+export function clipPolygonWithConvexQuad(
+  subjectPoly: Point2D[],
+  clipConvexPoly: Point2D[]
+): Point2D[] {
+  if (!subjectPoly || subjectPoly.length < 3 || !clipConvexPoly || clipConvexPoly.length < 3) {
+    return [];
+  }
+
+  // Ensure clipConvexPoly has consistent winding (positive signed area in screen space)
+  const clipSign = computePolygonSignedArea(clipConvexPoly) >= 0 ? 1 : -1;
+  let outputList = [...subjectPoly];
+
+  for (let i = 0; i < clipConvexPoly.length; i++) {
+    const cp1 = clipConvexPoly[i];
+    const cp2 = clipConvexPoly[(i + 1) % clipConvexPoly.length];
+    const inputList = outputList;
+    outputList = [];
+    if (inputList.length === 0) break;
+
+    const isInside = (p: Point2D): boolean => {
+      const cross = (cp2.x - cp1.x) * (p.y - cp1.y) - (cp2.y - cp1.y) * (p.x - cp1.x);
+      return cross * clipSign >= -1e-5;
+    };
+
+    const computeIntersection = (s: Point2D, e: Point2D): Point2D => {
+      const dcX = cp1.x - cp2.x;
+      const dcY = cp1.y - cp2.y;
+      const dpX = s.x - e.x;
+      const dpY = s.y - e.y;
+      const n1 = cp1.x * cp2.y - cp1.y * cp2.x;
+      const n2 = s.x * e.y - s.y * e.x;
+      const denom = dcX * dpY - dcY * dpX;
+      if (Math.abs(denom) < 1e-7) return { x: s.x, y: s.y };
+      return {
+        x: Number(((n1 * dpX - n2 * dcX) / denom).toFixed(2)),
+        y: Number(((n1 * dpY - n2 * dcY) / denom).toFixed(2)),
+      };
+    };
+
+    let s = inputList[inputList.length - 1];
+    for (let j = 0; j < inputList.length; j++) {
+      const e = inputList[j];
+      if (isInside(e)) {
+        if (!isInside(s)) {
+          outputList.push(computeIntersection(s, e));
+        }
+        outputList.push(e);
+      } else if (isInside(s)) {
+        outputList.push(computeIntersection(s, e));
+      }
+      s = e;
+    }
+  }
+
+  return outputList.length >= 3 ? outputList : [];
+}
+
+/**
+ * Evaluates the raised-cosine (Hann) feather falloff curve at normalized distance `normalizedDist` in `[0, 1]`
+ * from the center of the shine band (`0` = center core, `1` = outer boundary where alpha reaches `0`).
+ *
+ * Used identically by BOTH the Live Canvas Preview (`applyCloneLayerShineMaskToCanvas`) AND
+ * the Multi-Slice SVGA 2.0 Exporter (`buildFeatheredCloneShineSvgaLayers`) so the project preview
+ * and the exported `.svga` file have 100% identical soft, transparent edges (`نفس العرض في المشروع نفس اللي بيتصدر`).
+ */
+export function computeShineBandFeatherAlphaAt(
+  normalizedDist: number,
+  beamSoftness = 0.9
+): number {
+  const u = Math.max(0, Math.min(1, Math.abs(normalizedDist)));
+  if (u >= 1) return 0;
+  const soft = Math.max(0.02, Math.min(1, beamSoftness));
+  // When soft is near 1.0 (default 0.90), coreRatio is near 0 so the entire band tapers smoothly
+  const coreRatio = Math.max(0, (1 - soft) * 0.58);
+  if (u <= coreRatio) return 1;
+  const t = (u - coreRatio) / Math.max(1e-5, 1 - coreRatio);
+  // Raised-cosine window: derivative is 0 at both t=0 (core) and t=1 (outer edge -> 100% seamless transparent fade)
+  return Number((0.5 * (1 + Math.cos(Math.PI * Math.min(1, t)))).toFixed(5));
+}
+
+/**
+ * Computes the unified half-span width (in world/canvas pixels) of the slanted shine band
+ * for both Live Canvas rendering and SVGA 2.0 export.
+ */
+export function computeShineBandHalfSpan(
+  shineWidth: number,
+  shineHeight: number,
+  canvasW: number,
+  canvasH: number,
+  beamWidthRatio = 0.28,
+  beamSoftness = 0.9
+): number {
+  const diag = Math.hypot(Math.max(shineWidth || canvasW, canvasW), Math.max(shineHeight || canvasH, canvasH));
+  const bwRatio = Math.max(0.05, Math.min(0.85, beamWidthRatio ?? 0.28));
+  const soft = Math.max(0.05, Math.min(1, beamSoftness ?? 0.9));
+  // Expand the outer feather wings when softness is high so the transparent transition is wide and lush
+  return Math.max(18, diag * bwRatio * (0.48 + soft * 0.24));
+}
+
+/**
+ * Offsets each vertex of a polygon radially inward (`offsetPx < 0`) or outward (`offsetPx > 0`)
+ * relative to its centroid so custom polygon mask contours can also be feathered smoothly across slices.
+ */
+export function offsetPolygonRadiallyFromCentroid(
+  poly: Point2D[],
+  offsetPx: number
+): Point2D[] {
+  if (!poly || poly.length < 3 || Math.abs(offsetPx) < 0.05) return poly;
+  let cx = 0;
+  let cy = 0;
+  for (const p of poly) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= poly.length;
+  cy /= poly.length;
+
+  return poly.map((p) => {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1e-3) return p;
+    const nextDist = Math.max(2, dist + offsetPx);
+    const scale = nextDist / dist;
+    return {
+      x: Number((cx + dx * scale).toFixed(2)),
+      y: Number((cy + dy * scale).toFixed(2)),
+    };
+  });
+}
+
+/**
  * Generates Timeline `LayerPropertyKeyframes` (`position` and `opacity`) from the Shine Layer's
  * interactive `motionPoints`, `startFrame`, `endFrame`, `loopCount`, and `pauseFrames`.
+ *
+ * When `config.shineSystemMode === 'layer_color_clone'`, the layer itself stays 100% stationary
+ * and aligned on top of the base layer (so `position` keyframes are NOT generated along `motionPoints`;
+ * instead the reveal band sweeps across the stationary layer).
  */
 export function buildShineKeyframesFromMotionPoints(
   config: ShineLayerConfig,
@@ -1098,6 +1513,13 @@ export function buildShineKeyframesFromMotionPoints(
   canvasH: number,
   baseOpacity = 100
 ): LayerPropertyKeyframes {
+  if (config.shineSystemMode === 'layer_color_clone') {
+    const effectiveOpa = Math.max(0, Math.min(100, config.shineOpacity ?? baseOpacity));
+    return {
+      opacity: { 0: effectiveOpa },
+    };
+  }
+
   const n = Math.max(1, totalFrames);
   const startF = Math.max(0, Math.min(n - 1, Math.round(config.startFrame)));
   const endF = Math.max(startF, Math.min(n - 1, Math.round(config.endFrame)));
@@ -1201,6 +1623,7 @@ export function buildClippedShineSvgaFrames(options: {
   const sw = Math.max(1, shineWidth);
   const sh = Math.max(1, shineHeight);
   const hasCopied = Boolean(copiedFrames && copiedFrames.length > 0);
+  const isColorClone = config.shineSystemMode === 'layer_color_clone';
   const shouldSmooth =
     smoothCurve !== undefined
       ? smoothCurve
@@ -1270,12 +1693,118 @@ export function buildClippedShineSvgaFrames(options: {
       }
     }
 
-    const clipPath = projectWorldContoursToLocalClipPath(
-      config.maskContours,
-      worldShineMat,
-      targetDelta,
-      { smoothCurve: shouldSmooth }
-    );
+    if (isColorClone && !hasCopied && targetDelta) {
+      localFrameMat = multiplyAffine(targetDelta, localFrameMat);
+    }
+
+    const effectiveWorldShineMat =
+      isColorClone && !hasCopied && targetDelta
+        ? multiplyAffine(targetDelta, worldShineMat)
+        : worldShineMat;
+
+    let clipPath = '';
+
+    if (isColorClone) {
+      const sweep = evaluateShineSweepAtFrame(config, i, n, W, H);
+      if (!sweep.active || !inRange) {
+        frameAlpha = 0;
+      } else {
+        frameAlpha = Number((frameAlpha * sweep.opacityFactor).toFixed(4));
+        const animStyle = config.cloneAnimStyle || 'sweep_reveal';
+        if (animStyle === 'sweep_reveal') {
+          const bandHalfWidth = computeShineBandHalfSpan(
+            sw,
+            sh,
+            W,
+            H,
+            config.beamWidthRatio ?? 0.28,
+            config.beamSoftness ?? 0.9
+          );
+          const bandHalfLength = Math.max(W, H, sw, sh) * 1.8;
+          const bandQuad = buildSlantedSweepBandPolygon(
+            sweep.x,
+            sweep.y,
+            config.beamAngleDeg ?? -30,
+            bandHalfWidth,
+            bandHalfLength
+          );
+
+          const hasCustomMask =
+            config.maskContours &&
+            config.maskContours[0] &&
+            config.maskContours[0].length >= 3 &&
+            config.maskMode !== 'auto_layer_contour';
+
+          if (hasCustomMask) {
+            const transformedOuter = config.maskContours[0].map((pt) =>
+              targetDelta
+                ? {
+                    x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                    y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                  }
+                : pt
+            );
+            const clippedOuter = clipPolygonWithConvexQuad(transformedOuter, bandQuad);
+            if (clippedOuter.length < 3) {
+              frameAlpha = 0;
+            } else {
+              const contoursForFrame: Point2D[][] = [clippedOuter];
+              if (config.maskContours[1] && config.maskContours[1].length >= 3) {
+                const transformedInner = config.maskContours[1].map((pt) =>
+                  targetDelta
+                    ? {
+                        x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                        y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                      }
+                    : pt
+                );
+                contoursForFrame.push(transformedInner);
+              }
+              clipPath = projectWorldContoursToLocalClipPath(
+                contoursForFrame,
+                effectiveWorldShineMat,
+                null,
+                { smoothCurve: false }
+              );
+            }
+          } else {
+            const contoursForFrame: Point2D[][] = [bandQuad];
+            if (config.maskContours && config.maskContours[1] && config.maskContours[1].length >= 3) {
+              const transformedInner = config.maskContours[1].map((pt) =>
+                targetDelta
+                  ? {
+                      x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                      y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                    }
+                  : pt
+              );
+              contoursForFrame.push(transformedInner);
+            }
+            clipPath = projectWorldContoursToLocalClipPath(
+              contoursForFrame,
+              effectiveWorldShineMat,
+              null,
+              { smoothCurve: false }
+            );
+          }
+        } else {
+          // pulse_glow or static_region
+          clipPath = projectWorldContoursToLocalClipPath(
+            config.maskContours,
+            effectiveWorldShineMat,
+            targetDelta,
+            { smoothCurve: shouldSmooth }
+          );
+        }
+      }
+    } else {
+      clipPath = projectWorldContoursToLocalClipPath(
+        config.maskContours,
+        effectiveWorldShineMat,
+        targetDelta,
+        { smoothCurve: shouldSmooth }
+      );
+    }
 
     frames.push({
       a: frameAlpha,
@@ -1289,6 +1818,314 @@ export function buildClippedShineSvgaFrames(options: {
   }
 
   return frames;
+}
+
+/**
+ * Builds a multi-slice concentric feathered `SvgaFrame[][]` set for exporting a Shine Layer
+ * into native SVGA 2.0 so that the exported `.svga` file has 100% soft, transparent, feathered edges
+ * (`نفس اللي ظاهر في عرض المشروع نفس اللي يتصدر في الملف svga بدون أي حواف حادة`).
+ *
+ * All returned slice tracks reference the SINGLE shared `assetKey` image in `movie.im` (zero extra PNG bytes!),
+ * while their `clipPath` widths and exact `source-over` incremental opacities `a_k = (C_k - C_{k-1}) / (1 - C_{k-1})`
+ * reconstruct the exact raised-cosine feather gradient `computeShineBandFeatherAlphaAt`.
+ */
+export function buildFeatheredCloneShineSvgaFramesList(options: {
+  totalFrames: number;
+  shineWidth: number;
+  shineHeight: number;
+  canvasW: number;
+  canvasH: number;
+  inFrame: number;
+  outFrame: number;
+  baseTransform: LayerTransform;
+  keyframes?: LayerPropertyKeyframes;
+  copiedFrames?: SvgaFrame[];
+  docTransformAtFrame: (frame: number) => LayerTransform;
+  config: ShineLayerConfig;
+  targetMatrixAtFrame?: (frame: number) => AffineMatrix | null;
+  smoothCurve?: boolean;
+}): SvgaFrame[][] {
+  const {
+    totalFrames,
+    shineWidth,
+    shineHeight,
+    canvasW,
+    canvasH,
+    inFrame,
+    outFrame,
+    baseTransform,
+    keyframes,
+    copiedFrames,
+    docTransformAtFrame,
+    config,
+    targetMatrixAtFrame,
+    smoothCurve,
+  } = options;
+
+  const isColorClone = config.shineSystemMode === 'layer_color_clone';
+  const soft = Math.max(0.02, Math.min(1, config.beamSoftness ?? 0.9));
+  const edgeFeatherPx = Math.max(0, Math.min(24, config.edgeFeather ?? 6));
+  const animStyle = config.cloneAnimStyle || 'sweep_reveal';
+
+  // Determine how many concentric feather slices to emit
+  let sliceCount = 1;
+  if (isColorClone && animStyle === 'sweep_reveal' && soft >= 0.08) {
+    sliceCount = soft >= 0.65 ? 14 : soft >= 0.35 ? 10 : 6;
+  } else if (edgeFeatherPx >= 1.5 && config.maskMode !== 'auto_layer_contour') {
+    sliceCount = edgeFeatherPx >= 6 ? 8 : 5;
+  }
+
+  if (sliceCount <= 1) {
+    return [buildClippedShineSvgaFrames(options)];
+  }
+
+  const n = Math.max(1, Math.round(totalFrames));
+  const W = Math.max(1, canvasW);
+  const H = Math.max(1, canvasH);
+  const sw = Math.max(1, shineWidth);
+  const sh = Math.max(1, shineHeight);
+  const hasCopied = Boolean(copiedFrames && copiedFrames.length > 0);
+  const shouldSmooth =
+    smoothCurve !== undefined
+      ? smoothCurve
+      : config.maskMode === 'auto_layer_contour' || config.maskMode === 'ring_frame';
+
+  const coreRatio = Math.max(0, (1 - soft) * 0.58);
+  const maxBandHalfWidth = computeShineBandHalfSpan(
+    sw,
+    sh,
+    W,
+    H,
+    config.beamWidthRatio ?? 0.28,
+    soft
+  );
+  const bandHalfLength = Math.max(W, H, sw, sh) * 1.8;
+
+  // Precompute normalized width ratio and target cumulative alpha factor for each slice 0 .. sliceCount-1
+  const sliceMeta: { widthRatio: number; cumFactor: number; prevCumFactor: number; polyOffsetPx: number }[] = [];
+  let prevCum = 0;
+  for (let sIdx = 0; sIdx < sliceCount; sIdx++) {
+    // sIdx = 0 is the outermost widest slice; sIdx = sliceCount - 1 is the innermost core slice
+    const widthRatio = 1 - (sIdx / sliceCount) * (1 - coreRatio);
+    const sampleDist = 1 - ((sIdx + 1) / sliceCount) * (1 - coreRatio);
+    const cumFactor =
+      sIdx === sliceCount - 1 ? 1 : computeShineBandFeatherAlphaAt(sampleDist, soft);
+    const polyOffsetPx =
+      edgeFeatherPx > 0.5
+        ? edgeFeatherPx * (0.65 - (sIdx / Math.max(1, sliceCount - 1)) * 1.3)
+        : 0;
+    sliceMeta.push({
+      widthRatio,
+      cumFactor,
+      prevCumFactor: prevCum,
+      polyOffsetPx,
+    });
+    prevCum = cumFactor;
+  }
+
+  const slicesFrames: SvgaFrame[][] = Array.from({ length: sliceCount }, () => []);
+
+  for (let i = 0; i < n; i++) {
+    const inRange = i >= inFrame && i <= outFrame;
+    const lt = interpolateLayerTransform(baseTransform, keyframes, i);
+    const docT = docTransformAtFrame(i);
+
+    let localFrameMat: AffineMatrix;
+    let baseFrameAlpha: number;
+    let fx = 0;
+    let fy = 0;
+    let fw = sw;
+    let fh = sh;
+
+    if (hasCopied) {
+      const cf = copiedFrames![Math.min(i, copiedFrames!.length - 1)];
+      fx = cf?.x || 0;
+      fy = cf?.y || 0;
+      fw = cf && cf.w > 0 ? cf.w : sw;
+      fh = cf && cf.h > 0 ? cf.h : sh;
+      localFrameMat = [
+        cf?.t?.[0] ?? 1,
+        cf?.t?.[1] ?? 0,
+        cf?.t?.[2] ?? 0,
+        cf?.t?.[3] ?? 1,
+        cf?.t?.[4] ?? 0,
+        cf?.t?.[5] ?? 0,
+      ];
+      baseFrameAlpha = inRange
+        ? Math.max(0, Math.min(1, (cf?.a ?? 1) * (Math.max(0, Math.min(100, lt.opacity ?? 100)) / 100)))
+        : 0;
+    } else {
+      localFrameMat = buildPivotTransformMatrix(W / 2, H / 2, sw / 2, sh / 2, DEFAULT_TRANSFORM);
+      baseFrameAlpha = inRange ? Math.max(0, Math.min(1, (lt.opacity ?? 100) / 100)) : 0;
+    }
+
+    const worldShineMat = hasCopied
+      ? computeSpriteFrameMatrix(
+          { a: baseFrameAlpha, x: fx, y: fy, w: fw, h: fh, t: localFrameMat },
+          fw,
+          fh,
+          W,
+          H,
+          lt,
+          docT
+        )
+      : computeAddedLayerFrameMatrix(sw, sh, W, H, lt, docT);
+
+    let targetDelta: AffineMatrix | null = null;
+    if (
+      config.followTargetLayerTransform &&
+      targetMatrixAtFrame &&
+      config.referenceTargetMatrix
+    ) {
+      const curTargetMat = targetMatrixAtFrame(i);
+      if (curTargetMat) {
+        targetDelta = computeTargetDeltaMatrix(curTargetMat, config.referenceTargetMatrix);
+      }
+    }
+
+    if (isColorClone && !hasCopied && targetDelta) {
+      localFrameMat = multiplyAffine(targetDelta, localFrameMat);
+    }
+
+    const effectiveWorldShineMat =
+      isColorClone && !hasCopied && targetDelta
+        ? multiplyAffine(targetDelta, worldShineMat)
+        : worldShineMat;
+
+    const sweep = isColorClone
+      ? evaluateShineSweepAtFrame(config, i, n, W, H)
+      : { active: inRange, progress: 0.5, x: W / 2, y: H / 2, opacityFactor: 1 };
+
+    const targetFrameAlpha =
+      !sweep.active || !inRange ? 0 : Math.max(0, Math.min(1, baseFrameAlpha * sweep.opacityFactor));
+
+    for (let sIdx = 0; sIdx < sliceCount; sIdx++) {
+      if (targetFrameAlpha <= 0.0005) {
+        slicesFrames[sIdx].push({
+          a: 0,
+          x: fx,
+          y: fy,
+          w: fw,
+          h: fh,
+          t: localFrameMat,
+        });
+        continue;
+      }
+
+      const meta = sliceMeta[sIdx];
+      const prevC = targetFrameAlpha * meta.prevCumFactor;
+      const curC = targetFrameAlpha * meta.cumFactor;
+      const sliceAlpha = Number(
+        Math.max(0, Math.min(1, (curC - prevC) / Math.max(1e-5, 1 - prevC))).toFixed(4)
+      );
+
+      let clipPath = '';
+
+      if (isColorClone && animStyle === 'sweep_reveal') {
+        const sliceHalfWidth = Math.max(4, maxBandHalfWidth * meta.widthRatio);
+        const bandQuad = buildSlantedSweepBandPolygon(
+          sweep.x,
+          sweep.y,
+          config.beamAngleDeg ?? -30,
+          sliceHalfWidth,
+          bandHalfLength
+        );
+
+        const hasCustomMask =
+          config.maskContours &&
+          config.maskContours[0] &&
+          config.maskContours[0].length >= 3 &&
+          config.maskMode !== 'auto_layer_contour';
+
+        if (hasCustomMask) {
+          const transformedOuter = config.maskContours[0].map((pt) =>
+            targetDelta
+              ? {
+                  x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                  y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                }
+              : pt
+          );
+          const featheredOuter = offsetPolygonRadiallyFromCentroid(
+            transformedOuter,
+            meta.polyOffsetPx
+          );
+          const clippedOuter = clipPolygonWithConvexQuad(featheredOuter, bandQuad);
+          if (clippedOuter.length < 3) {
+            slicesFrames[sIdx].push({
+              a: 0,
+              x: fx,
+              y: fy,
+              w: fw,
+              h: fh,
+              t: localFrameMat,
+            });
+            continue;
+          }
+          const contoursForFrame: Point2D[][] = [clippedOuter];
+          if (config.maskContours[1] && config.maskContours[1].length >= 3) {
+            const transformedInner = config.maskContours[1].map((pt) =>
+              targetDelta
+                ? {
+                    x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                    y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                  }
+                : pt
+            );
+            contoursForFrame.push(transformedInner);
+          }
+          clipPath = projectWorldContoursToLocalClipPath(
+            contoursForFrame,
+            effectiveWorldShineMat,
+            null,
+            { smoothCurve: false }
+          );
+        } else {
+          const contoursForFrame: Point2D[][] = [bandQuad];
+          if (config.maskContours && config.maskContours[1] && config.maskContours[1].length >= 3) {
+            const transformedInner = config.maskContours[1].map((pt) =>
+              targetDelta
+                ? {
+                    x: targetDelta[0] * pt.x + targetDelta[2] * pt.y + targetDelta[4],
+                    y: targetDelta[1] * pt.x + targetDelta[3] * pt.y + targetDelta[5],
+                  }
+                : pt
+            );
+            contoursForFrame.push(transformedInner);
+          }
+          clipPath = projectWorldContoursToLocalClipPath(
+            contoursForFrame,
+            effectiveWorldShineMat,
+            null,
+            { smoothCurve: false }
+          );
+        }
+      } else {
+        // Feathered polygon contours for static_region / pulse_glow / beam_sweep
+        const featheredContours = (config.maskContours || []).map((c, cIdx) =>
+          cIdx === 0 ? offsetPolygonRadiallyFromCentroid(c, meta.polyOffsetPx) : c
+        );
+        clipPath = projectWorldContoursToLocalClipPath(
+          featheredContours,
+          effectiveWorldShineMat,
+          targetDelta,
+          { smoothCurve: shouldSmooth }
+        );
+      }
+
+      slicesFrames[sIdx].push({
+        a: sliceAlpha,
+        x: fx,
+        y: fy,
+        w: fw,
+        h: fh,
+        t: localFrameMat,
+        clipPath: clipPath || undefined,
+      });
+    }
+  }
+
+  return slicesFrames;
 }
 
 /**
@@ -1987,4 +2824,322 @@ export function extractShineConfigFromExistingSprite(
     endFrame,
   };
 }
+
+/**
+ * Pure, deterministic RGBA pixel color processor for the Same-Layer Color-Clone Shine system (`layer_color_clone`).
+ * Applies Hue Rotation (`hueRotateDeg`), Saturation (`saturationPct`), Contrast (`contrastPct`),
+ * Brightness (`brightnessPct`), and Specular Color Tint (`tintColor`, `tintStrengthPct`)
+ * while strictly preserving every pixel's exact alpha channel (`data[i + 3]`).
+ */
+export function applyColorAdjustmentsToRgbaBytes(
+  data: Uint8ClampedArray | Uint8Array,
+  adjustments?: Partial<CloneLayerColorAdjustments>
+): void {
+  const adj: CloneLayerColorAdjustments = {
+    ...DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+    ...adjustments,
+  };
+
+  const hueRad = ((adj.hueRotateDeg || 0) * Math.PI) / 180;
+  const cosH = Math.cos(hueRad);
+  const sinH = Math.sin(hueRad);
+  const sat = Math.max(0, (adj.saturationPct ?? 100) / 100);
+  const bri = Math.max(0, (adj.brightnessPct ?? 100) / 100);
+  const con = Math.max(0, (adj.contrastPct ?? 100) / 100);
+  const tintAmt = Math.max(0, Math.min(1, (adj.tintStrengthPct ?? 0) / 100));
+
+  const cleanHex = (adj.tintColor || '#fde047').replace('#', '').trim();
+  const fullHex =
+    cleanHex.length === 3
+      ? cleanHex
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : cleanHex.padEnd(6, 'f');
+  const tintR = parseInt(fullHex.slice(0, 2), 16) || 253;
+  const tintG = parseInt(fullHex.slice(2, 4), 16) || 224;
+  const tintB = parseInt(fullHex.slice(4, 6), 16) || 71;
+
+  // Identity fast-path check
+  if (
+    Math.abs(adj.hueRotateDeg || 0) < 0.01 &&
+    Math.abs(sat - 1) < 0.005 &&
+    Math.abs(bri - 1) < 0.005 &&
+    Math.abs(con - 1) < 0.005 &&
+    tintAmt < 0.005
+  ) {
+    return;
+  }
+
+  // Hue rotation matrix coefficients (luminance-preserving)
+  const m00 = 0.213 + cosH * 0.787 - sinH * 0.213;
+  const m01 = 0.715 - cosH * 0.715 - sinH * 0.715;
+  const m02 = 0.072 - cosH * 0.072 + sinH * 0.928;
+  const m10 = 0.213 - cosH * 0.213 + sinH * 0.143;
+  const m11 = 0.715 + cosH * 0.285 + sinH * 0.14;
+  const m12 = 0.072 - cosH * 0.072 - sinH * 0.283;
+  const m20 = 0.213 - cosH * 0.213 - sinH * 0.787;
+  const m21 = 0.715 - cosH * 0.715 + sinH * 0.715;
+  const m22 = 0.072 + cosH * 0.928 + sinH * 0.072;
+
+  const len = data.length;
+  for (let i = 0; i < len; i += 4) {
+    const a = data[i + 3];
+    if (a === 0) continue;
+
+    let r = data[i];
+    let g = data[i + 1];
+    let b = data[i + 2];
+
+    // 1. Hue rotation
+    if (Math.abs(adj.hueRotateDeg || 0) >= 0.01) {
+      const nr = m00 * r + m01 * g + m02 * b;
+      const ng = m10 * r + m11 * g + m12 * b;
+      const nb = m20 * r + m21 * g + m22 * b;
+      r = nr;
+      g = ng;
+      b = nb;
+    }
+
+    // 2. Saturation
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = lum + (r - lum) * sat;
+    g = lum + (g - lum) * sat;
+    b = lum + (b - lum) * sat;
+
+    // 3. Contrast & Brightness
+    r = (r - 128) * con + 128;
+    g = (g - 128) * con + 128;
+    b = (b - 128) * con + 128;
+
+    r *= bri;
+    g *= bri;
+    b *= bri;
+
+    // 4. Specular Color Tint (luminance-modulated so shadows stay rich and midtones/highlights glow)
+    if (tintAmt > 0.005) {
+      const normLum = Math.max(0.15, Math.min(1.25, (0.299 * r + 0.587 * g + 0.114 * b) / 200));
+      const tr = tintR * normLum;
+      const tg = tintG * normLum;
+      const tb = tintB * normLum;
+      r = r * (1 - tintAmt) + tr * tintAmt;
+      g = g * (1 - tintAmt) + tg * tintAmt;
+      b = b * (1 - tintAmt) + tb * tintAmt;
+    }
+
+    data[i] = r < 0 ? 0 : r > 255 ? 255 : Math.round(r);
+    data[i + 1] = g < 0 ? 0 : g > 255 ? 255 : Math.round(g);
+    data[i + 2] = b < 0 ? 0 : b > 255 ? 255 : Math.round(b);
+  }
+}
+
+/**
+ * Synchronously renders a color-adjusted copy of `sourceBitmap` onto an HTMLCanvasElement
+ * for the Same-Layer Color-Clone Shine system (`layer_color_clone`).
+ */
+export function renderColorAdjustedLayerCanvasSync(options: {
+  sourceBitmap: CanvasImageSource;
+  width: number;
+  height: number;
+  adjustments?: Partial<CloneLayerColorAdjustments>;
+  targetCanvas?: HTMLCanvasElement;
+}): HTMLCanvasElement {
+  const W = Math.max(2, Math.min(2400, Math.round(options.width || 300)));
+  const H = Math.max(2, Math.min(2400, Math.round(options.height || 300)));
+  const c = options.targetCanvas || document.createElement('canvas');
+  if (c.width !== W || c.height !== H) {
+    c.width = W;
+    c.height = H;
+  }
+  const ctx = c.getContext('2d')!;
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(options.sourceBitmap, 0, 0, W, H);
+
+  try {
+    const imgData = ctx.getImageData(0, 0, W, H);
+    applyColorAdjustmentsToRgbaBytes(imgData.data, options.adjustments);
+    ctx.putImageData(imgData, 0, 0);
+  } catch {}
+
+  return c;
+}
+
+/**
+ * Asynchronously encodes a color-adjusted copy of `sourceBitmap` into `ImageBitmap`, `pngBytes`, and `dataUrl`.
+ */
+export async function renderColorAdjustedLayerBitmapAndBytes(options: {
+  sourceBitmap: CanvasImageSource;
+  width: number;
+  height: number;
+  adjustments?: Partial<CloneLayerColorAdjustments>;
+}): Promise<{
+  bitmap: ImageBitmap;
+  pngBytes: Uint8Array;
+  dataUrl: string;
+  width: number;
+  height: number;
+}> {
+  const c = renderColorAdjustedLayerCanvasSync(options);
+  const W = c.width;
+  const H = c.height;
+  const dataUrl = c.toDataURL('image/png');
+  const blob: Blob = await new Promise((resolve) =>
+    c.toBlob((b) => resolve(b || new Blob()), 'image/png')
+  );
+  const pngBytes = new Uint8Array(await blob.arrayBuffer());
+  const bitmap = await createImageBitmap(blob);
+  return { bitmap, pngBytes, dataUrl, width: W, height: H };
+}
+
+/**
+ * Live Canvas Masking Engine for System 2 (`shineSystemMode === 'layer_color_clone'`).
+ * Masks the stationary color-modified layer on `compCtx` using the moving soft shine band
+ * (in `'sweep_reveal'` mode) and/or the user's selected polygon region (`maskContours`).
+ */
+export function applyCloneLayerShineMaskToCanvas(options: {
+  compCtx: CanvasRenderingContext2D;
+  maskCanvas: HTMLCanvasElement;
+  maskCtx: CanvasRenderingContext2D;
+  scratchCanvas: HTMLCanvasElement;
+  config: ShineLayerConfig;
+  currentFrame: number;
+  totalFrames: number;
+  canvasW: number;
+  canvasH: number;
+  targetDeltaMatrix?: AffineMatrix | null;
+}): { visible: boolean; opacityMultiplier: number } {
+  const {
+    compCtx,
+    maskCanvas,
+    maskCtx,
+    scratchCanvas,
+    config,
+    currentFrame,
+    totalFrames,
+    canvasW,
+    canvasH,
+    targetDeltaMatrix,
+  } = options;
+
+  const W = Math.max(1, canvasW);
+  const H = Math.max(1, canvasH);
+  const sweep = evaluateShineSweepAtFrame(config, currentFrame, totalFrames, W, H);
+  if (!sweep.active || sweep.opacityFactor <= 0.001) {
+    compCtx.clearRect(0, 0, W, H);
+    return { visible: false, opacityMultiplier: 0 };
+  }
+
+  if (scratchCanvas.width !== W || scratchCanvas.height !== H) {
+    scratchCanvas.width = W;
+    scratchCanvas.height = H;
+  }
+  const scratchCtx = scratchCanvas.getContext('2d');
+  if (!scratchCtx) return { visible: true, opacityMultiplier: sweep.opacityFactor };
+
+  const edgeFeather = Math.max(0, Math.min(24, config.edgeFeather ?? 4));
+  const animStyle = config.cloneAnimStyle || 'sweep_reveal';
+
+  // Start with a full white mask on maskCtx, then intersect with polygon contours (if any) and moving sweep band
+  maskCtx.clearRect(0, 0, W, H);
+  maskCtx.fillStyle = '#ffffff';
+  maskCtx.fillRect(0, 0, W, H);
+
+  // 1. Apply custom polygon contours (or inner ring hole) if present
+  const contours = config.maskContours || [];
+  const shouldApplyContours =
+    contours.length > 0 &&
+    (config.maskMode !== 'auto_layer_contour' || (contours[1] && contours[1].length >= 3));
+
+  if (shouldApplyContours) {
+    const buildWorldContourPath = (contour: Point2D[]): string => {
+      if (!contour || contour.length < 3) return '';
+      const transformed = contour.map((pt) =>
+        targetDeltaMatrix
+          ? {
+              x: Number(
+                (targetDeltaMatrix[0] * pt.x + targetDeltaMatrix[2] * pt.y + targetDeltaMatrix[4]).toFixed(2)
+              ),
+              y: Number(
+                (targetDeltaMatrix[1] * pt.x + targetDeltaMatrix[3] * pt.y + targetDeltaMatrix[5]).toFixed(2)
+              ),
+            }
+          : pt
+      );
+      return (
+        transformed.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z'
+      );
+    };
+
+    const fullD = contours
+      .map((c) => buildWorldContourPath(c))
+      .filter(Boolean)
+      .join(' ');
+    if (fullD) {
+      scratchCtx.clearRect(0, 0, W, H);
+      scratchCtx.save();
+      if (edgeFeather > 0.5) {
+        scratchCtx.filter = `blur(${edgeFeather.toFixed(1)}px)`;
+      }
+      scratchCtx.fillStyle = '#ffffff';
+      try {
+        scratchCtx.fill(new Path2D(fullD), 'evenodd');
+      } catch {}
+      scratchCtx.restore();
+
+      maskCtx.save();
+      maskCtx.globalCompositeOperation = 'destination-in';
+      maskCtx.drawImage(scratchCanvas, 0, 0);
+      maskCtx.restore();
+    }
+  }
+
+  // 2. In 'sweep_reveal' mode, draw the moving soft slanted shine band at (sweep.x, sweep.y) and intersect
+  // Uses the exact same computeShineBandHalfSpan + computeShineBandFeatherAlphaAt raised-cosine curve
+  // as buildFeatheredCloneShineSvgaFramesList so Live Canvas Preview and Exported SVGA match 100%!
+  if (animStyle === 'sweep_reveal') {
+    const soft = Math.max(0.02, Math.min(1, config.beamSoftness ?? 0.9));
+    const halfSpan = computeShineBandHalfSpan(
+      config.shineWidth || W,
+      config.shineHeight || H,
+      W,
+      H,
+      config.beamWidthRatio ?? 0.28,
+      soft
+    );
+    const bandLength = Math.max(W, H, config.shineWidth || W, config.shineHeight || H) * 1.8;
+    const angleRad = (-(config.beamAngleDeg ?? -30) * Math.PI) / 180;
+
+    scratchCtx.clearRect(0, 0, W, H);
+    scratchCtx.save();
+    scratchCtx.translate(sweep.x, sweep.y);
+    scratchCtx.rotate(angleRad);
+
+    const grad = scratchCtx.createLinearGradient(-halfSpan, 0, halfSpan, 0);
+    const stopSteps = 20;
+    for (let s = 0; s <= stopSteps; s++) {
+      const stopPos = s / stopSteps; // 0 .. 1 across [-halfSpan, +halfSpan]
+      const normDist = Math.abs(stopPos * 2 - 1); // 1 at edges, 0 at center
+      const alphaVal = computeShineBandFeatherAlphaAt(normDist, soft);
+      grad.addColorStop(stopPos, `rgba(255,255,255,${alphaVal.toFixed(4)})`);
+    }
+
+    scratchCtx.fillStyle = grad;
+    scratchCtx.fillRect(-halfSpan, -bandLength, halfSpan * 2, bandLength * 2);
+    scratchCtx.restore();
+
+    maskCtx.save();
+    maskCtx.globalCompositeOperation = 'destination-in';
+    maskCtx.drawImage(scratchCanvas, 0, 0);
+    maskCtx.restore();
+  }
+
+  // 3. Apply final mask to compCtx
+  compCtx.save();
+  compCtx.globalCompositeOperation = 'destination-in';
+  compCtx.drawImage(maskCanvas, 0, 0);
+  compCtx.restore();
+
+  return { visible: true, opacityMultiplier: sweep.opacityFactor };
+}
+
 

@@ -1226,9 +1226,9 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
               title="قص شريط الطبقة المحددة عند الفريم الحالي"
               style={{
                 marginLeft: 'auto',
-                background: 'rgba(245,158,11,0.15)',
-                border: '1px solid rgba(245,158,11,0.4)',
-                color: '#fbbf24',
+                background: 'rgba(124, 92, 255, 0.2)',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                color: '#e9d5ff',
                 borderRadius: '5px',
                 padding: '2px 6px',
                 fontSize: '10px',
@@ -1238,7 +1238,7 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
                 gap: '3px',
               }}
             >
-              <Scissors size={10} /> قص
+              <Scissors size={10} color="#c084fc" /> قص
             </button>
           )}
           <span style={{ marginLeft: selectedTarget === 'DOCUMENT' ? 'auto' : '2px', color: '#7e7e90', fontSize: '10px' }}>

@@ -45,6 +45,7 @@ import {
   Clapperboard,
   Scaling,
   Maximize2,
+  Palette,
 } from 'lucide-react';
 import { parseMovie, pako, SvgaFrame, SvgaMovie } from '../utils/codecs';
 import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
@@ -83,6 +84,9 @@ import {
 import {
   ShineLayerConfig,
   ShineCanvasEditSubmode,
+  ShineSystemMode,
+  DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+  CLONE_COLOR_PRESETS,
   Point2D,
   Point2D as ShinePoint,
   SHINE_PRESETS,
@@ -93,8 +97,12 @@ import {
   computeTargetDeltaMatrix,
   buildShineKeyframesFromMotionPoints,
   buildClippedShineSvgaFrames,
+  buildFeatheredCloneShineSvgaFramesList,
   renderProceduralShineBitmapAndBytes,
   renderProceduralShineCanvasSync,
+  renderColorAdjustedLayerBitmapAndBytes,
+  renderColorAdjustedLayerCanvasSync,
+  applyCloneLayerShineMaskToCanvas,
   featherCustomShineBitmap,
   extractShineConfigFromExistingSprite,
   applySmartSoftFeatherMatteToMaskCanvas,
@@ -121,6 +129,7 @@ interface AddedLayer {
   name: string;
   bitmap: ImageBitmap | HTMLCanvasElement;
   originalBitmap?: ImageBitmap | HTMLCanvasElement;
+  cloneBaseBitmap?: ImageBitmap | HTMLCanvasElement;
   originalWidth?: number;
   originalHeight?: number;
   pngBytes: Uint8Array;
@@ -1476,13 +1485,42 @@ export default function SvgaAeEditor({
         const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
         if (finalAlpha <= 0.001) return;
 
-        const mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
+        let mat: AffineMatrix;
+        let drawX = 0;
+        let drawY = 0;
+        let drawW = al.width;
+        let drawH = al.height;
+        let frameSpriteAlpha = 1;
+
+        if (al.copiedFrames && al.copiedFrames.length > 0) {
+          const cf = al.copiedFrames[Math.min(currentFrame, al.copiedFrames.length - 1)];
+          if (!cf || (cf.a ?? 0) <= 0.001) return;
+          frameSpriteAlpha = cf.a ?? 1;
+          drawW = cf.w > 0 ? cf.w : al.width;
+          drawH = cf.h > 0 ? cf.h : al.height;
+          drawX = cf.x || 0;
+          drawY = cf.y || 0;
+          mat = computeSpriteFrameMatrix(cf, drawW, drawH, W, H, lt, docT);
+        } else {
+          mat = computeAddedLayerFrameMatrix(al.width, al.height, W, H, lt, docT);
+          if (
+            al.shineConfig?.enabled &&
+            al.shineConfig.shineSystemMode === 'layer_color_clone' &&
+            al.shineConfig.followTargetLayerTransform &&
+            shineTargetDelta &&
+            al.shineConfig.targetLayerId &&
+            al.shineConfig.targetLayerId !== 'DOCUMENT' &&
+            al.shineConfig.targetLayerId !== al.id
+          ) {
+            mat = multiplyAffine(shineTargetDelta, mat);
+          }
+        }
 
         for (const p of [
-          { x: 0, y: 0 },
-          { x: al.width, y: 0 },
-          { x: al.width, y: al.height },
-          { x: 0, y: al.height },
+          { x: drawX, y: drawY },
+          { x: drawX + drawW, y: drawY },
+          { x: drawX + drawW, y: drawY + drawH },
+          { x: drawX, y: drawY + drawH },
         ]) {
           const sx = mat[0] * p.x + mat[2] * p.y + mat[4];
           const sy = mat[1] * p.x + mat[3] * p.y + mat[5];
@@ -1506,7 +1544,7 @@ export default function SvgaAeEditor({
             compCtx.clearRect(0, 0, W, H);
             compCtx.save();
             compCtx.transform(mat[0], mat[1], mat[2], mat[3], mat[4], mat[5]);
-            compCtx.drawImage(al.originalBitmap || al.bitmap, 0, 0, al.width, al.height);
+            compCtx.drawImage(al.originalBitmap || al.bitmap, drawX, drawY, drawW, drawH);
             compCtx.restore();
 
             if (!shineMaskCanvasRef.current) {
@@ -1521,42 +1559,81 @@ export default function SvgaAeEditor({
               maskC.height = H;
             }
             const maskCtx = maskC.getContext('2d');
-            if (maskCtx) {
-              const useExactAlpha = al.shineConfig.exactLayerAlphaMask !== false;
-              let hasMaskPixels = false;
-              if (useExactAlpha) {
-                hasMaskPixels = drawTargetAlphaMaskAtCurrentFrame(
+
+            if (al.shineConfig.shineSystemMode === 'layer_color_clone') {
+              if (maskCtx) {
+                const cloneRes = applyCloneLayerShineMaskToCanvas({
+                  compCtx,
+                  maskCanvas: maskC,
                   maskCtx,
-                  al.shineConfig.targetLayerId
-                );
-              } else {
-                maskCtx.clearRect(0, 0, W, H);
+                  scratchCanvas: shineScratchCanvasRef.current,
+                  config: al.shineConfig,
+                  currentFrame,
+                  totalFrames,
+                  canvasW: W,
+                  canvasH: H,
+                  targetDeltaMatrix: shineTargetDelta,
+                });
+                if (cloneRes.visible && cloneRes.opacityMultiplier > 0.001) {
+                  ctx.save();
+                  ctx.globalAlpha = Math.max(
+                    0,
+                    Math.min(1, finalAlpha * frameSpriteAlpha * cloneRes.opacityMultiplier)
+                  );
+                  ctx.globalCompositeOperation = al.shineConfig.blendMode || 'source-over';
+                  ctx.drawImage(compC, 0, 0);
+                  ctx.restore();
+                }
+              }
+            } else {
+              if (maskCtx) {
+                const useExactAlpha = al.shineConfig.exactLayerAlphaMask !== false;
+                let hasMaskPixels = false;
+                if (useExactAlpha) {
+                  hasMaskPixels = drawTargetAlphaMaskAtCurrentFrame(
+                    maskCtx,
+                    al.shineConfig.targetLayerId
+                  );
+                } else {
+                  maskCtx.clearRect(0, 0, W, H);
+                }
+
+                const hasFinalMatte = applySmartSoftFeatherMatteToMaskCanvas({
+                  maskCanvas: maskC,
+                  maskCtx,
+                  scratchCanvas: shineScratchCanvasRef.current,
+                  config: al.shineConfig,
+                  targetDeltaMatrix: shineTargetDelta,
+                  hasTargetMaskPixels: hasMaskPixels,
+                  shineCanvas: compC,
+                  shineCtx: compCtx,
+                });
+
+                if (hasFinalMatte) {
+                  compCtx.save();
+                  compCtx.globalCompositeOperation = 'destination-in';
+                  compCtx.drawImage(maskC, 0, 0);
+                  compCtx.restore();
+                }
               }
 
-              const hasFinalMatte = applySmartSoftFeatherMatteToMaskCanvas({
-                maskCanvas: maskC,
-                maskCtx,
-                scratchCanvas: shineScratchCanvasRef.current,
-                config: al.shineConfig,
-                targetDeltaMatrix: shineTargetDelta,
-                hasTargetMaskPixels: hasMaskPixels,
-                shineCanvas: compC,
-                shineCtx: compCtx,
-              });
-
-              if (hasFinalMatte) {
-                compCtx.save();
-                compCtx.globalCompositeOperation = 'destination-in';
-                compCtx.drawImage(maskC, 0, 0);
-                compCtx.restore();
-              }
+              ctx.save();
+              ctx.globalAlpha = Math.max(0, Math.min(1, finalAlpha * frameSpriteAlpha));
+              ctx.globalCompositeOperation = al.shineConfig.blendMode || 'screen';
+              ctx.drawImage(compC, 0, 0);
+              ctx.restore();
             }
+          }
 
-            ctx.save();
-            ctx.globalAlpha = finalAlpha;
-            ctx.globalCompositeOperation = al.shineConfig.blendMode || 'screen';
-            ctx.drawImage(compC, 0, 0);
-            ctx.restore();
+          if (selectedTarget === al.id && !isAllLayersGrouped) {
+            selectedBounds = {
+              x: drawX,
+              y: drawY,
+              w: drawW,
+              h: drawH,
+              mat,
+              label: al.name,
+            };
           }
         } else {
           ctx.save();
@@ -3126,10 +3203,18 @@ export default function SvgaAeEditor({
       }
 
       setLayerOrder(currentOrder);
+      setSelectedTarget(layerId);
       setMoveMenuLayerId(null);
       pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
         layerOrder: currentOrder,
       });
+
+      setTimeout(() => {
+        const cardEl = document.getElementById(`layer_card_${layerId}`);
+        if (cardEl) {
+          cardEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }, 40);
 
       const label =
         direction === 'top'
@@ -3146,7 +3231,7 @@ export default function SvgaAeEditor({
 
       setLastAction(`🔄 تم نقل الطبقة إلى: ${label}`);
     },
-    [effectiveLayerOrder, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+    [effectiveLayerOrder, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory, setSelectedTarget]
   );
 
   const handleMoveSpriteLayerUp = useCallback(
@@ -4222,8 +4307,91 @@ export default function SvgaAeEditor({
     [getTargetLayerBoundsAndBitmapAtFrame, currentFrame]
   );
 
+  const extractSourceLayerCloneInfo = useCallback(
+    (targetId: string) => {
+      const srcAl = addedLayers.find((l) => l.id === targetId && !l.shineConfig?.enabled);
+      if (srcAl) {
+        return {
+          sourceBitmap: srcAl.cloneBaseBitmap || srcAl.originalBitmap || srcAl.bitmap,
+          width: srcAl.width,
+          height: srcAl.height,
+          transform: { ...srcAl.transform, ...(layerTransforms[srcAl.id] || {}) },
+          copiedFrames: srcAl.copiedFrames
+            ? srcAl.copiedFrames.map((f) => ({
+                ...f,
+                t: [...(f.t || [1, 0, 0, 1, 0, 0])] as [number, number, number, number, number, number],
+              }))
+            : undefined,
+          copiedFromKey: srcAl.copiedFromKey,
+          copiedFromDisplayNum: srcAl.copiedFromDisplayNum,
+          keyframes: layerKeyframes[srcAl.id]
+            ? (JSON.parse(JSON.stringify(layerKeyframes[srcAl.id])) as LayerPropertyKeyframes)
+            : undefined,
+          label: srcAl.name,
+        };
+      }
+
+      if (targetId.startsWith('sprite_')) {
+        const sIdx = Number(targetId.replace('sprite_', ''));
+        const sp = movie.sp[sIdx];
+        if (sp) {
+          const bm = sp.key ? bitmaps[sp.key] : undefined;
+          const th = sp.key ? thumbs[sp.key] : undefined;
+          const w = th?.w || bm?.width || canvasW;
+          const h = th?.h || bm?.height || canvasH;
+          return {
+            sourceBitmap: bm,
+            width: w,
+            height: h,
+            transform: { ...DEFAULT_TRANSFORM, ...(layerTransforms[targetId] || {}) },
+            copiedFrames: sp.fr
+              ? sp.fr.map((f) => ({
+                  ...f,
+                  t: [...(f.t || [1, 0, 0, 1, 0, 0])] as [number, number, number, number, number, number],
+                }))
+              : undefined,
+            copiedFromKey: sp.key,
+            copiedFromDisplayNum: movie.sp.length - sIdx,
+            keyframes: layerKeyframes[targetId]
+              ? (JSON.parse(JSON.stringify(layerKeyframes[targetId])) as LayerPropertyKeyframes)
+              : undefined,
+            label: sp.key || `#${movie.sp.length - sIdx}`,
+          };
+        }
+      }
+
+      const info = getTargetLayerBoundsAndBitmapAtFrame(targetId, currentFrame);
+      return {
+        sourceBitmap: info.bitmap,
+        width: Math.max(32, Math.round(info.maxX - info.minX) || canvasW),
+        height: Math.max(32, Math.round(info.maxY - info.minY) || canvasH),
+        transform: { ...DEFAULT_TRANSFORM },
+        copiedFrames: undefined,
+        copiedFromKey: undefined,
+        copiedFromDisplayNum: undefined,
+        keyframes: undefined,
+        label: info.label,
+      };
+    },
+    [
+      addedLayers,
+      layerTransforms,
+      layerKeyframes,
+      movie.sp,
+      bitmaps,
+      thumbs,
+      canvasW,
+      canvasH,
+      getTargetLayerBoundsAndBitmapAtFrame,
+      currentFrame,
+    ]
+  );
+
   const handleCreateShineLayer = useCallback(
-    async (preferredTargetId?: string): Promise<string> => {
+    async (
+      preferredTargetId?: string,
+      initialSystemMode: ShineSystemMode = 'beam_sweep'
+    ): Promise<string> => {
       // Pick the best target layer: preferredTargetId -> selectedTarget (if not a shine layer) -> topmost addedLayer -> topmost sprite -> DOCUMENT
       let resolvedTargetId = preferredTargetId || selectedTarget;
       const selectedAdded = addedLayers.find((l) => l.id === resolvedTargetId);
@@ -4254,10 +4422,146 @@ export default function SvgaAeEditor({
       const sweepEnd = Math.max(1, totalFrames - 1);
       const presetId: ShineLayerConfig['presetId'] = 'royal_gold';
       const beamAngleDeg = fullSweep.beamAngleDeg;
-      const beamWidthRatio = 0.22;
-      const beamSoftness = 0.85;
+      const beamWidthRatio = initialSystemMode === 'layer_color_clone' ? 0.28 : 0.24;
+      const beamSoftness = 0.92;
       const colorPrimary = '#fbbf24';
       const colorSecondary = '#ffffff';
+
+      const seqNum = addedLayers.filter((l) => l.shineConfig?.enabled).length + 1;
+      const id = `layer_shine_${Date.now()}_${seqNum}`;
+
+      if (initialSystemMode === 'layer_color_clone') {
+        const srcInfo = extractSourceLayerCloneInfo(resolvedTargetId);
+        let rendered: {
+          bitmap: ImageBitmap;
+          pngBytes: Uint8Array;
+          dataUrl: string;
+          width: number;
+          height: number;
+        };
+
+        if (srcInfo.sourceBitmap) {
+          rendered = await renderColorAdjustedLayerBitmapAndBytes({
+            sourceBitmap: srcInfo.sourceBitmap,
+            width: srcInfo.width,
+            height: srcInfo.height,
+            adjustments: DEFAULT_CLONE_COLOR_ADJUSTMENTS,
+          });
+        } else {
+          rendered = await renderProceduralShineBitmapAndBytes({
+            presetId,
+            width: shineW,
+            height: shineH,
+            colorPrimary,
+            colorSecondary,
+            beamAngleDeg,
+            beamWidthRatio,
+            beamSoftness,
+          });
+        }
+
+        const assetKey = `shine_clone_${seqNum}`;
+        const name = `🎨 لمعة طبقة ملونة ${seqNum} (${bounds.label.slice(0, 18)})`;
+
+        const shineConfig: ShineLayerConfig = {
+          enabled: true,
+          shineSystemMode: 'layer_color_clone',
+          cloneAnimStyle: 'sweep_reveal',
+          colorAdjustments: { ...DEFAULT_CLONE_COLOR_ADJUSTMENTS },
+          targetLayerId: resolvedTargetId,
+          followTargetLayerTransform: true,
+          exactLayerAlphaMask: true,
+          metallicSurfaceRelief: false,
+          edgeFeather: 8,
+          shineOpacity: 100,
+          blendMode: 'source-over',
+          maskMode: 'auto_layer_contour',
+          maskContours: contours,
+          motionPoints,
+          presetId,
+          colorPrimary,
+          colorSecondary,
+          beamAngleDeg,
+          beamWidthRatio,
+          beamSoftness,
+          shineWidth: rendered.width,
+          shineHeight: rendered.height,
+          startFrame: sweepStart,
+          endFrame: sweepEnd,
+          loopCount: 1,
+          pauseFrames: 0,
+          referenceFrame: currentFrame,
+        };
+
+        const newShineLayer: AddedLayer = {
+          id,
+          assetKey,
+          name,
+          bitmap: rendered.bitmap,
+          originalBitmap: rendered.bitmap,
+          cloneBaseBitmap: srcInfo.sourceBitmap || rendered.bitmap,
+          originalWidth: rendered.width,
+          originalHeight: rendered.height,
+          pngBytes: rendered.pngBytes,
+          dataUrl: rendered.dataUrl,
+          width: rendered.width,
+          height: rendered.height,
+          bytes: rendered.pngBytes.byteLength,
+          transform: {
+            ...srcInfo.transform,
+            opacity: 100,
+          },
+          inFrame: 0,
+          outFrame: totalFrames - 1,
+          copiedFrames: srcInfo.copiedFrames,
+          copiedFromKey: srcInfo.copiedFromKey,
+          copiedFromDisplayNum: srcInfo.copiedFromDisplayNum,
+          shineConfig,
+        };
+
+        const targetIdxInOrder = effectiveLayerOrder.indexOf(resolvedTargetId);
+        const nextLayerOrder = [...effectiveLayerOrder];
+        if (targetIdxInOrder !== -1) {
+          nextLayerOrder.splice(targetIdxInOrder + 1, 0, id);
+        } else {
+          nextLayerOrder.push(id);
+        }
+        setLayerOrder(nextLayerOrder);
+
+        let nextAdded: AddedLayer[];
+        const targetInAddedIdx = addedLayers.findIndex((l) => l.id === resolvedTargetId);
+        if (targetInAddedIdx !== -1) {
+          nextAdded = [...addedLayers];
+          nextAdded.splice(targetInAddedIdx + 1, 0, newShineLayer);
+        } else {
+          nextAdded = [...addedLayers, newShineLayer];
+        }
+
+        const nextKfs = {
+          ...layerKeyframes,
+          ...(srcInfo.keyframes ? { [id]: srcInfo.keyframes } : {}),
+        };
+        setAddedLayers(nextAdded);
+        setLayerKeyframes(nextKfs);
+        setExpandedTimelineLayerIds((prev) => {
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+        setSelectedTarget(id);
+        setSelectedAssetKey(null);
+        setShineEditSubmode('motion_points');
+        setActiveTool('Shine');
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          addedLayers: nextAdded,
+          layerKeyframes: nextKfs,
+          layerOrder: nextLayerOrder,
+        });
+        setLastAction(
+          `🎨 تم إنشاء طبقة لمعة ثانية مطابقة للطبقة الأساسية (${bounds.label}) بألوان مضيئة قابلة للتعديل والتحديد`
+        );
+        return id;
+      }
 
       const rendered = await renderProceduralShineBitmapAndBytes({
         presetId,
@@ -4270,13 +4574,12 @@ export default function SvgaAeEditor({
         beamSoftness,
       });
 
-      const seqNum = addedLayers.filter((l) => l.shineConfig?.enabled).length + 1;
-      const id = `layer_shine_${Date.now()}_${seqNum}`;
       const assetKey = `shine_beam_${seqNum}`;
       const name = `✨ لمعة احترافية ${seqNum} (${bounds.label.slice(0, 18)})`;
 
       const shineConfig: ShineLayerConfig = {
         enabled: true,
+        shineSystemMode: 'beam_sweep',
         targetLayerId: resolvedTargetId,
         followTargetLayerTransform: true,
         exactLayerAlphaMask: true,
@@ -4386,6 +4689,7 @@ export default function SvgaAeEditor({
       hiddenLayerIds,
       spriteLayers,
       traceContoursFromLayerTarget,
+      extractSourceLayerCloneInfo,
       totalFrames,
       canvasW,
       canvasH,
@@ -4422,45 +4726,21 @@ export default function SvgaAeEditor({
       let nextW = targetLayer.width;
       let nextH = targetLayer.height;
 
-      // If user adjusts procedural beam sliders while on custom_image, automatically switch to royal_gold procedural SVGA beam
-      if (
-        options?.regenerateBitmap &&
-        nextConfig.presetId === 'custom_image' &&
-        (patch.beamAngleDeg !== undefined ||
-          patch.beamWidthRatio !== undefined ||
-          patch.colorPrimary !== undefined ||
-          patch.colorSecondary !== undefined)
-      ) {
-        nextConfig.presetId = 'royal_gold';
-      }
+      const isColorClone = nextConfig.shineSystemMode === 'layer_color_clone';
 
-      // Ensure procedural shine bitmap is always a well-proportioned square canvas large enough for any target layer
-      if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
-        const curSide = Math.max(
-          nextConfig.shineWidth || 0,
-          nextConfig.shineHeight || 0,
-          targetLayer.width,
-          targetLayer.height
-        );
-        const procSide =
-          nextConfig.shineWidth === nextConfig.shineHeight && (nextConfig.shineWidth || 0) >= 240
-            ? Math.min(2200, nextConfig.shineWidth!)
-            : Math.max(320, Math.min(2200, Math.round(curSide)));
-        const syncCanvas = renderProceduralShineCanvasSync({
-          presetId: nextConfig.presetId,
-          width: procSide,
-          height: procSide,
-          colorPrimary: nextConfig.colorPrimary || '#fbbf24',
-          colorSecondary: nextConfig.colorSecondary || '#ffffff',
-          beamAngleDeg: nextConfig.beamAngleDeg ?? -30,
-          beamWidthRatio: nextConfig.beamWidthRatio ?? 0.18,
-          beamSoftness: nextConfig.beamSoftness ?? 0.85,
+      if (options?.regenerateBitmap && isColorClone) {
+        const baseBm =
+          targetLayer.cloneBaseBitmap || targetLayer.originalBitmap || targetLayer.bitmap;
+        const syncCanvas = renderColorAdjustedLayerCanvasSync({
+          sourceBitmap: baseBm,
+          width: targetLayer.width,
+          height: targetLayer.height,
+          adjustments: nextConfig.colorAdjustments,
         });
         nextBitmap = syncCanvas;
         nextW = syncCanvas.width;
         nextH = syncCanvas.height;
 
-        // Debounce PNG encoding + thumbnail update 200ms after slider drag stops
         if (shineBakeTimerRef.current !== null) {
           window.clearTimeout(shineBakeTimerRef.current);
         }
@@ -4489,6 +4769,75 @@ export default function SvgaAeEditor({
             );
           } catch {}
         }, 200);
+      } else {
+        // If user adjusts procedural beam sliders while on custom_image, automatically switch to royal_gold procedural SVGA beam
+        if (
+          options?.regenerateBitmap &&
+          nextConfig.presetId === 'custom_image' &&
+          (patch.beamAngleDeg !== undefined ||
+            patch.beamWidthRatio !== undefined ||
+            patch.colorPrimary !== undefined ||
+            patch.colorSecondary !== undefined)
+        ) {
+          nextConfig.presetId = 'royal_gold';
+        }
+
+        // Ensure procedural shine bitmap is always a well-proportioned square canvas large enough for any target layer
+        if (options?.regenerateBitmap && nextConfig.presetId !== 'custom_image') {
+          const curSide = Math.max(
+            nextConfig.shineWidth || 0,
+            nextConfig.shineHeight || 0,
+            targetLayer.width,
+            targetLayer.height
+          );
+          const procSide =
+            nextConfig.shineWidth === nextConfig.shineHeight && (nextConfig.shineWidth || 0) >= 240
+              ? Math.min(2200, nextConfig.shineWidth!)
+              : Math.max(320, Math.min(2200, Math.round(curSide)));
+          const syncCanvas = renderProceduralShineCanvasSync({
+            presetId: nextConfig.presetId,
+            width: procSide,
+            height: procSide,
+            colorPrimary: nextConfig.colorPrimary || '#fbbf24',
+            colorSecondary: nextConfig.colorSecondary || '#ffffff',
+            beamAngleDeg: nextConfig.beamAngleDeg ?? -30,
+            beamWidthRatio: nextConfig.beamWidthRatio ?? 0.18,
+            beamSoftness: nextConfig.beamSoftness ?? 0.85,
+          });
+          nextBitmap = syncCanvas;
+          nextW = syncCanvas.width;
+          nextH = syncCanvas.height;
+
+          // Debounce PNG encoding + thumbnail update 200ms after slider drag stops
+          if (shineBakeTimerRef.current !== null) {
+            window.clearTimeout(shineBakeTimerRef.current);
+          }
+          shineBakeTimerRef.current = window.setTimeout(async () => {
+            shineBakeTimerRef.current = null;
+            try {
+              const dataUrl = syncCanvas.toDataURL('image/png');
+              const blob: Blob = await new Promise((resolve) =>
+                syncCanvas.toBlob((b) => resolve(b || new Blob()), 'image/png')
+              );
+              const pngBytes = new Uint8Array(await blob.arrayBuffer());
+              const bm = await createImageBitmap(blob);
+              setAddedLayers((prev) =>
+                prev.map((l) =>
+                  l.id === shineLayerId
+                    ? {
+                        ...l,
+                        bitmap: bm,
+                        originalBitmap: bm,
+                        pngBytes,
+                        dataUrl,
+                        bytes: pngBytes.byteLength,
+                      }
+                    : l
+                )
+              );
+            } catch {}
+          }, 200);
+        }
       }
 
       let nextTransform = { ...targetLayer.transform };
@@ -4519,7 +4868,7 @@ export default function SvgaAeEditor({
         });
       }
 
-      if (options?.regenerateKeyframes && nextConfig.motionPoints.length >= 1) {
+      if (options?.regenerateKeyframes && nextConfig.motionPoints.length >= 1 && !isColorClone) {
         const kfs = buildShineKeyframesFromMotionPoints(
           nextConfig,
           totalFrames,
@@ -4576,6 +4925,318 @@ export default function SvgaAeEditor({
       }
     },
     [addedLayers, canvasW, canvasH, totalFrames, currentFrame]
+  );
+
+  /**
+   * Converts an existing uploaded AddedLayer directly into a Same-Layer Color-Clone Shine Layer (System 2),
+   * keeping its exact user-modified colors and placement while enabling sweep/pulse shine masking!
+   */
+  const handleConvertAddedLayerToColorCloneShine = useCallback(
+    (layerId: string) => {
+      const targetLayer = addedLayers.find((l) => l.id === layerId);
+      if (!targetLayer) return;
+
+      // Find an underlying base layer if available, or use the layer itself
+      const idxInOrder = effectiveLayerOrder.indexOf(layerId);
+      let baseTargetId = layerId;
+      if (idxInOrder > 0) {
+        const belowId = effectiveLayerOrder[idxInOrder - 1];
+        if (belowId) baseTargetId = belowId;
+      }
+
+      const { contours, bounds } = traceContoursFromLayerTarget(layerId, true, 28);
+      const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
+      const originalCustomPreset =
+        CLONE_COLOR_PRESETS.find((p) => p.id === 'original_custom')?.adjustments ||
+        DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+
+      const shineConfig: ShineLayerConfig = {
+        enabled: true,
+        shineSystemMode: 'layer_color_clone',
+        cloneAnimStyle: 'sweep_reveal',
+        colorAdjustments: { ...originalCustomPreset },
+        targetLayerId: baseTargetId,
+        followTargetLayerTransform: false,
+        exactLayerAlphaMask: true,
+        metallicSurfaceRelief: false,
+        edgeFeather: 3,
+        shineOpacity: 100,
+        blendMode: 'source-over',
+        maskMode: 'auto_layer_contour',
+        maskContours: contours,
+        motionPoints: fullSweep.motionPoints,
+        presetId: 'custom_image',
+        colorPrimary: '#fbbf24',
+        colorSecondary: '#ffffff',
+        beamAngleDeg: fullSweep.beamAngleDeg,
+        beamWidthRatio: 0.24,
+        beamSoftness: 0.85,
+        shineWidth: targetLayer.width,
+        shineHeight: targetLayer.height,
+        startFrame: 0,
+        endFrame: Math.max(1, totalFrames - 1),
+        loopCount: 1,
+        pauseFrames: 0,
+        referenceFrame: currentFrame,
+      };
+
+      setAddedLayers((prev) =>
+        prev.map((l) =>
+          l.id === layerId
+            ? {
+                ...l,
+                name: l.name.startsWith('🎨') ? l.name : `🎨 لمعة: ${l.name}`,
+                cloneBaseBitmap: l.cloneBaseBitmap || l.originalBitmap || l.bitmap,
+                shineConfig,
+              }
+            : l
+        )
+      );
+      setSelectedTarget(layerId);
+      setSelectedAssetKey(null);
+      setShineEditSubmode('motion_points');
+      setActiveTool('Shine');
+      setLastAction(
+        `🎨 تم تحويل الطبقة (${targetLayer.name}) إلى طبقة لامعة ملونة (لمعة ٢) مع الحفاظ على ألوانها وموضعها 100%`
+      );
+    },
+    [addedLayers, effectiveLayerOrder, traceContoursFromLayerTarget, totalFrames, currentFrame]
+  );
+
+  /**
+   * Switches an existing Shine Layer between System 1 ('beam_sweep') and System 2 ('layer_color_clone').
+   */
+  const handleSwitchShineSystemMode = useCallback(
+    async (shineLayerId: string, mode: ShineSystemMode) => {
+      const targetLayer = addedLayers.find((l) => l.id === shineLayerId);
+      if (!targetLayer || !targetLayer.shineConfig) return;
+      const sc = targetLayer.shineConfig;
+
+      if (mode === 'layer_color_clone') {
+        const srcInfo = extractSourceLayerCloneInfo(sc.targetLayerId);
+        const adj = sc.colorAdjustments || DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+        if (srcInfo.sourceBitmap) {
+          const rendered = await renderColorAdjustedLayerBitmapAndBytes({
+            sourceBitmap: srcInfo.sourceBitmap,
+            width: srcInfo.width,
+            height: srcInfo.height,
+            adjustments: adj,
+          });
+          setAddedLayers((prev) =>
+            prev.map((l) =>
+              l.id === shineLayerId
+                ? {
+                    ...l,
+                    bitmap: rendered.bitmap,
+                    originalBitmap: rendered.bitmap,
+                    cloneBaseBitmap: srcInfo.sourceBitmap || rendered.bitmap,
+                    pngBytes: rendered.pngBytes,
+                    dataUrl: rendered.dataUrl,
+                    width: rendered.width,
+                    height: rendered.height,
+                    bytes: rendered.pngBytes.byteLength,
+                    transform: { ...srcInfo.transform, opacity: sc.shineOpacity ?? 100 },
+                    copiedFrames: srcInfo.copiedFrames,
+                    copiedFromKey: srcInfo.copiedFromKey,
+                    copiedFromDisplayNum: srcInfo.copiedFromDisplayNum,
+                    shineConfig: {
+                      ...sc,
+                      shineSystemMode: 'layer_color_clone',
+                      cloneAnimStyle: sc.cloneAnimStyle || 'sweep_reveal',
+                      colorAdjustments: adj,
+                      blendMode: 'source-over',
+                      shineWidth: rendered.width,
+                      shineHeight: rendered.height,
+                    },
+                  }
+                : l
+            )
+          );
+          setLayerKeyframes((prev) => ({
+            ...prev,
+            [shineLayerId]: srcInfo.keyframes || {},
+          }));
+          setLastAction(
+            `🎨 تم التبديل إلى النظام الثاني: لمعة نفس الطبقة الأساسية (${srcInfo.label}) بألوان متغيرة`
+          );
+          return;
+        }
+      } else {
+        // Switch back to System 1 ('beam_sweep')
+        const bounds = getTargetLayerBoundsAndBitmapAtFrame(sc.targetLayerId, currentFrame);
+        const fullSweep = computeFullLayerShineSweepAndSize(bounds, 'diag_tl_br');
+        const rendered = await renderProceduralShineBitmapAndBytes({
+          presetId: sc.presetId === 'custom_image' ? 'royal_gold' : sc.presetId,
+          width: fullSweep.shineWidth,
+          height: fullSweep.shineHeight,
+          colorPrimary: sc.colorPrimary || '#fbbf24',
+          colorSecondary: sc.colorSecondary || '#ffffff',
+          beamAngleDeg: sc.beamAngleDeg ?? fullSweep.beamAngleDeg,
+          beamWidthRatio: sc.beamWidthRatio ?? 0.2,
+          beamSoftness: sc.beamSoftness ?? 0.85,
+        });
+        const nextConfig: ShineLayerConfig = {
+          ...sc,
+          shineSystemMode: 'beam_sweep',
+          presetId: sc.presetId === 'custom_image' ? 'royal_gold' : sc.presetId,
+          blendMode: 'screen',
+          shineWidth: rendered.width,
+          shineHeight: rendered.height,
+        };
+        const kfs = buildShineKeyframesFromMotionPoints(
+          nextConfig,
+          totalFrames,
+          canvasW,
+          canvasH,
+          sc.shineOpacity ?? 100
+        );
+        const startPos = kfs.position?.[sc.startFrame] || { x: 0, y: 0 };
+        setAddedLayers((prev) =>
+          prev.map((l) =>
+            l.id === shineLayerId
+              ? {
+                  ...l,
+                  bitmap: rendered.bitmap,
+                  originalBitmap: rendered.bitmap,
+                  pngBytes: rendered.pngBytes,
+                  dataUrl: rendered.dataUrl,
+                  width: rendered.width,
+                  height: rendered.height,
+                  bytes: rendered.pngBytes.byteLength,
+                  copiedFrames: undefined,
+                  transform: {
+                    ...DEFAULT_TRANSFORM,
+                    x: startPos.x,
+                    y: startPos.y,
+                    opacity: sc.shineOpacity ?? 100,
+                  },
+                  shineConfig: nextConfig,
+                }
+              : l
+          )
+        );
+        setLayerKeyframes((prev) => ({
+          ...prev,
+          [shineLayerId]: kfs,
+        }));
+        setLastAction('✨ تم التبديل إلى النظام الأول: لمعة الشعاع الكلاسيكية');
+      }
+    },
+    [
+      addedLayers,
+      extractSourceLayerCloneInfo,
+      getTargetLayerBoundsAndBitmapAtFrame,
+      currentFrame,
+      totalFrames,
+      canvasW,
+      canvasH,
+    ]
+  );
+
+  const handleUploadCloneColorImage = useCallback(
+    async (shineLayerId: string, file: File) => {
+      try {
+        const rawBm = await createImageBitmap(file);
+        const c = document.createElement('canvas');
+        c.width = rawBm.width;
+        c.height = rawBm.height;
+        c.getContext('2d')?.drawImage(rawBm, 0, 0);
+        const dataUrl = c.toDataURL('image/png');
+        const blob: Blob = await new Promise((resolve) =>
+          c.toBlob((b) => resolve(b || new Blob()), 'image/png')
+        );
+        const pngBytes = new Uint8Array(await blob.arrayBuffer());
+        const originalCustom =
+          CLONE_COLOR_PRESETS.find((p) => p.id === 'original_custom')?.adjustments ||
+          DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+
+        setAddedLayers((prev) =>
+          prev.map((l) =>
+            l.id === shineLayerId && l.shineConfig
+              ? {
+                  ...l,
+                  bitmap: rawBm,
+                  originalBitmap: rawBm,
+                  cloneBaseBitmap: rawBm,
+                  originalWidth: rawBm.width,
+                  originalHeight: rawBm.height,
+                  pngBytes,
+                  dataUrl,
+                  width: rawBm.width,
+                  height: rawBm.height,
+                  bytes: pngBytes.byteLength,
+                  shineConfig: {
+                    ...l.shineConfig,
+                    shineSystemMode: 'layer_color_clone',
+                    colorAdjustments: { ...originalCustom },
+                    shineWidth: rawBm.width,
+                    shineHeight: rawBm.height,
+                  },
+                }
+              : l
+          )
+        );
+        setLastAction(
+          `🎨 تم رفع صورة الطبقة الملونة (${file.name}) بكامل تفاصيلها وحوافها الأصلية لتعمل كطبقة لامعة`
+        );
+      } catch {
+        setLastAction('تعذر قراءة صورة الطبقة الملونة المرفوعة');
+      }
+    },
+    []
+  );
+
+  const handleSelectExistingLayerAsCloneSource = useCallback(
+    async (shineLayerId: string, sourceLayerId: string) => {
+      const srcInfo = extractSourceLayerCloneInfo(sourceLayerId);
+      if (!srcInfo.sourceBitmap) return;
+      const originalCustom =
+        CLONE_COLOR_PRESETS.find((p) => p.id === 'original_custom')?.adjustments ||
+        DEFAULT_CLONE_COLOR_ADJUSTMENTS;
+      const rendered = await renderColorAdjustedLayerBitmapAndBytes({
+        sourceBitmap: srcInfo.sourceBitmap,
+        width: srcInfo.width,
+        height: srcInfo.height,
+        adjustments: originalCustom,
+      });
+
+      setAddedLayers((prev) =>
+        prev.map((l) =>
+          l.id === shineLayerId && l.shineConfig
+            ? {
+                ...l,
+                bitmap: rendered.bitmap,
+                originalBitmap: rendered.bitmap,
+                cloneBaseBitmap: srcInfo.sourceBitmap || rendered.bitmap,
+                pngBytes: rendered.pngBytes,
+                dataUrl: rendered.dataUrl,
+                width: rendered.width,
+                height: rendered.height,
+                bytes: rendered.pngBytes.byteLength,
+                transform: {
+                  ...srcInfo.transform,
+                  opacity: l.shineConfig.shineOpacity ?? 100,
+                },
+                copiedFrames: srcInfo.copiedFrames,
+                copiedFromKey: srcInfo.copiedFromKey,
+                copiedFromDisplayNum: srcInfo.copiedFromDisplayNum,
+                shineConfig: {
+                  ...l.shineConfig,
+                  shineSystemMode: 'layer_color_clone',
+                  customCloneSourceLayerId: sourceLayerId,
+                  colorAdjustments: { ...originalCustom },
+                  shineWidth: rendered.width,
+                  shineHeight: rendered.height,
+                },
+              }
+            : l
+        )
+      );
+      setLastAction(
+        `🎨 تم تحديد الطبقة (${srcInfo.label}) لتعمل كطبقة لامعة ومطابقة موضعها وحركتها 100%`
+      );
+    },
+    [extractSourceLayerCloneInfo]
   );
 
   const handleAutoTraceShineTarget = useCallback(
@@ -6400,7 +7061,7 @@ export default function SvgaAeEditor({
           al.shineConfig.targetLayerId !== 'DOCUMENT'
             ? resolveTargetMatrixAtFrame(al.shineConfig.targetLayerId, refFrame) || undefined
             : undefined;
-        exportCopiedFrames = buildClippedShineSvgaFrames({
+        const featheredSlices = buildFeatheredCloneShineSvgaFramesList({
           totalFrames,
           shineWidth: exportW,
           shineHeight: exportH,
@@ -6424,6 +7085,25 @@ export default function SvgaAeEditor({
               ? (fIdx) => resolveTargetMatrixAtFrame(al.shineConfig!.targetLayerId, fIdx)
               : undefined,
         });
+
+        for (let sIdx = 0; sIdx < featheredSlices.length; sIdx++) {
+          extraLayers.push({
+            id: sIdx === 0 ? al.id : `${al.id}__feather_${sIdx}`,
+            parentLayerId: al.id,
+            assetKey: al.assetKey,
+            name: al.name,
+            pngBytes: exportPngBytes,
+            width: exportW,
+            height: exportH,
+            transform: exportTransform,
+            inFrame: al.inFrame,
+            outFrame: al.outFrame,
+            copiedFrames: featheredSlices[sIdx],
+            copiedFromKey: al.copiedFromKey,
+            ignoreLayerOpacity: true,
+          });
+        }
+        continue;
       }
 
       if (needsDimensionBake && sourceBm) {
@@ -6870,17 +7550,17 @@ export default function SvgaAeEditor({
                   borderRadius: '6px',
                   border: on
                     ? t.id === 'Crop' || t.id === 'Shine'
-                      ? '1px solid #f59e0b'
+                      ? '1px solid #a78bfa'
                       : '1px solid #2e2e42'
                     : '1px solid transparent',
                   background: on
                     ? t.id === 'Crop' || t.id === 'Shine'
-                      ? 'rgba(245,158,11,0.18)'
+                      ? 'rgba(124, 92, 255, 0.25)'
                       : '#191924'
                     : 'transparent',
                   color: on
                     ? t.id === 'Crop' || t.id === 'Shine'
-                      ? '#fde047'
+                      ? '#f3e8ff'
                       : '#f2f2f7'
                     : '#8e8ea0',
                   display: 'inline-flex',
@@ -6896,7 +7576,7 @@ export default function SvgaAeEditor({
           <span
             style={{
               color:
-                activeTool === 'Crop' || activeTool === 'Shine' ? '#fde047' : '#7c7c8e',
+                activeTool === 'Crop' || activeTool === 'Shine' ? '#e9d5ff' : '#7c7c8e',
               fontSize: '11px',
               marginLeft: '5px',
               fontWeight: activeTool === 'Crop' || activeTool === 'Shine' ? 700 : 400,
@@ -7209,7 +7889,7 @@ export default function SvgaAeEditor({
             <button
               type="button"
               id="edAddShineLayerBtn"
-              onClick={() => handleCreateShineLayer()}
+              onClick={() => handleCreateShineLayer( undefined, 'beam_sweep')}
               title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
               style={{
                 padding: '5px 10px',
@@ -7228,6 +7908,29 @@ export default function SvgaAeEditor({
             >
               <Sparkles size={13} color="#c084fc" />
               <span>✨ إضافة لمعة (Shine)</span>
+            </button>
+            <button
+              type="button"
+              id="edAddCloneColorShineBtn"
+              onClick={() => handleCreateShineLayer(undefined, 'layer_color_clone')}
+              title="إضافة لمعة ثانية من نفس الطبقة الأساسية بألوان متغيرة قابلة للتحديد والتحكم"
+              style={{
+                padding: '5px 10px',
+                borderRadius: '6px',
+                border: '1px solid rgba(167, 139, 250, 0.45)',
+                background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(99, 102, 241, 0.16))',
+                color: '#f3e8ff',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '11.5px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Palette size={13} color="#c084fc" />
+              <span>🎨 لمعة ٢ (نفس الطبقة ملونة)</span>
             </button>
             <button
               type="button"
@@ -7810,6 +8513,7 @@ export default function SvgaAeEditor({
                       return (
                         <div
                           key={sh.id}
+                          id={`layer_card_${sh.id}`}
                           onClick={() => {
                             setSelectedTarget(sh.id);
                             setSelectedAssetKey(null);
@@ -8107,6 +8811,7 @@ export default function SvgaAeEditor({
                       return (
                         <div
                           key={al.id}
+                          id={`layer_card_${al.id}`}
                           onClick={() => {
                             setSelectedTarget(al.id);
                             setSelectedAssetKey(null);
@@ -8368,9 +9073,9 @@ export default function SvgaAeEditor({
                                   onClick={() => handleMoveLayer(al.id, 'above', targetLid)}
                                   title="وضع اللمعة فوق الطبقة المستهدفة مباشرة"
                                   style={{
-                                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
-                                    border: '1px solid rgba(245, 158, 11, 0.5)',
-                                    color: '#fde68a',
+                                    background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(99, 102, 241, 0.18))',
+                                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                                    color: '#f3e8ff',
                                     borderRadius: '6px',
                                     padding: '6px 10px',
                                     fontSize: '11px',
@@ -8380,10 +9085,10 @@ export default function SvgaAeEditor({
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     gap: '5px',
-                                    boxShadow: '0 2px 8px rgba(245, 158, 11, 0.12)',
+                                    boxShadow: '0 2px 8px rgba(124, 92, 255, 0.16)',
                                   }}
                                 >
-                                  <Sparkles size={12} color="#fbbf24" />
+                                  <Sparkles size={12} color="#c084fc" />
                                   <span>🎯 وضع فوق الطبقة المستهدفة مباشرة ({targetName})</span>
                                 </button>
                               )}
@@ -8428,9 +9133,9 @@ export default function SvgaAeEditor({
                                     onClick={() => handleMoveLayer(al.id, 'above', moveTargetSelectId)}
                                     title="وضع فوق الطبقة المختارة"
                                     style={{
-                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(16, 185, 129, 0.2)',
-                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(16, 185, 129, 0.5)',
-                                      color: !moveTargetSelectId ? '#555' : '#6ee7b7',
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(124, 92, 255, 0.24)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(167, 139, 250, 0.5)',
+                                      color: !moveTargetSelectId ? '#555' : '#f3e8ff',
                                       borderRadius: '6px',
                                       padding: '4px 8px',
                                       fontSize: '10.5px',
@@ -8446,9 +9151,9 @@ export default function SvgaAeEditor({
                                     onClick={() => handleMoveLayer(al.id, 'below', moveTargetSelectId)}
                                     title="وضع تحت الطبقة المختارة"
                                     style={{
-                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(56, 189, 248, 0.2)',
-                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(56, 189, 248, 0.5)',
-                                      color: !moveTargetSelectId ? '#555' : '#7dd3fc',
+                                      background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(139, 92, 246, 0.2)',
+                                      border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(139, 92, 246, 0.45)',
+                                      color: !moveTargetSelectId ? '#555' : '#ddd6fe',
                                       borderRadius: '6px',
                                       padding: '4px 8px',
                                       fontSize: '10.5px',
@@ -8479,12 +9184,12 @@ export default function SvgaAeEditor({
                                 style={{
                                   flex: 1,
                                   background: al.copiedFromKey
-                                    ? 'rgba(16, 185, 129, 0.16)'
+                                    ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.28), rgba(99, 102, 241, 0.2))'
                                     : 'rgba(124, 92, 255, 0.16)',
                                   border: al.copiedFromKey
-                                    ? '1px solid rgba(16, 185, 129, 0.45)'
+                                    ? '1px solid rgba(167, 139, 250, 0.55)'
                                     : '1px solid rgba(124, 92, 255, 0.45)',
-                                  color: al.copiedFromKey ? '#6ee7b7' : '#c4b5fd',
+                                  color: al.copiedFromKey ? '#f3e8ff' : '#c4b5fd',
                                   borderRadius: '6px',
                                   padding: '4px 8px',
                                   fontSize: '10.5px',
@@ -8497,37 +9202,89 @@ export default function SvgaAeEditor({
                                   whiteSpace: 'nowrap',
                                 }}
                               >
-                                <Clapperboard size={11} />
+                                <Clapperboard size={11} color="#c084fc" />
                                 <span>{al.copiedFromKey ? 'تغيير الحركة' : 'نسخ حركة SVGA'}</span>
                               </button>
                             )}
 
                             {!isShine ? (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleCreateShineLayer(al.id);
-                                }}
-                                title="إضافة طبقة لمعة احترافية على هذه الطبقة (Shine Layer)"
-                                style={{
-                                  background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
-                                  border: '1px solid rgba(245, 158, 11, 0.5)',
-                                  color: '#fde68a',
-                                  borderRadius: '6px',
-                                  padding: '4px 8px',
-                                  fontSize: '10.5px',
-                                  fontWeight: 700,
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                <Sparkles size={11} color="#fbbf24" />
-                                <span>لمعة</span>
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCreateShineLayer(al.id, 'beam_sweep');
+                                  }}
+                                  title="إضافة طبقة لمعة شعاع احترافية على هذه الطبقة (Shine Layer)"
+                                  style={{
+                                    background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '4px 7px',
+                                    fontSize: '10px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  <Sparkles size={10} color="#c084fc" />
+                                  <span>لمعة</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCreateShineLayer(al.id, 'layer_color_clone');
+                                  }}
+                                  title="إضافة لمعة ثانية من نفس هذه الطبقة بألوان متغيرة"
+                                  style={{
+                                    background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                                    color: '#f3e8ff',
+                                    borderRadius: '6px',
+                                    padding: '4px 7px',
+                                    fontSize: '10px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  <Palette size={10} color="#c084fc" />
+                                  <span>لمعة ٢ ملونة</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleConvertAddedLayerToColorCloneShine(al.id);
+                                  }}
+                                  title="تحويل هذه الطبقة نفسها إلى طبقة لامعة (إذا كنت قد عدلت ألوانها ورفعتها)"
+                                  style={{
+                                    background: 'rgba(124, 92, 255, 0.16)',
+                                    border: '1px solid rgba(167, 139, 250, 0.45)',
+                                    color: '#e9d5ff',
+                                    borderRadius: '6px',
+                                    padding: '4px 7px',
+                                    fontSize: '10px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  <Sparkles size={10} color="#c084fc" />
+                                  <span>جعلها لامعة</span>
+                                </button>
+                              </>
                             ) : null}
 
                             <button
@@ -8539,12 +9296,12 @@ export default function SvgaAeEditor({
                               title="نسخ طبقة ثانية مباشرة فوق هذه الطبقة (Duplicate Layer)"
                               style={{
                                 background: isShine
-                                  ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                                  ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))'
                                   : 'rgba(255, 255, 255, 0.05)',
                                 border: isShine
-                                  ? '1px solid rgba(245, 158, 11, 0.5)'
+                                  ? '1px solid rgba(167, 139, 250, 0.5)'
                                   : '1px solid #28283a',
-                                color: isShine ? '#fde68a' : '#e8e8ee',
+                                color: isShine ? '#f3e8ff' : '#e8e8ee',
                                 borderRadius: '6px',
                                 padding: '4px 8px',
                                 fontSize: '10.5px',
@@ -8556,7 +9313,7 @@ export default function SvgaAeEditor({
                                 whiteSpace: 'nowrap',
                               }}
                             >
-                              <CopyPlus size={11} color={isShine ? '#fbbf24' : '#e8e8ee'} />
+                              <CopyPlus size={11} color={isShine ? '#c084fc' : '#e8e8ee'} />
                               <span>نسخ</span>
                             </button>
                             <button
@@ -8568,12 +9325,12 @@ export default function SvgaAeEditor({
                               title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
                               style={{
                                 background: isShine
-                                  ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))'
+                                  ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))'
                                   : 'rgba(255, 255, 255, 0.05)',
                                 border: isShine
-                                  ? '1px solid rgba(245, 158, 11, 0.5)'
+                                  ? '1px solid rgba(167, 139, 250, 0.5)'
                                   : '1px solid #28283a',
-                                color: isShine ? '#fde68a' : '#e8e8ee',
+                                color: isShine ? '#f3e8ff' : '#e8e8ee',
                                 borderRadius: '6px',
                                 padding: '4px 8px',
                                 fontSize: '10.5px',
@@ -8585,7 +9342,7 @@ export default function SvgaAeEditor({
                                 whiteSpace: 'nowrap',
                               }}
                             >
-                              <FlipHorizontal2 size={11} color={isShine ? '#fbbf24' : '#e8e8ee'} />
+                              <FlipHorizontal2 size={11} color={isShine ? '#c084fc' : '#e8e8ee'} />
                               <span>عكس</span>
                             </button>
                           </div>
@@ -8604,6 +9361,7 @@ export default function SvgaAeEditor({
                     return (
                       <div
                         key={sl.id}
+                        id={`layer_card_${sl.id}`}
                         onClick={() => {
                           setSelectedTarget(sl.id);
                           setSelectedAssetKey(sl.key || null);
@@ -8874,9 +9632,9 @@ export default function SvgaAeEditor({
                                   onClick={() => handleMoveLayer(sl.id, 'above', moveTargetSelectId)}
                                   title="وضع فوق الطبقة المختارة"
                                   style={{
-                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(16, 185, 129, 0.2)',
-                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(16, 185, 129, 0.5)',
-                                    color: !moveTargetSelectId ? '#555' : '#6ee7b7',
+                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(124, 92, 255, 0.24)',
+                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(167, 139, 250, 0.5)',
+                                    color: !moveTargetSelectId ? '#555' : '#f3e8ff',
                                     borderRadius: '6px',
                                     padding: '4px 8px',
                                     fontSize: '10.5px',
@@ -8892,9 +9650,9 @@ export default function SvgaAeEditor({
                                   onClick={() => handleMoveLayer(sl.id, 'below', moveTargetSelectId)}
                                   title="وضع تحت الطبقة المختارة"
                                   style={{
-                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(56, 189, 248, 0.2)',
-                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(56, 189, 248, 0.5)',
-                                    color: !moveTargetSelectId ? '#555' : '#7dd3fc',
+                                    background: !moveTargetSelectId ? 'rgba(255,255,255,0.04)' : 'rgba(139, 92, 246, 0.2)',
+                                    border: !moveTargetSelectId ? '1px solid #222232' : '1px solid rgba(139, 92, 246, 0.45)',
+                                    color: !moveTargetSelectId ? '#555' : '#ddd6fe',
                                     borderRadius: '6px',
                                     padding: '4px 8px',
                                     fontSize: '10.5px',
@@ -8915,13 +9673,13 @@ export default function SvgaAeEditor({
                             className="btn-shine-sprite"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleCreateShineLayer(sl.id);
+                              handleCreateShineLayer(sl.id, 'beam_sweep');
                             }}
                             title="إضافة طبقة لمعة احترافية مباشرة فوق هذه الطبقة (Add Shine Layer)"
                             style={{
-                              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.22), rgba(217, 119, 6, 0.14))',
-                              border: '1px solid rgba(245, 158, 11, 0.5)',
-                              color: '#fde68a',
+                              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                              border: '1px solid rgba(167, 139, 250, 0.5)',
+                              color: '#f3e8ff',
                               borderRadius: '6px',
                               padding: '4px 8px',
                               fontSize: '10.5px',
@@ -8933,8 +9691,34 @@ export default function SvgaAeEditor({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            <Sparkles size={11} color="#fbbf24" />
+                            <Sparkles size={11} color="#c084fc" />
                             <span>لمعة</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-shine-clone-sprite"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCreateShineLayer(sl.id, 'layer_color_clone');
+                            }}
+                            title="إضافة لمعة ثانية من نفس هذه الطبقة بألوان متغيرة"
+                            style={{
+                              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                              border: '1px solid rgba(167, 139, 250, 0.5)',
+                              color: '#f3e8ff',
+                              borderRadius: '6px',
+                              padding: '4px 8px',
+                              fontSize: '10.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <Palette size={11} color="#c084fc" />
+                            <span>لمعة ٢ ملونة</span>
                           </button>
                           <button
                             type="button"
@@ -10030,12 +10814,12 @@ export default function SvgaAeEditor({
                       padding: '8px 10px',
                       borderRadius: '8px',
                       border:
-                        activeTool === 'Crop' ? '1px solid #38bdf8' : '1px solid rgba(124,92,255,0.45)',
+                        activeTool === 'Crop' ? '1px solid #a78bfa' : '1px solid rgba(124,92,255,0.45)',
                       background:
                         activeTool === 'Crop'
-                          ? 'rgba(56,189,248,0.18)'
+                          ? 'rgba(124,92,255,0.28)'
                           : 'rgba(124,92,255,0.12)',
-                      color: activeTool === 'Crop' ? '#7dd3fc' : '#c4b5fd',
+                      color: activeTool === 'Crop' ? '#f3e8ff' : '#c4b5fd',
                       fontWeight: 700,
                       fontSize: '11px',
                       cursor: 'pointer',
@@ -10094,9 +10878,9 @@ export default function SvgaAeEditor({
                             width: '100%',
                             padding: '8px 10px',
                             borderRadius: '7px',
-                            border: '1px solid rgba(245, 158, 11, 0.5)',
-                            background: 'linear-gradient(135deg, rgba(245,158,11,0.22), rgba(217,119,6,0.14))',
-                            color: '#fde68a',
+                            border: '1px solid rgba(167, 139, 250, 0.5)',
+                            background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
+                            color: '#f3e8ff',
                             fontWeight: 700,
                             fontSize: '11px',
                             cursor: 'pointer',
@@ -10106,7 +10890,7 @@ export default function SvgaAeEditor({
                             gap: '6px',
                           }}
                         >
-                          <Clapperboard size={13} />
+                          <Clapperboard size={13} color="#c084fc" />
                           <span>🎬 اختر طبقة من SVGA لأخذ نفس الحركة والفريمات</span>
                         </button>
 
@@ -10119,10 +10903,10 @@ export default function SvgaAeEditor({
                               gap: '6px',
                               padding: '5px 8px',
                               borderRadius: '6px',
-                              background: 'rgba(16, 185, 129, 0.12)',
-                              border: '1px solid rgba(16, 185, 129, 0.35)',
+                              background: 'rgba(124, 92, 255, 0.14)',
+                              border: '1px solid rgba(167, 139, 250, 0.4)',
                               fontSize: '10.5px',
-                              color: '#6ee7b7',
+                              color: '#e9d5ff',
                             }}
                           >
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -10243,7 +11027,7 @@ export default function SvgaAeEditor({
                           <button
                             type="button"
                             id="edInspectorAddShineBtn"
-                            onClick={() => handleCreateShineLayer(selectedTarget)}
+                            onClick={() => handleCreateShineLayer(selectedTarget, 'beam_sweep')}
                             title="استدعاء طبقة لمعة احترافية مع نقاط القناع ومسار الحركة فوق هذه الطبقة (مثل إطار الهند)"
                             style={{
                               width: '100%',
@@ -10263,8 +11047,61 @@ export default function SvgaAeEditor({
                             }}
                           >
                             <Sparkles size={13} color="#c084fc" />
-                            <span>✨ إضافة طبقة لمعة احترافية على هذه الطبقة (Shine)</span>
+                            <span>✨ إضافة لمعة (١): شعاع بريق على هذه الطبقة</span>
                           </button>
+
+                          <button
+                            type="button"
+                            id="edInspectorAddCloneColorShineBtn"
+                            onClick={() => handleCreateShineLayer(selectedTarget, 'layer_color_clone')}
+                            title="إضافة لمعة ثانية مطابقة لنفس هذه الطبقة ولكن بألوان متغيرة قابلة للتحديد والتحكم"
+                            style={{
+                              width: '100%',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(167, 139, 250, 0.65)',
+                              background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.32), rgba(99, 102, 241, 0.22))',
+                              color: '#f3e8ff',
+                              fontWeight: 800,
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                              boxShadow: '0 2px 10px rgba(124, 92, 255, 0.2)',
+                            }}
+                          >
+                            <Palette size={13} color="#c084fc" />
+                            <span>🎨 إضافة لمعة (٢): نفس الطبقة بألوان متغيرة</span>
+                          </button>
+
+                          {selectedAddedLayer && (
+                            <button
+                              type="button"
+                              id="edInspectorConvertLayerToCloneShineBtn"
+                              onClick={() => handleConvertAddedLayerToColorCloneShine(selectedAddedLayer.id)}
+                              title="تحويل هذه الطبقة المرفوعة نفسها إلى طبقة لامعة (إذا كنت قد غيرت ألوانها ورفعتها)"
+                              style={{
+                                width: '100%',
+                                padding: '7px 10px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(167, 139, 250, 0.55)',
+                                background: 'rgba(124, 92, 255, 0.18)',
+                                color: '#e9d5ff',
+                                fontWeight: 800,
+                                fontSize: '10.5px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '6px',
+                              }}
+                            >
+                              <Sparkles size={12} color="#c084fc" />
+                              <span>🌟 تحويل هذه الطبقة المحددة نفسها إلى طبقة لامعة</span>
+                            </button>
+                          )}
 
                           {selectedTarget.startsWith('sprite_') &&
                             movie.sp[Number(selectedTarget.replace('sprite_', ''))]?.fr?.some(
@@ -10282,9 +11119,9 @@ export default function SvgaAeEditor({
                                   width: '100%',
                                   padding: '6px 8px',
                                   borderRadius: '7px',
-                                  border: '1px solid rgba(56, 189, 248, 0.5)',
-                                  background: 'rgba(14, 165, 233, 0.16)',
-                                  color: '#bae6fd',
+                                  border: '1px solid rgba(167, 139, 250, 0.5)',
+                                  background: 'rgba(124, 92, 255, 0.16)',
+                                  color: '#e9d5ff',
                                   fontWeight: 700,
                                   fontSize: '10px',
                                   cursor: 'pointer',
@@ -10294,7 +11131,7 @@ export default function SvgaAeEditor({
                                   gap: '5px',
                                 }}
                               >
-                                <Sparkles size={11} />
+                                <Sparkles size={11} color="#c084fc" />
                                 <span>🎯 استخراج نقاط القناع واللمعة من هذه الطبقة لتعديلها</span>
                               </button>
                             )}
@@ -10343,6 +11180,18 @@ export default function SvgaAeEditor({
                         }
                         onSelectSvgaAssetAsShineImage={(assetKey) =>
                           handleSelectSvgaAssetAsShineImage(selectedAddedLayer.id, assetKey)
+                        }
+                        onSwitchShineSystemMode={(mode) =>
+                          handleSwitchShineSystemMode(selectedAddedLayer.id, mode)
+                        }
+                        onRecloneFromTargetLayer={() =>
+                          handleSwitchShineSystemMode(selectedAddedLayer.id, 'layer_color_clone')
+                        }
+                        onUploadCloneColorImage={(file) =>
+                          handleUploadCloneColorImage(selectedAddedLayer.id, file)
+                        }
+                        onSelectExistingLayerAsCloneSource={(srcLayerId) =>
+                          handleSelectExistingLayerAsCloneSource(selectedAddedLayer.id, srcLayerId)
                         }
                         onTriggerPlayPreview={() => {
                           setCurrentFrame(selectedAddedLayer.shineConfig?.startFrame || 0);

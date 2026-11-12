@@ -187,6 +187,7 @@ export function moveOverlayLayerUp(
 
   return {
     ...state,
+    activeTargetId: targetId,
     overlays,
   };
 }
@@ -256,6 +257,7 @@ export function moveOverlayLayerDown(
 
   return {
     ...state,
+    activeTargetId: targetId,
     overlays,
   };
 }
@@ -278,6 +280,7 @@ export function moveOverlayLayerToTop(
 
   return {
     ...state,
+    activeTargetId: targetId,
     overlays,
   };
 }
@@ -300,6 +303,7 @@ export function moveOverlayLayerToBottom(
 
   return {
     ...state,
+    activeTargetId: targetId,
     overlays,
   };
 }
