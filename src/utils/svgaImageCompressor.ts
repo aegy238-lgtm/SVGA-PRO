@@ -1,4 +1,13 @@
-import { PB, pm, pako, UPNG, crc32 } from './codecs';
+import {
+  PB,
+  pm,
+  pako,
+  UPNG,
+  crc32,
+  isSpriteSheetAtlasClipFrame,
+  readImageDimensionsFromBytes,
+  transformSvgPath2D,
+} from './codecs';
 
 export type SvgaCompressionMode = 'auto_quality' | 'smart_300' | 'png8_only' | 'scale_proportional';
 
@@ -771,10 +780,6 @@ export function rescaleSvgaFrameEntityProtobuf(
   frameBytes: Uint8Array,
   scale: SpriteScaleEntry
 ): Uint8Array {
-  if (Math.abs(scale.sx - 1) < 1e-5 && Math.abs(scale.sy - 1) < 1e-5) {
-    return frameBytes;
-  }
-
   let alpha = 0;
   let fx = 0;
   let fy = 0;
@@ -801,13 +806,56 @@ export function rescaleSvgaFrameEntityProtobuf(
       return 1;
     }
     if (field === 3) {
+      let a = 0;
+      let b = 0;
+      let c = 0;
+      let d = 0;
+      let tx = 0;
+      let ty = 0;
+      let hasA = false;
+      let hasB = false;
+      let hasC = false;
+      let hasD = false;
       pm(r.by(), (tf, tr) => {
-        if (tf >= 1 && tf <= 6) {
-          t[tf - 1] = tr.f32();
+        if (tf === 1) {
+          a = tr.f32();
+          hasA = true;
+          return 1;
+        }
+        if (tf === 2) {
+          b = tr.f32();
+          hasB = true;
+          return 1;
+        }
+        if (tf === 3) {
+          c = tr.f32();
+          hasC = true;
+          return 1;
+        }
+        if (tf === 4) {
+          d = tr.f32();
+          hasD = true;
+          return 1;
+        }
+        if (tf === 5) {
+          tx = tr.f32();
+          return 1;
+        }
+        if (tf === 6) {
+          ty = tr.f32();
           return 1;
         }
         return 0;
       });
+      const hasRotSkew = (hasB && Math.abs(b) > 1e-7) || (hasC && Math.abs(c) > 1e-7);
+      if (!hasA) a = hasRotSkew ? 0 : 1;
+      if (!hasD) d = hasRotSkew ? 0 : 1;
+      t[0] = a;
+      t[1] = b;
+      t[2] = c;
+      t[3] = d;
+      t[4] = tx;
+      t[5] = ty;
       return 1;
     }
     if (field === 4) {
@@ -823,27 +871,52 @@ export function rescaleSvgaFrameEntityProtobuf(
 
   const resolvedFw = fw > 0 ? fw : scale.origW;
   const resolvedFh = fh > 0 ? fh : scale.origH;
-  const hasClipOrShapes = Boolean((clipPath && clipPath.length > 0) || shapesRaw.length > 0);
+  const hasShapes = shapesRaw.length > 0;
+  const isAtlasClip = isSpriteSheetAtlasClipFrame(
+    clipPath,
+    resolvedFw,
+    resolvedFh,
+    scale.origW,
+    scale.origH
+  );
 
   let newFx = fx;
   let newFy = fy;
   let newFw = resolvedFw;
   let newFh = resolvedFh;
   let newT = t;
+  let newClipPath = clipPath;
 
-  if (!hasClipOrShapes) {
-    newFx = fx / scale.sx;
-    newFy = fy / scale.sy;
-    newFw = resolvedFw / scale.sx;
-    newFh = resolvedFh / scale.sy;
+  if (!hasShapes && !isAtlasClip && scale.targetW > 0 && scale.targetH > 0) {
+    if (
+      Math.abs(resolvedFw - scale.targetW) < 0.25 &&
+      Math.abs(resolvedFh - scale.targetH) < 0.25 &&
+      Math.abs(fx) < 0.01 &&
+      Math.abs(fy) < 0.01 &&
+      Math.abs(scale.sx - 1) < 1e-5 &&
+      Math.abs(scale.sy - 1) < 1e-5
+    ) {
+      return frameBytes;
+    }
+    const effSx = resolvedFw / scale.targetW;
+    const effSy = resolvedFh / scale.targetH;
+    newFx = 0;
+    newFy = 0;
+    newFw = scale.targetW;
+    newFh = scale.targetH;
     newT = [
-      t[0] * scale.sx,
-      t[1] * scale.sx,
-      t[2] * scale.sy,
-      t[3] * scale.sy,
-      t[4],
-      t[5],
+      t[0] * effSx,
+      t[1] * effSx,
+      t[2] * effSy,
+      t[3] * effSy,
+      t[0] * fx + t[2] * fy + t[4],
+      t[1] * fx + t[3] * fy + t[5],
     ];
+    if (newClipPath && newClipPath.trim().length > 0) {
+      newClipPath = transformSvgPath2D(newClipPath, 1 / effSx, 1 / effSy, -fx / effSx, -fy / effSy);
+    }
+  } else if (Math.abs(scale.sx - 1) < 1e-5 && Math.abs(scale.sy - 1) < 1e-5) {
+    return frameBytes;
   }
 
   const outFields: Uint8Array[] = [
@@ -862,8 +935,8 @@ export function rescaleSvgaFrameEntityProtobuf(
     ),
   ];
 
-  if (clipPath.length > 0) {
-    outFields.push(psString(4, clipPath));
+  if (newClipPath.length > 0) {
+    outFields.push(psString(4, newClipPath));
   }
   for (const sh of shapesRaw) {
     outFields.push(pbBytes(5, sh));
@@ -890,7 +963,7 @@ export function rescaleSvgaSpriteEntityProtobuf(
   });
 
   const scale = imageKey ? scaleMap[imageKey] : undefined;
-  if (!scale || (Math.abs(scale.sx - 1) < 1e-5 && Math.abs(scale.sy - 1) < 1e-5)) {
+  if (!scale) {
     return spriteBytes;
   }
 
@@ -1015,19 +1088,40 @@ export function compressSvga2Binary(
             const effMode = canDownscale ? mode : 'png8_only';
             const res = compressPngBufferLikeReference(valBytes, qualityPercent, effMode);
             compressedImages.set(keyStr, res.bytes);
-            if (canDownscale) {
-              scaleMap[keyStr] = {
-                origW: res.origW,
-                origH: res.origH,
-                targetW: res.targetW,
-                targetH: res.targetH,
-                sx: res.sx,
-                sy: res.sy,
-              };
-            }
+            scaleMap[keyStr] = {
+              origW: res.origW,
+              origH: res.origH,
+              targetW: res.targetW,
+              targetH: res.targetH,
+              sx: res.sx,
+              sy: res.sy,
+            };
             compressedImageCount++;
           } catch (_) {
             compressedImages.set(keyStr, valBytes);
+            const dim = readImageDimensionsFromBytes(valBytes);
+            if (dim) {
+              scaleMap[keyStr] = {
+                origW: dim.w,
+                origH: dim.h,
+                targetW: dim.w,
+                targetH: dim.h,
+                sx: 1,
+                sy: 1,
+              };
+            }
+          }
+        } else if (!audioKeys.has(keyStr)) {
+          const dim = readImageDimensionsFromBytes(valBytes);
+          if (dim) {
+            scaleMap[keyStr] = {
+              origW: dim.w,
+              origH: dim.h,
+              targetW: dim.w,
+              targetH: dim.h,
+              sx: 1,
+              sy: 1,
+            };
           }
         }
       }

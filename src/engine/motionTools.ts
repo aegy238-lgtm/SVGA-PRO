@@ -24,6 +24,9 @@ import {
   encodeAnimatedApng,
   parseApngInfo,
   decodeApngFramesRgba,
+  isSpriteSheetAtlasClipFrame,
+  readImageDimensionsFromBytes,
+  transformSvgPath2D,
 } from '../utils/codecs';
 import {
   clampMetaToVideoBounds,
@@ -204,7 +207,7 @@ export function initMotionToolsFixed() {
     const rawHash = (location.hash || '').replace(/^#/, '').trim();
     if (
       rawHash &&
-      ['home', 'convert', 'editor', 'editor-ae2', 'gifts', 'gift-image', 'gold-designer'].includes(rawHash)
+      ['home', 'convert', 'editor', 'editor-ae2', 'gifts', 'gift-image', 'gold-designer', 'gift-finder'].includes(rawHash)
     ) {
       show(rawHash);
     } else {
@@ -272,21 +275,24 @@ export function initMotionToolsFixed() {
   fi.onchange = () => fi.files[0] && load(fi.files[0]);
   ['dragover', 'dragenter'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, or Editor tab
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, AI Gift Finder, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
+        document.getElementById('gift-finder')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
+        location.hash === '#gift-finder' ||
         location.hash === '#editor' ||
         location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
+        e.target?.closest?.('#gift-finder') ||
         e.target?.closest?.('#editor') ||
         e.target?.closest?.('#editor-ae2') ||
         e.defaultPrevented
@@ -299,21 +305,24 @@ export function initMotionToolsFixed() {
   );
   ['dragleave', 'drop'].forEach((n) =>
     document.addEventListener(n, (e: any) => {
-      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, or Editor tab
+      // Do not hijack drag/drop when on the Gifts Studio, Gift Image Creator, 3D Gold Designer, AI Gift Finder, or Editor tab
       if (
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
+        document.getElementById('gift-finder')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
+        location.hash === '#gift-finder' ||
         location.hash === '#editor' ||
         location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
+        e.target?.closest?.('#gift-finder') ||
         e.target?.closest?.('#editor') ||
         e.target?.closest?.('#editor-ae2') ||
         e.defaultPrevented
@@ -3747,6 +3756,127 @@ export function initMotionToolsFixed() {
 
   /* Block 9: SVGA 2.0 Upgrade */
   window.SVP = null;
+  function normalizeSvgaVideoEntity(vi, parsedMovie) {
+    if (!vi || typeof vi !== 'object') return vi;
+    const rawImages = vi.images || {};
+    const imgDims = {};
+    for (const [k, val] of Object.entries(rawImages)) {
+      if (typeof val !== 'string' || !val) continue;
+      let rawB64 = val;
+      if (val.startsWith('data:')) {
+        const commaIdx = val.indexOf(',');
+        if (commaIdx >= 0) rawB64 = val.slice(commaIdx + 1);
+      } else if (!val.startsWith('blob:') && !val.startsWith('http:') && !val.startsWith('https:')) {
+        if (val.startsWith('/9j/') && !val.startsWith('/9j/2w')) {
+          rawImages[k] = 'data:image/jpeg;base64,' + val;
+        } else if (val.startsWith('UklGR')) {
+          rawImages[k] = 'data:image/webp;base64,' + val;
+        } else if (val.startsWith('R0lGOD')) {
+          rawImages[k] = 'data:image/gif;base64,' + val;
+        }
+      }
+      if (parsedMovie && parsedMovie.im && parsedMovie.im[k]) {
+        const d = readImageDimensionsFromBytes(parsedMovie.im[k]);
+        if (d) {
+          imgDims[k] = d;
+          continue;
+        }
+      }
+      try {
+        const headB64 = rawB64.slice(0, 1200);
+        const d = readImageDimensionsFromBytes(unbase64(headB64));
+        if (d) imgDims[k] = d;
+      } catch (_) {}
+    }
+
+    const sprites = Array.isArray(vi.sprites) ? vi.sprites : [];
+    for (let spIdx = 0; spIdx < sprites.length; spIdx++) {
+      const sp = sprites[spIdx];
+      if (!sp || !Array.isArray(sp.frames)) continue;
+      const cleanKey = (sp.imageKey || '').replace(/\.matte$/, '');
+      const dim = imgDims[sp.imageKey] || imgDims[cleanKey];
+      const parsedSp =
+        parsedMovie && Array.isArray(parsedMovie.sp) ? parsedMovie.sp[spIdx] : null;
+
+      for (let fIdx = 0; fIdx < sp.frames.length; fIdx++) {
+        const f = sp.frames[fIdx];
+        if (!f) continue;
+        if (f.shapes && f.shapes.length > 0) continue;
+
+        const pf =
+          parsedSp &&
+          parsedSp.key === sp.imageKey &&
+          Array.isArray(parsedSp.fr) &&
+          parsedSp.fr[fIdx]
+            ? parsedSp.fr[fIdx]
+            : null;
+
+        if (pf && pf.w > 0 && pf.h > 0 && pf.t && pf.t.length === 6) {
+          f.layout = f.layout || { x: 0, y: 0, width: pf.w, height: pf.h };
+          f.layout.x = pf.x || 0;
+          f.layout.y = pf.y || 0;
+          f.layout.width = pf.w;
+          f.layout.height = pf.h;
+          f.transform = f.transform || { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+          f.transform.a = pf.t[0];
+          f.transform.b = pf.t[1];
+          f.transform.c = pf.t[2];
+          f.transform.d = pf.t[3];
+          f.transform.tx = pf.t[4];
+          f.transform.ty = pf.t[5];
+          if (pf.clipPath) {
+            f.clipPath = pf.clipPath;
+            if (f.maskPath) f.maskPath._d = pf.clipPath;
+          }
+          continue;
+        }
+
+        if (!dim || dim.w <= 0 || dim.h <= 0) continue;
+        const imgW = dim.w;
+        const imgH = dim.h;
+        const fw = f.layout && f.layout.width > 0 ? f.layout.width : imgW;
+        const fh = f.layout && f.layout.height > 0 ? f.layout.height : imgH;
+        const fx = (f.layout && f.layout.x) || 0;
+        const fy = (f.layout && f.layout.y) || 0;
+        const clipD = (f.maskPath && f.maskPath._d) || f.clipPath || '';
+
+        if (isSpriteSheetAtlasClipFrame(clipD, fw, fh, imgW, imgH)) continue;
+
+        if (
+          Math.abs(fw - imgW) > 0.25 ||
+          Math.abs(fh - imgH) > 0.25 ||
+          Math.abs(fx) > 0.01 ||
+          Math.abs(fy) > 0.01
+        ) {
+          const sx = fw / imgW;
+          const sy = fh / imgH;
+          const tr = f.transform || { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+          const a = tr.a ?? 1;
+          const b = tr.b ?? 0;
+          const c = tr.c ?? 0;
+          const d = tr.d ?? 1;
+          const tx = tr.tx ?? 0;
+          const ty = tr.ty ?? 0;
+          f.transform = {
+            a: a * sx,
+            b: b * sx,
+            c: c * sy,
+            d: d * sy,
+            tx: a * fx + c * fy + tx,
+            ty: b * fx + d * fy + ty,
+          };
+          f.layout = { x: 0, y: 0, width: imgW, height: imgH };
+          if (clipD && clipD.trim().length > 0) {
+            const scaledD = transformSvgPath2D(clipD, 1 / sx, 1 / sy, -fx / sx, -fy / sy);
+            f.clipPath = scaledD;
+            if (f.maskPath) f.maskPath._d = scaledD;
+          }
+        }
+      }
+    }
+    return vi;
+  }
+
   async function svgaUpgrade(f, v, cv) {
     window.SVP = null;
     await getLib('SVGA');
@@ -3761,12 +3891,14 @@ export function initMotionToolsFixed() {
           () => new Promise((ok, no) => new SVGA.Parser().load(u, ok, no))
         );
       if (!S || cur !== f) return;
+      normalizeSvgaVideoEntity(vi, window.SV?.m);
       const baseW = S.w || (vi && vi.videoSize && vi.videoSize.width) || 360;
       const baseH = S.h || (vi && vi.videoSize && vi.videoSize.height) || 360;
       const baseFps = S.fps || (vi && vi.FPS) || 20;
       const [hiW, hiH] = getHiResCanvasDims(baseW, baseH),
         d = document.createElement('div');
-      d.style.cssText = 'width:' + hiW + 'px;height:' + hiH + 'px';
+      d.style.cssText = 'width:' + hiW + 'px;height:' + hiH + 'px;flex-shrink:0';
+      cv.remove();
       v.appendChild(d);
       const pl = new SVGA.Player(d);
       if (vi && Array.isArray(vi.audios)) {
@@ -3785,7 +3917,6 @@ export function initMotionToolsFixed() {
         }
       }
       pl.startAnimation();
-      cv.remove();
       window.SVP = pl;
       syncPreviewSize(baseW, baseH);
       pl.onFrame((fr) => {
@@ -4064,6 +4195,20 @@ export function initMotionToolsFixed() {
                 if (canDownscale && pngBlob.__spriteScale) scaleMap[ks] = pngBlob.__spriteScale;
               }
             } catch (_) {}
+          }
+        }
+        if (!scaleMap[ks]) {
+          const actualBytes = compressedImages[ks] || val;
+          const dim = readImageDimensionsFromBytes(actualBytes);
+          if (dim) {
+            scaleMap[ks] = {
+              origW: dim.w,
+              origH: dim.h,
+              targetW: dim.w,
+              targetH: dim.h,
+              sx: 1,
+              sy: 1,
+            };
           }
         }
       }
@@ -4538,8 +4683,16 @@ export function initMotionToolsFixed() {
             Object.keys(window.EDIT || {}).length > 0 ||
             Boolean((window as any).__WATERMARK_LAYERS?.length);
           const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
+          const needsLayoutRepair = Boolean(window.SV?.m?.layoutNormalized);
 
-          if (!geomChanged && !wantCompress && !hasEdits && !hasComposerEdits && ext === 'svga') {
+          if (
+            !geomChanged &&
+            !wantCompress &&
+            !hasEdits &&
+            !hasComposerEdits &&
+            !needsLayoutRepair &&
+            ext === 'svga'
+          ) {
             await dl(cur, cur.name);
             return;
           }

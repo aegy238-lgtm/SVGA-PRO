@@ -211,3 +211,116 @@ test('compressSvga2Binary scales 750x750 sprite to 300x300 PNG-8 and compensates
   assert.ok(Math.abs(fr0.t[0] - 2.5) < 1e-4);
   assert.ok(Math.abs(fr0.t[3] - 2.5) < 1e-4);
 });
+
+test('repairs 100.69.svga-style distorted SVGA 2.0 files (69% PNGs with 100% layout, mirrored wings, and clipPath ribbons) on parse and export', async () => {
+  const { serializeDecomposedSvga } = await import('./svgaEditorLogic');
+  const { readImageDimensionsFromBytes, getSvgPathBounds } = await import('./codecs');
+
+  // Create a 69x83 PNG (69% of 100x120 wing layout) and a 138x69 PNG (69% of 200x100 ribbon layout)
+  const wingRgba = new Uint8Array(69 * 83 * 4).fill(200);
+  const wingPng = new Uint8Array((UPNG as any).encode([wingRgba.buffer], 69, 83, 0));
+  const ribbonRgba = new Uint8Array(138 * 69 * 4).fill(220);
+  const ribbonPng = new Uint8Array((UPNG as any).encode([ribbonRgba.buffer], 138, 69, 0));
+
+  assert.deepEqual(readImageDimensionsFromBytes(wingPng), { w: 69, h: 83 });
+  assert.deepEqual(readImageDimensionsFromBytes(ribbonPng), { w: 138, h: 69 });
+
+  const TE = new TextEncoder();
+  const cat = (arr: Uint8Array[]) => {
+    const o = new Uint8Array(arr.reduce((s, x) => s + x.length, 0));
+    let p = 0;
+    for (const x of arr) {
+      o.set(x, p);
+      p += x.length;
+    }
+    return o;
+  };
+  const pv = (n: number) => {
+    const o: number[] = [];
+    while (n > 127) {
+      o.push((n & 127) | 128);
+      n = Math.floor(n / 128);
+    }
+    o.push(n);
+    return Uint8Array.from(o);
+  };
+  const pf = (f: number, v: number) => cat([pv((f << 3) | 5), new Uint8Array(new Float32Array([v]).buffer)]);
+  const pi = (f: number, v: number) => cat([pv(f << 3), pv(v)]);
+  const pb = (f: number, d: Uint8Array) => cat([pv((f << 3) | 2), pv(d.length), d]);
+  const ps = (f: number, s: string) => pb(f, TE.encode(s));
+
+  // Sprite 0: Left wing (layout 100x120, transform a=1, d=1, tx=50, ty=60 -> spans X=[50..150])
+  const leftWingFrame = pb(
+    2,
+    cat([
+      pf(1, 1),
+      pb(2, cat([pf(1, 0), pf(2, 0), pf(3, 100), pf(4, 120)])),
+      pb(3, cat([pf(1, 1), pf(2, 0), pf(3, 0), pf(4, 1), pf(5, 50), pf(6, 60)])),
+      ps(4, 'M 0 0 L 100 0 L 100 120 L 0 120 Z'),
+    ])
+  );
+  // Sprite 1: Mirrored Right wing (layout 100x120, transform a=-1, d=1, tx=250, ty=60 -> spans X=[250..150], meeting left wing at X=150!)
+  const rightWingFrame = pb(
+    2,
+    cat([
+      pf(1, 1),
+      pb(2, cat([pf(1, 0), pf(2, 0), pf(3, 100), pf(4, 120)])),
+      pb(3, cat([pf(1, -1), pf(2, 0), pf(3, 0), pf(4, 1), pf(5, 250), pf(6, 60)])),
+      ps(4, 'M 0 0 L 100 0 L 100 120 L 0 120 Z'),
+    ])
+  );
+  // Sprite 2: Clipped Ribbon (layout 200x100, transform a=1, d=1, tx=50, ty=190, clipPath in 200x100 space)
+  const ribbonFrame = pb(
+    2,
+    cat([
+      pf(1, 1),
+      pb(2, cat([pf(1, 0), pf(2, 0), pf(3, 200), pf(4, 100)])),
+      pb(3, cat([pf(1, 1), pf(2, 0), pf(3, 0), pf(4, 1), pf(5, 50), pf(6, 190)])),
+      ps(4, 'M 0 0 L 200 0 L 200 100 L 0 100 Z'),
+    ])
+  );
+
+  const movieProto = cat([
+    ps(1, '2.0.0'),
+    pb(2, cat([pf(1, 300), pf(2, 300), pi(3, 30), pi(4, 1)])),
+    pb(3, cat([ps(1, 'wing'), pb(2, wingPng)])),
+    pb(3, cat([ps(1, 'hawa_img_F1'), pb(2, ribbonPng)])),
+    pb(4, cat([ps(1, 'wing'), leftWingFrame])),
+    pb(4, cat([ps(1, 'wing'), rightWingFrame])),
+    pb(4, cat([ps(1, 'hawa_img_F1'), ribbonFrame])),
+  ]);
+
+  const parsed = parseMovie(movieProto);
+  assert.equal(parsed.layoutNormalized, true);
+
+  // Left wing is normalized to 69x83 with a = 100/69 so right edge is 50 + 69 * (100/69) = 150
+  const lwFr = parsed.sp[0].fr[0];
+  assert.equal(lwFr.w, 69);
+  assert.equal(lwFr.h, 83);
+  const leftWingInnerEdgeX = lwFr.t[0] * lwFr.w + lwFr.t[4];
+  assert.ok(Math.abs(leftWingInnerEdgeX - 150) < 1e-2, `Expected left wing inner edge at 150, got ${leftWingInnerEdgeX}`);
+
+  // Right wing is normalized to 69x83 with a = -100/69 so inner edge is 250 + (-100/69) * 69 = 150 (zero gap!)
+  const rwFr = parsed.sp[1].fr[0];
+  assert.equal(rwFr.w, 69);
+  assert.equal(rwFr.h, 83);
+  const rightWingInnerEdgeX = rwFr.t[0] * rwFr.w + rwFr.t[4];
+  assert.ok(Math.abs(rightWingInnerEdgeX - 150) < 1e-2, `Expected right wing inner edge at 150, got ${rightWingInnerEdgeX}`);
+
+  // Ribbon clipPath is scaled from 200x100 down to 138x69 to match bitmap dimensions in external svgaplayerweb players
+  const ribFr = parsed.sp[2].fr[0];
+  assert.equal(ribFr.w, 138);
+  assert.equal(ribFr.h, 69);
+  const ribClipBounds = getSvgPathBounds(ribFr.clipPath);
+  assert.ok(ribClipBounds);
+  assert.ok(Math.abs(ribClipBounds.maxX - 138) < 1e-2);
+  assert.ok(Math.abs(ribClipBounds.maxY - 69) < 1e-2);
+
+  // Re-serializing without passing assetDimensions still preserves 69x83 and 138x69 layouts
+  const reserialized = serializeDecomposedSvga(parsed);
+  const reparsed = parseMovie(reserialized);
+  assert.equal(reparsed.sp[0].fr[0].w, 69);
+  assert.equal(reparsed.sp[1].fr[0].w, 69);
+  assert.equal(reparsed.sp[2].fr[0].w, 138);
+});
+

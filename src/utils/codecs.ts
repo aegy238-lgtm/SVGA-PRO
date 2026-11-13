@@ -163,6 +163,426 @@ export interface SvgaMovie {
   shapes?: number;
   matte?: number;
   audiosRaw?: Uint8Array[];
+  layoutNormalized?: boolean;
+}
+
+/**
+ * Reads intrinsic pixel dimensions (w, h) directly from PNG, JPEG, WebP, or GIF binary headers.
+ */
+export function readImageDimensionsFromBytes(
+  bytes?: Uint8Array | null
+): { w: number; h: number } | null {
+  if (!bytes || bytes.length < 10) return null;
+
+  // 1. PNG: \x89PNG\r\n\x1a\n + IHDR at offset 16..24
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    const w = ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0;
+    const h = ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0;
+    if (w > 0 && h > 0 && w <= 32768 && h <= 32768) return { w, h };
+  }
+
+  // 2. GIF: GIF87a / GIF89a
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    const w = bytes[6] | (bytes[7] << 8);
+    const h = bytes[8] | (bytes[9] << 8);
+    if (w > 0 && h > 0) return { w, h };
+  }
+
+  // 3. WebP: RIFF....WEBP
+  if (
+    bytes.length >= 30 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    const c0 = bytes[12];
+    const c1 = bytes[13];
+    const c2 = bytes[14];
+    const c3 = bytes[15];
+    // 'VP8 '
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x20) {
+      const w = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
+      const h = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
+      if (w > 0 && h > 0) return { w, h };
+    }
+    // 'VP8L'
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x4c && bytes[20] === 0x2f) {
+      const b0 = bytes[21];
+      const b1 = bytes[22];
+      const b2 = bytes[23];
+      const b3 = bytes[24];
+      const w = 1 + (((b1 & 0x3f) << 8) | b0);
+      const h = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+      if (w > 0 && h > 0) return { w, h };
+    }
+    // 'VP8X'
+    if (c0 === 0x56 && c1 === 0x50 && c2 === 0x38 && c3 === 0x58) {
+      const w = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+      const h = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+      if (w > 0 && h > 0) return { w, h };
+    }
+  }
+
+  // 4. JPEG: \xFF\xD8
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let p = 2;
+    while (p + 8 < bytes.length) {
+      if (bytes[p] !== 0xff) {
+        p++;
+        continue;
+      }
+      while (p < bytes.length && bytes[p] === 0xff) p++;
+      if (p + 7 >= bytes.length) break;
+      const marker = bytes[p++];
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        continue;
+      }
+      const segLen = (bytes[p] << 8) | bytes[p + 1];
+      if (segLen < 2) break;
+      if (
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      ) {
+        if (p + 6 < bytes.length) {
+          const h = (bytes[p + 3] << 8) | bytes[p + 4];
+          const w = (bytes[p + 5] << 8) | bytes[p + 6];
+          if (w > 0 && h > 0) return { w, h };
+        }
+        break;
+      }
+      p += segLen;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Computes the bounding box of an SVG path string (`clipPath`).
+ */
+export function getSvgPathBounds(
+  d?: string | null
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (!d || typeof d !== 'string') return null;
+  const tokens = d.match(/[a-df-zA-DF-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/gi);
+  if (!tokens || tokens.length === 0) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let curX = 0;
+  let curY = 0;
+  let startX = 0;
+  let startY = 0;
+  let cmd = '';
+  let isFirstMove = true;
+
+  const recordPt = (x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  };
+
+  let idx = 0;
+  while (idx < tokens.length) {
+    const tk = tokens[idx];
+    if (/^[a-df-zA-DF-Z]$/.test(tk)) {
+      cmd = tk;
+      idx++;
+      if (cmd === 'Z' || cmd === 'z') {
+        curX = startX;
+        curY = startY;
+      }
+      continue;
+    }
+    if (!cmd) {
+      idx++;
+      continue;
+    }
+    const upper = cmd.toUpperCase();
+    const isRel = cmd !== upper;
+
+    if (upper === 'M' || upper === 'L' || upper === 'T') {
+      if (idx + 1 >= tokens.length) break;
+      const nx = parseFloat(tokens[idx++]);
+      const ny = parseFloat(tokens[idx++]);
+      const absPair = !isRel || (cmd === 'm' && isFirstMove);
+      curX = absPair ? nx : curX + nx;
+      curY = absPair ? ny : curY + ny;
+      if (upper === 'M') {
+        startX = curX;
+        startY = curY;
+        isFirstMove = false;
+        cmd = isRel ? 'l' : 'L';
+      }
+      recordPt(curX, curY);
+    } else if (upper === 'H') {
+      const nx = parseFloat(tokens[idx++]);
+      curX = isRel ? curX + nx : nx;
+      recordPt(curX, curY);
+    } else if (upper === 'V') {
+      const ny = parseFloat(tokens[idx++]);
+      curY = isRel ? curY + ny : ny;
+      recordPt(curX, curY);
+    } else if (upper === 'C') {
+      if (idx + 5 >= tokens.length) break;
+      const x1 = parseFloat(tokens[idx++]);
+      const y1 = parseFloat(tokens[idx++]);
+      const x2 = parseFloat(tokens[idx++]);
+      const y2 = parseFloat(tokens[idx++]);
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      recordPt(isRel ? curX + x1 : x1, isRel ? curY + y1 : y1);
+      recordPt(isRel ? curX + x2 : x2, isRel ? curY + y2 : y2);
+      curX = isRel ? curX + x : x;
+      curY = isRel ? curY + y : y;
+      recordPt(curX, curY);
+    } else if (upper === 'S' || upper === 'Q') {
+      if (idx + 3 >= tokens.length) break;
+      const x1 = parseFloat(tokens[idx++]);
+      const y1 = parseFloat(tokens[idx++]);
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      recordPt(isRel ? curX + x1 : x1, isRel ? curY + y1 : y1);
+      curX = isRel ? curX + x : x;
+      curY = isRel ? curY + y : y;
+      recordPt(curX, curY);
+    } else if (upper === 'A') {
+      if (idx + 6 >= tokens.length) break;
+      idx += 5;
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      curX = isRel ? curX + x : x;
+      curY = isRel ? curY + y : y;
+      recordPt(curX, curY);
+    } else {
+      idx++;
+    }
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Applies a 2D scale + translation `(x' = x * sx + tx, y' = y * sy + ty)` to an SVG path string
+ * and formats it with single-space separation compatible with both browser Path2D and `svgaplayerweb`'s `BezierPath`.
+ */
+export function transformSvgPath2D(
+  d: string,
+  sx: number,
+  sy: number,
+  tx = 0,
+  ty = 0
+): string {
+  if (!d || typeof d !== 'string') return d;
+  if (
+    Math.abs(sx - 1) < 1e-6 &&
+    Math.abs(sy - 1) < 1e-6 &&
+    Math.abs(tx) < 1e-5 &&
+    Math.abs(ty) < 1e-5
+  ) {
+    return d;
+  }
+  const tokens = d.match(/[a-df-zA-DF-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/gi);
+  if (!tokens || tokens.length === 0) return d;
+
+  const fmt = (n: number) => {
+    const v = Math.abs(n) < 1e-6 ? 0 : Number(n.toFixed(4));
+    return String(v);
+  };
+
+  const out: string[] = [];
+  let cmd = '';
+  let isFirstMove = true;
+  let idx = 0;
+
+  while (idx < tokens.length) {
+    const tk = tokens[idx];
+    if (/^[a-df-zA-DF-Z]$/.test(tk)) {
+      cmd = tk;
+      idx++;
+      if (cmd === 'Z' || cmd === 'z') {
+        out.push(cmd);
+      }
+      continue;
+    }
+    if (!cmd) {
+      idx++;
+      continue;
+    }
+    const upper = cmd.toUpperCase();
+    const isRel = cmd !== upper;
+
+    if (upper === 'M' || upper === 'L' || upper === 'T') {
+      if (idx + 1 >= tokens.length) break;
+      const nx = parseFloat(tokens[idx++]);
+      const ny = parseFloat(tokens[idx++]);
+      const absPair = !isRel || (cmd === 'm' && isFirstMove);
+      const emitCmd = cmd === 'm' && isFirstMove && (Math.abs(tx) > 1e-5 || Math.abs(ty) > 1e-5) ? 'M' : cmd;
+      const ox = absPair ? nx * sx + tx : nx * sx;
+      const oy = absPair ? ny * sy + ty : ny * sy;
+      out.push(`${emitCmd} ${fmt(ox)} ${fmt(oy)}`);
+      if (upper === 'M') {
+        isFirstMove = false;
+        cmd = isRel ? 'l' : 'L';
+      }
+    } else if (upper === 'H') {
+      const nx = parseFloat(tokens[idx++]);
+      const ox = isRel ? nx * sx : nx * sx + tx;
+      out.push(`${cmd} ${fmt(ox)}`);
+    } else if (upper === 'V') {
+      const ny = parseFloat(tokens[idx++]);
+      const oy = isRel ? ny * sy : ny * sy + ty;
+      out.push(`${cmd} ${fmt(oy)}`);
+    } else if (upper === 'C') {
+      if (idx + 5 >= tokens.length) break;
+      const x1 = parseFloat(tokens[idx++]);
+      const y1 = parseFloat(tokens[idx++]);
+      const x2 = parseFloat(tokens[idx++]);
+      const y2 = parseFloat(tokens[idx++]);
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      out.push(
+        `${cmd} ${fmt(isRel ? x1 * sx : x1 * sx + tx)} ${fmt(isRel ? y1 * sy : y1 * sy + ty)} ${fmt(
+          isRel ? x2 * sx : x2 * sx + tx
+        )} ${fmt(isRel ? y2 * sy : y2 * sy + ty)} ${fmt(isRel ? x * sx : x * sx + tx)} ${fmt(
+          isRel ? y * sy : y * sy + ty
+        )}`
+      );
+    } else if (upper === 'S' || upper === 'Q') {
+      if (idx + 3 >= tokens.length) break;
+      const x1 = parseFloat(tokens[idx++]);
+      const y1 = parseFloat(tokens[idx++]);
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      out.push(
+        `${cmd} ${fmt(isRel ? x1 * sx : x1 * sx + tx)} ${fmt(isRel ? y1 * sy : y1 * sy + ty)} ${fmt(
+          isRel ? x * sx : x * sx + tx
+        )} ${fmt(isRel ? y * sy : y * sy + ty)}`
+      );
+    } else if (upper === 'A') {
+      if (idx + 6 >= tokens.length) break;
+      const rx = parseFloat(tokens[idx++]);
+      const ry = parseFloat(tokens[idx++]);
+      const rot = parseFloat(tokens[idx++]);
+      const laf = tokens[idx++];
+      const sf = tokens[idx++];
+      const x = parseFloat(tokens[idx++]);
+      const y = parseFloat(tokens[idx++]);
+      out.push(
+        `${cmd} ${fmt(Math.abs(rx * sx))} ${fmt(Math.abs(ry * sy))} ${fmt(rot)} ${laf} ${sf} ${fmt(
+          isRel ? x * sx : x * sx + tx
+        )} ${fmt(isRel ? y * sy : y * sy + ty)}`
+      );
+    } else {
+      out.push(tokens[idx++]);
+    }
+  }
+
+  return out.join(' ');
+}
+
+/**
+ * Detects whether a frame's `clipPath` is a sub-cell window into a multi-cell sprite-sheet atlas
+ * (where `imgW` or `imgH` is at least 1.8x the frame layout and `clipPath` selects a single cell).
+ */
+export function isSpriteSheetAtlasClipFrame(
+  clipPath: string | undefined,
+  fw: number,
+  fh: number,
+  imgW: number,
+  imgH: number
+): boolean {
+  if (!clipPath || fw <= 0 || fh <= 0 || imgW <= 0 || imgH <= 0) return false;
+  if (imgW < fw * 1.75 && imgH < fh * 1.75) return false;
+  const bounds = getSvgPathBounds(clipPath);
+  if (!bounds) return false;
+  const clipW = bounds.maxX - bounds.minX;
+  const clipH = bounds.maxY - bounds.minY;
+  if (bounds.maxX > fw * 1.05 || bounds.maxY > fh * 1.05) {
+    return true;
+  }
+  if (clipW <= fw * 1.15 && clipH <= fh * 1.15 && (imgW >= fw * 1.8 || imgH >= fh * 1.8)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Normalizes all sprite frames in an `SvgaMovie` so that when an embedded image's actual pixel
+ * dimensions `(imgW, imgH)` differ from `fe.w × fe.h` (or `fe.x, fe.y` are non-zero), the frame
+ * layout is normalized to `(0, 0, imgW, imgH)` and its `transform` and `clipPath` are compensated
+ * mathematically. This repairs distorted SVGA files (such as `100.69.svga`) for both display and export.
+ */
+export function normalizeSvgaMovieLayoutAndTransforms(m: SvgaMovie): SvgaMovie {
+  if (!m || !m.sp || !m.im) return m;
+  for (const s of m.sp) {
+    if (!s.key || !s.fr || s.fr.length === 0) continue;
+    const rawBytes = m.im[s.key];
+    if (!rawBytes) continue;
+    const dim = readImageDimensionsFromBytes(rawBytes);
+    if (!dim || dim.w <= 0 || dim.h <= 0) continue;
+    const imgW = dim.w;
+    const imgH = dim.h;
+
+    for (const fe of s.fr) {
+      if (!fe || (fe.shapesRaw && fe.shapesRaw.length > 0)) continue;
+      const fw = fe.w > 0 ? fe.w : imgW;
+      const fh = fe.h > 0 ? fe.h : imgH;
+      const fx = fe.x || 0;
+      const fy = fe.y || 0;
+
+      if (isSpriteSheetAtlasClipFrame(fe.clipPath, fw, fh, imgW, imgH)) {
+        continue;
+      }
+
+      if (
+        Math.abs(fw - imgW) > 0.25 ||
+        Math.abs(fh - imgH) > 0.25 ||
+        Math.abs(fx) > 0.01 ||
+        Math.abs(fy) > 0.01
+      ) {
+        const sx = fw / imgW;
+        const sy = fh / imgH;
+        const [a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0] = fe.t || [1, 0, 0, 1, 0, 0];
+        fe.t = [
+          Number((a * sx).toFixed(6)),
+          Number((b * sx).toFixed(6)),
+          Number((c * sy).toFixed(6)),
+          Number((d * sy).toFixed(6)),
+          Number((a * fx + c * fy + tx).toFixed(4)),
+          Number((b * fx + d * fy + ty).toFixed(4)),
+        ];
+        if (fe.clipPath && fe.clipPath.trim().length > 0) {
+          fe.clipPath = transformSvgPath2D(fe.clipPath, 1 / sx, 1 / sy, -fx / sx, -fy / sy);
+        }
+        fe.x = 0;
+        fe.y = 0;
+        fe.w = imgW;
+        fe.h = imgH;
+        m.layoutNormalized = true;
+      }
+    }
+  }
+  return m;
 }
 
 export function parseMovie(buf: Uint8Array): SvgaMovie {
@@ -212,12 +632,40 @@ export function parseMovie(buf: Uint8Array): SvgaMovie {
                 return 1;
               });
             else if (h === 3) {
-              fe.t = [0, 0, 0, 0, 0, 0];
+              let a = 0;
+              let b = 0;
+              let c = 0;
+              let d = 0;
+              let tx = 0;
+              let ty = 0;
+              let hasA = false;
+              let hasB = false;
+              let hasC = false;
+              let hasD = false;
               pm(z.by(), (i, u) => {
-                if (i >= 1 && i <= 6) fe.t[i - 1] = u.f32();
-                else return 0;
+                if (i === 1) {
+                  a = u.f32();
+                  hasA = true;
+                } else if (i === 2) {
+                  b = u.f32();
+                  hasB = true;
+                } else if (i === 3) {
+                  c = u.f32();
+                  hasC = true;
+                } else if (i === 4) {
+                  d = u.f32();
+                  hasD = true;
+                } else if (i === 5) {
+                  tx = u.f32();
+                } else if (i === 6) {
+                  ty = u.f32();
+                } else return 0;
                 return 1;
               });
+              const hasRotSkew = (hasB && Math.abs(b) > 1e-7) || (hasC && Math.abs(c) > 1e-7);
+              if (!hasA) a = hasRotSkew ? 0 : 1;
+              if (!hasD) d = hasRotSkew ? 0 : 1;
+              fe.t = [a, b, c, d, tx, ty];
             } else if (h === 4) {
               fe.clipPath = TD.decode(z.by());
               return 1;
@@ -249,7 +697,7 @@ export function parseMovie(buf: Uint8Array): SvgaMovie {
     }
     return 0;
   });
-  return m;
+  return normalizeSvgaMovieLayoutAndTransforms(m);
 }
 
 export const bidx = (u: Uint8Array, s: string, from = 0): number => {

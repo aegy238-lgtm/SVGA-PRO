@@ -1,4 +1,13 @@
-import { SvgaFrame, SvgaMovie, SvgaSprite, kb, pm } from './codecs.ts';
+import {
+  SvgaFrame,
+  SvgaMovie,
+  SvgaSprite,
+  isSpriteSheetAtlasClipFrame,
+  kb,
+  pm,
+  readImageDimensionsFromBytes,
+  transformSvgPath2D,
+} from './codecs.ts';
 
 export type AffineMatrix = [number, number, number, number, number, number];
 
@@ -1170,7 +1179,10 @@ export function serializeDecomposedSvga(
       spriteTransforms[spriteId] ||
       (sp.key && spriteTransforms[sp.key]) ||
       DEFAULT_TRANSFORM;
-    const dim = (sp.key && assetDims[sp.key]) || { w: W, h: H };
+    const parsedByteDim =
+      sp.key && finalImages[sp.key] ? readImageDimensionsFromBytes(finalImages[sp.key]) : null;
+    const knownDim = (sp.key && assetDims[sp.key]) || parsedByteDim || null;
+    const dim = knownDim || { w: W, h: H };
     const customRange = spriteFrameRanges[spriteId];
     const origSpan = computeSpriteFrameSpan(sp, n);
 
@@ -1224,11 +1236,41 @@ export function serializeDecomposedSvga(
         mat = multiplyAffine(mDoc, mat);
       }
 
-      const safeA = Math.abs(mat[0]) < 1e-6 ? 1e-6 : mat[0];
-      const safeD = Math.abs(mat[3]) < 1e-6 ? 1e-6 : mat[3];
+      let outFx = fx;
+      let outFy = fy;
+      let outFw = fw;
+      let outFh = fh;
+      let outClipPath = origF.clipPath;
+
+      if (
+        knownDim &&
+        knownDim.w > 0 &&
+        knownDim.h > 0 &&
+        !(origF.shapesRaw && origF.shapesRaw.length > 0) &&
+        !isSpriteSheetAtlasClipFrame(origF.clipPath, fw, fh, knownDim.w, knownDim.h) &&
+        (Math.abs(fw - knownDim.w) > 0.25 ||
+          Math.abs(fh - knownDim.h) > 0.25 ||
+          Math.abs(fx) > 0.01 ||
+          Math.abs(fy) > 0.01)
+      ) {
+        const sx = fw / knownDim.w;
+        const sy = fh / knownDim.h;
+        mat = multiplyAffine(mat, [sx, 0, 0, sy, fx, fy]);
+        if (outClipPath && outClipPath.trim().length > 0) {
+          outClipPath = transformSvgPath2D(outClipPath, 1 / sx, 1 / sy, -fx / sx, -fy / sy);
+        }
+        outFx = 0;
+        outFy = 0;
+        outFw = knownDim.w;
+        outFh = knownDim.h;
+      }
+
+      const hasRotSkew = Math.abs(mat[1]) > 1e-6 || Math.abs(mat[2]) > 1e-6;
+      const safeA = Math.abs(mat[0]) < 1e-6 ? (hasRotSkew ? 0 : 1e-6) : mat[0];
+      const safeD = Math.abs(mat[3]) < 1e-6 ? (hasRotSkew ? 0 : 1e-6) : mat[3];
       const frameFields: Uint8Array[] = [
         pf(1, finalAlpha),
-        pb(2, cat([pf(1, fx), pf(2, fy), pf(3, fw), pf(4, fh)])),
+        pb(2, cat([pf(1, outFx), pf(2, outFy), pf(3, outFw), pf(4, outFh)])),
         pb(
           3,
           cat([
@@ -1241,8 +1283,8 @@ export function serializeDecomposedSvga(
           ])
         ),
       ];
-      if (origF.clipPath) {
-        frameFields.push(ps(4, origF.clipPath));
+      if (outClipPath) {
+        frameFields.push(ps(4, outClipPath));
       }
       if (origF.shapesRaw && origF.shapesRaw.length > 0 && resolved.visible && !isHidden) {
         for (const rawShape of origF.shapesRaw) {

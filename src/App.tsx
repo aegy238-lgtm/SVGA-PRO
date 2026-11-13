@@ -27,6 +27,7 @@ import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
+import { AiGiftFinderStudio } from './components/AiGiftFinderStudio';
 import SiteClosedScreen from './components/SiteClosedScreen';
 import ProjectComposerPanel from './components/ProjectComposerPanel';
 import {
@@ -1407,25 +1408,25 @@ export default function App() {
             data-v="home"
             id="homeNavTab"
             style={{
-              padding: '3px 9px',
+              padding: '3px 7px',
               borderRadius: '6px',
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '4px',
+              gap: '3px',
               fontWeight: 700,
             }}
           >
             <span>🏠</span>
             <span>{isAr ? 'الرئيسية' : 'Home'}</span>
           </a>
-          <a data-v="convert" className="on">
+          <a data-v="convert" className="on" style={{ padding: '3px 6px' }}>
             {t.navMotionProcessing}
           </a>
           <a
             data-v="editor"
             style={{
-              padding: '3px 9px',
+              padding: '3px 6px',
               borderRadius: '6px',
             }}
           >
@@ -1435,11 +1436,11 @@ export default function App() {
             data-v="gifts"
             id="giftsStudioNavBtn"
             style={{
-              padding: '3px 10px',
+              padding: '3px 7px',
               borderRadius: '7px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               background: '#14141c',
               border: '1px solid #1e1e28',
               fontWeight: 600,
@@ -1453,11 +1454,11 @@ export default function App() {
             data-v="gift-image"
             id="giftImageCreatorNavBtn"
             style={{
-              padding: '3px 10px',
+              padding: '3px 7px',
               borderRadius: '7px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               background: '#14141c',
               border: '1px solid #1e1e28',
               fontWeight: 600,
@@ -1471,11 +1472,11 @@ export default function App() {
             data-v="gold-designer"
             id="goldDesignerNavBtn"
             style={{
-              padding: '3px 10px',
+              padding: '3px 7px',
               borderRadius: '7px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               background: '#14141c',
               border: '1px solid #1e1e28',
               fontWeight: 600,
@@ -1492,6 +1493,25 @@ export default function App() {
               )}
             </span>
             {renderNavProBadge(goldDesignerAttemptStatus)}
+          </a>
+          <a
+            data-v="gift-finder"
+            id="aiGiftFinderNavBtn"
+            style={{
+              padding: '3px 7px',
+              borderRadius: '7px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              background: '#14141c',
+              border: '1px solid #1e1e28',
+              fontWeight: 700,
+              cursor: 'pointer',
+              transition: 'border-color 0.15s ease, color 0.15s ease',
+            }}
+          >
+            <span>🔍</span>
+            <span>{isAr ? 'باحث الهدايا AI' : 'AI Gift Finder'}</span>
           </a>
           {Boolean(platformState.settings.giftCertificateEnabled) && (
             <button
@@ -2838,6 +2858,10 @@ export default function App() {
               return (window as any).__consumeFeatureAttempt?.('gold_designer');
             }}
           />
+        </section>
+
+        <section className="view" id="gift-finder" style={{ height: '100%', overflow: 'hidden' }}>
+          <AiGiftFinderStudio isAr={isAr} />
         </section>
       </main>
 
