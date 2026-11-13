@@ -2783,7 +2783,7 @@ export default function App() {
 
         <section className="view" id="gifts" style={{ height: '100%', overflow: 'hidden' }}>
           <iframe
-            src={`/gifts-studio.html?v=pag_fix_11&lang=${platformState.language}`}
+            src={`/gifts-studio.html?v=pag_fix_12&lang=${platformState.language}`}
             id="giftsStudioFrame"
             title={isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
             onLoad={(e) => {

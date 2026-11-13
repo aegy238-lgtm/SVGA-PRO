@@ -942,8 +942,9 @@ export function computeSideBySideVideoLayout(
   const maxCanvasH = safeBaseH > 1080 ? 1440 : 1080;
 
   const minCellFloor = rows > 4 || cols > 5 ? 96 : 240;
-  const idealCellH = rows === 1 ? safeBaseH : Math.max(minCellFloor, Math.floor(maxCanvasH / rows));
-  const idealCellW = Math.max(minCellFloor, Math.min(idealCellH, Math.floor(maxCanvasW / cols)));
+  const rawCellH = rows === 1 ? safeBaseH : Math.max(minCellFloor, Math.floor(maxCanvasH / rows));
+  const idealCellW = Math.max(minCellFloor, Math.min(rawCellH, Math.floor(maxCanvasW / cols)));
+  const idealCellH = idealCellW;
 
   const canvasWidth = Math.max(64, Math.min(maxCanvasW, Math.round((idealCellW * cols) / 2) * 2));
   const canvasHeight = Math.max(64, Math.min(maxCanvasH, Math.round((idealCellH * rows) / 2) * 2));
@@ -975,6 +976,105 @@ export function computeSideBySideVideoLayout(
     cols,
     rows,
     cells,
+  };
+}
+
+export interface SideBySideSlotRenderPlan {
+  stageRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    borderRadius: number;
+  };
+  giftDrawRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  bgImageDrawRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+}
+
+/**
+ * Computes the per-slot stage rectangle, background image draw rectangle, and gift frame draw rectangle
+ * for side-by-side / group video export so that an uploaded background image is drawn inside each individual
+ * gift frame's slot (matching the live Gift Studio card grid preview) rather than stretched across the whole canvas.
+ */
+export function computeSideBySideSlotRenderPlan(
+  cell: { x: number; y: number; width: number; height: number },
+  giftSourceWidth = 512,
+  giftSourceHeight = 512,
+  bgImage?: {
+    width: number;
+    height: number;
+    fit?: 'cover' | 'contain' | 'fill' | string;
+  } | null
+): SideBySideSlotRenderPlan {
+  const rx = Number(cell?.x) || 0;
+  const ry = Number(cell?.y) || 0;
+  const rw = Math.max(8, Number(cell?.width) || 240);
+  const rh = Math.max(8, Number(cell?.height) || 240);
+
+  const sw = Math.max(1, Number(giftSourceWidth) || 512);
+  const sh = Math.max(1, Number(giftSourceHeight) || 512);
+
+  const pad = Math.max(3, Math.round(Math.min(rw, rh) * 0.025));
+  const availW = Math.max(4, rw - pad * 2);
+  const availH = Math.max(4, rh - pad * 2);
+
+  const giftScale = Math.min(availW / sw, availH / sh);
+  const stageW = Math.max(4, Math.round(sw * giftScale));
+  const stageH = Math.max(4, Math.round(sh * giftScale));
+  const stageX = Math.round(rx + (rw - stageW) / 2);
+  const stageY = Math.round(ry + (rh - stageH) / 2);
+  const borderRadius = Math.max(6, Math.round(Math.min(stageW, stageH) * 0.055));
+
+  let bgImageDrawRect: { x: number; y: number; width: number; height: number } | null = null;
+  if (bgImage && bgImage.width > 0 && bgImage.height > 0) {
+    const iw = bgImage.width;
+    const ih = bgImage.height;
+    const fitMode = bgImage.fit || 'cover';
+    if (fitMode === 'fill') {
+      bgImageDrawRect = {
+        x: stageX,
+        y: stageY,
+        width: stageW,
+        height: stageH,
+      };
+    } else {
+      const k = (fitMode === 'cover' ? Math.max : Math.min)(stageW / iw, stageH / ih);
+      const bw = iw * k;
+      const bh = ih * k;
+      bgImageDrawRect = {
+        x: stageX + (stageW - bw) / 2,
+        y: stageY + (stageH - bh) / 2,
+        width: bw,
+        height: bh,
+      };
+    }
+  }
+
+  return {
+    stageRect: {
+      x: stageX,
+      y: stageY,
+      width: stageW,
+      height: stageH,
+      borderRadius,
+    },
+    giftDrawRect: {
+      x: stageX,
+      y: stageY,
+      width: stageW,
+      height: stageH,
+    },
+    bgImageDrawRect,
   };
 }
 

@@ -20,6 +20,7 @@ import {
   resolveItemsForExportMode,
   buildUniqueExtractedFileNames,
   computeSideBySideVideoLayout,
+  computeSideBySideSlotRenderPlan,
   computeTightAlphaBounds,
   computeAutoCropDrawRect,
   resolveEffectiveGiftDuration,
@@ -569,4 +570,51 @@ test('getOptimalAudioFrameSize and interleaveTimestampedMediaChunks align audio/
   assert.equal(interleaved[0].kind, 'video');
   assert.equal(interleaved[1].kind, 'audio');
 });
+
+test('computeSideBySideSlotRenderPlan places uploaded background image inside each individual gift frame slot', () => {
+  const layout = computeSideBySideVideoLayout(24, 720);
+  assert.equal(layout.cells.length, 24);
+
+  // Verify each cell in the 24-gift layout gets its own isolated stageRect and background image draw rect
+  const cell0 = layout.cells[0];
+  const cell5 = layout.cells[5];
+
+  const plan0 = computeSideBySideSlotRenderPlan(cell0, 300, 300, {
+    width: 600,
+    height: 800,
+    fit: 'cover',
+  });
+  const plan5 = computeSideBySideSlotRenderPlan(cell5, 300, 300, {
+    width: 600,
+    height: 800,
+    fit: 'cover',
+  });
+
+  // Gift draw rect matches stageRect inside its own cell
+  assert.deepEqual(plan0.giftDrawRect, {
+    x: plan0.stageRect.x,
+    y: plan0.stageRect.y,
+    width: plan0.stageRect.width,
+    height: plan0.stageRect.height,
+  });
+  assert.ok(plan0.stageRect.x >= cell0.x && plan0.stageRect.x + plan0.stageRect.width <= cell0.x + cell0.width);
+  assert.ok(plan0.stageRect.y >= cell0.y && plan0.stageRect.y + plan0.stageRect.height <= cell0.y + cell0.height);
+
+  // Uploaded background image is centered inside cell0's stageRect and covers it
+  assert.ok(plan0.bgImageDrawRect);
+  assert.ok(plan0.bgImageDrawRect.width >= plan0.stageRect.width);
+  assert.ok(plan0.bgImageDrawRect.height >= plan0.stageRect.height);
+
+  const stageCenterX0 = plan0.stageRect.x + plan0.stageRect.width / 2;
+  const bgCenterX0 = plan0.bgImageDrawRect.x + plan0.bgImageDrawRect.width / 2;
+  assert.ok(Math.abs(stageCenterX0 - bgCenterX0) < 0.5);
+
+  // Cell 5 has its own distinct background image position centered inside cell 5
+  assert.ok(plan5.bgImageDrawRect);
+  assert.notEqual(plan5.bgImageDrawRect.x, plan0.bgImageDrawRect.x);
+  const stageCenterX5 = plan5.stageRect.x + plan5.stageRect.width / 2;
+  const bgCenterX5 = plan5.bgImageDrawRect.x + plan5.bgImageDrawRect.width / 2;
+  assert.ok(Math.abs(stageCenterX5 - bgCenterX5) < 0.5);
+});
+
 
