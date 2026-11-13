@@ -1,6 +1,15 @@
 // Local AI Gift Finder Engine & Windows 10/11 Local Desktop Agent Protocol
 // All visual analysis, indexing, and similarity matching run strictly locally on the user's device.
 
+import {
+  pako,
+  parseMovie,
+  readMeta,
+  readImageDimensionsFromBytes,
+  SvgaMovie,
+} from './codecs';
+import { decodePagBinaryToMovie } from './pagEngine';
+
 export const LOCAL_AGENT_PORT = 45200;
 export const LOCAL_AGENT_BASE_URL = `http://127.0.0.1:${LOCAL_AGENT_PORT}`;
 export const LOCAL_AGENT_VERSION = '1.0.0';
@@ -35,6 +44,7 @@ export interface ReferenceQueryPayload {
   width: number;
   height: number;
   durationSec?: number;
+  sampledFrameCount?: number;
   frames: VisualFeatureFrame[];
   previewDataUrl: string;
   textQuery?: string;
@@ -94,6 +104,8 @@ export interface LocalGiftSearchResult {
   height: number;
   thumbnailDataUrl: string;
   score: number;
+  isExactMatch?: boolean;
+  matchedTimestampSec?: number;
   matchBreakdown: LocalGiftSearchMatchBreakdown;
 }
 
@@ -442,18 +454,51 @@ export function scoreLocalGiftCandidate(
     histogramScore: 0,
     aspectScore: 0,
   };
+  let bestMatchedTimestampSec: number | undefined;
+  let bestDDist = 64;
+  let bestADist = 64;
+  let strongTemporalHits = 0;
 
   const candidateFrames = candidate.frames || [];
   if (queryFrames.length > 0 && candidateFrames.length > 0) {
     for (const qf of queryFrames) {
+      let frameBest = 0;
       for (const cf of candidateFrames) {
         const res = scoreFramePair(qf, cf);
+        if (res.combined > frameBest) {
+          frameBest = res.combined;
+        }
         if (res.combined > bestVisualCombined) {
           bestVisualCombined = res.combined;
           bestBreakdown = res.breakdown;
+          bestMatchedTimestampSec = qf.timestampSec;
+          bestDDist = hammingDistanceHex(qf.dHash, cf.dHash);
+          bestADist = hammingDistanceHex(qf.aHash, cf.aHash);
         }
       }
+      if (frameBest >= 0.84) {
+        strongTemporalHits++;
+      }
     }
+  }
+
+  // Temporal consensus boost when scanning full videos from start to finish:
+  // Multiple distinct video frames matching the same candidate confirms true match!
+  if (queryFrames.length > 1 && strongTemporalHits >= 2 && bestVisualCombined >= 0.85) {
+    const consensusBonus = Math.min(0.055, strongTemporalHits * 0.015);
+    bestVisualCombined = Math.min(1, bestVisualCombined + consensusBonus);
+  }
+
+  // Calibrate near-exact structural + color matches (e.g. slight video/thumbnail compression or background matting) to true 100%
+  const isNearExactMatch =
+    (bestDDist <= 6 && bestADist <= 6 && bestBreakdown.spatialColorScore >= 0.93) ||
+    (bestBreakdown.visualHashScore >= 0.91 &&
+      bestBreakdown.spatialColorScore >= 0.94 &&
+      bestBreakdown.histogramScore >= 0.86) ||
+    bestVisualCombined >= 0.945;
+
+  if (isNearExactMatch) {
+    bestVisualCombined = 1;
   }
 
   let textScore = 0;
@@ -477,10 +522,19 @@ export function scoreLocalGiftCandidate(
   if (queryFrames.length === 0 && queryTokens.length > 0) {
     finalScoreRatio = textScore;
   } else if (queryTokens.length > 0) {
-    finalScoreRatio = bestVisualCombined * 0.8 + textScore * 0.2;
+    // Do not penalize exact 100% visual matches if optional text wasn't part of filename
+    finalScoreRatio = isNearExactMatch
+      ? Math.max(bestVisualCombined, bestVisualCombined * 0.8 + textScore * 0.2)
+      : bestVisualCombined * 0.8 + textScore * 0.2;
   }
 
   const scorePct = Math.max(0, Math.min(100, Math.round(finalScoreRatio * 100)));
+  const isExactMatch =
+    isNearExactMatch ||
+    scorePct >= 95 ||
+    (bestBreakdown.visualHashScore >= 0.88 &&
+      bestBreakdown.spatialColorScore >= 0.91 &&
+      scorePct >= 90);
 
   return {
     id: candidate.id,
@@ -494,6 +548,10 @@ export function scoreLocalGiftCandidate(
     height: candidate.height,
     thumbnailDataUrl: candidate.thumbnailDataUrl,
     score: scorePct,
+    isExactMatch,
+    ...(typeof bestMatchedTimestampSec === 'number'
+      ? { matchedTimestampSec: bestMatchedTimestampSec }
+      : {}),
     matchBreakdown: {
       visualHashScore: Math.round(bestBreakdown.visualHashScore * 100),
       spatialColorScore: Math.round(bestBreakdown.spatialColorScore * 100),
@@ -504,25 +562,70 @@ export function scoreLocalGiftCandidate(
   };
 }
 
+const ANIMATED_GIFT_FORMAT_SET = new Set([
+  'SVGA',
+  'PAG',
+  'VAP',
+  'YYEVA',
+  'MP4',
+  'MOV',
+  'WEBM',
+  'GIF',
+  'WEBP',
+  'APNG',
+  'LOTTIE',
+  'JSON',
+]);
+
+export function isAnimatedGiftFormat(format: string): boolean {
+  return ANIMATED_GIFT_FORMAT_SET.has(String(format || '').trim().toUpperCase());
+}
+
 export function rankLocalGiftSearchResults(
   queryFrames: VisualFeatureFrame[],
   candidates: IndexedGiftRecord[],
-  options?: { textQuery?: string; formatFilter?: string; limit?: number; minScore?: number }
+  options?: {
+    textQuery?: string;
+    formatFilter?: string;
+    limit?: number;
+    minScore?: number;
+    preferOriginalGiftFormats?: boolean;
+  }
 ): LocalGiftSearchResult[] {
   const fmtFilter = (options?.formatFilter || 'ALL').toUpperCase();
   const limit = options?.limit ?? 40;
   const minScore = options?.minScore ?? 0;
+  const preferOriginal = options?.preferOriginalGiftFormats ?? true;
 
   return candidates
     .filter((c) => {
-      if (fmtFilter !== 'ALL' && c.format.toUpperCase() !== fmtFilter) {
+      const fmt = c.format.toUpperCase();
+      if (fmtFilter === 'GIFT_ONLY') {
+        return isAnimatedGiftFormat(fmt);
+      }
+      if (fmtFilter !== 'ALL' && fmt !== fmtFilter) {
         return false;
       }
       return true;
     })
     .map((c) => scoreLocalGiftCandidate(queryFrames, c, options?.textQuery))
     .filter((r) => r.score >= minScore)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => {
+      if (preferOriginal && fmtFilter === 'ALL') {
+        const aGift = isAnimatedGiftFormat(a.format);
+        const bGift = isAnimatedGiftFormat(b.format);
+        if (aGift !== bGift) {
+          // If both are viable visual matches and the score gap is small (<= 8 pts, or both >= 90),
+          // promote original animated gift files (.svga/.pag/.vap/.mp4) above static preview screenshots (.png/.jpg).
+          const closeScores = Math.abs(a.score - b.score) <= 8;
+          const bothStrong = a.score >= 88 && b.score >= 88;
+          if ((closeScores && Math.max(a.score, b.score) >= 65) || bothStrong) {
+            return aGift ? -1 : 1;
+          }
+        }
+      }
+      return b.score - a.score;
+    })
     .slice(0, limit);
 }
 
@@ -540,7 +643,7 @@ function extractRgbaFromCanvas(
   const canvas = document.createElement('canvas');
   canvas.width = thumbSize;
   canvas.height = thumbSize;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) {
     throw new Error('Canvas 2D context unavailable');
   }
@@ -643,83 +746,231 @@ async function extractEmbeddedImagesFromSvgaBuffer(buf: ArrayBuffer): Promise<Bl
   return blobs;
 }
 
+/**
+ * Finds the most visually populated frame indices across an SvgaMovie timeline
+ * so fade-in/fade-out blank frames are skipped and the gift's main visual climax is captured first.
+ */
+export function findPeakVisibleFrameIndicesForMovie(
+  movie: SvgaMovie,
+  maxSamples = 4
+): number[] {
+  const totalFrames = Math.max(1, Math.round(movie?.n || 1));
+  const scores = new Float64Array(totalFrames);
+
+  for (const s of movie?.sp || []) {
+    if (!s?.fr) continue;
+    const raw = movie?.im?.[s.key];
+    const dim = readImageDimensionsFromBytes(raw);
+    const defaultArea = dim ? dim.w * dim.h : 10000;
+    const len = Math.min(totalFrames, s.fr.length);
+    for (let f = 0; f < len; f++) {
+      const fe = s.fr[f];
+      if (!fe || !(fe.a > 0.03)) continue;
+      const area = Math.max(100, (fe.w || dim?.w || 100) * (fe.h || dim?.h || 100), defaultArea * 0.5);
+      scores[f] += fe.a * area;
+    }
+  }
+
+  let globalBestIdx = Math.floor(totalFrames * 0.5);
+  let globalBestScore = -1;
+  for (let f = 0; f < totalFrames; f++) {
+    if (scores[f] > globalBestScore) {
+      globalBestScore = scores[f];
+      globalBestIdx = f;
+    }
+  }
+
+  const chosen: number[] = [globalBestIdx];
+  const bands = [
+    [0.12, 0.36],
+    [0.36, 0.65],
+    [0.65, 0.92],
+  ];
+
+  for (const [startRatio, endRatio] of bands) {
+    if (chosen.length >= maxSamples) break;
+    const fStart = Math.max(0, Math.floor(totalFrames * startRatio));
+    const fEnd = Math.min(totalFrames - 1, Math.ceil(totalFrames * endRatio));
+    let bestInBand = fStart;
+    let bestBandScore = -1;
+    for (let f = fStart; f <= fEnd; f++) {
+      if (scores[f] > bestBandScore) {
+        bestBandScore = scores[f];
+        bestInBand = f;
+      }
+    }
+    if (!chosen.includes(bestInBand)) {
+      chosen.push(bestInBand);
+    }
+  }
+
+  return chosen.slice(0, maxSamples);
+}
+
+/**
+ * Renders peak composite frames + largest individual sprites from an SvgaMovie (SVGA or PAG)
+ * so both full gift animations and single-layer screenshots match accurately.
+ */
+export async function extractSvgaMovieVisualFeatures(
+  movie: SvgaMovie
+): Promise<{
+  width: number;
+  height: number;
+  frames: VisualFeatureFrame[];
+  previewDataUrl: string;
+}> {
+  const W = Math.max(1, Math.round(movie.w || 300));
+  const H = Math.max(1, Math.round(movie.h || 300));
+  const imgElements: Record<string, HTMLImageElement> = {};
+  const entries = Object.entries(movie.im || {});
+
+  await Promise.all(
+    entries.map(
+      ([k, raw]) =>
+        new Promise<void>((resolve) => {
+          if (!raw || raw.byteLength === 0) {
+            resolve();
+            return;
+          }
+          const mime =
+            raw[0] === 0x52 && raw[1] === 0x49 && raw[8] === 0x57
+              ? 'image/webp'
+              : raw[0] === 0xff && raw[1] === 0xd8
+                ? 'image/jpeg'
+                : 'image/png';
+          const url = URL.createObjectURL(new Blob([raw as unknown as BlobPart], { type: mime }));
+          const img = new Image();
+          img.onload = () => {
+            imgElements[k] = img;
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.src = url;
+        })
+    )
+  );
+
+  const frames: VisualFeatureFrame[] = [];
+  let previewDataUrl = '';
+
+  const compCanvas = document.createElement('canvas');
+  compCanvas.width = W;
+  compCanvas.height = H;
+  const compCtx = compCanvas.getContext('2d');
+
+  const thumbCanvas = document.createElement('canvas');
+  thumbCanvas.width = 96;
+  thumbCanvas.height = 96;
+  const thumbCtx = thumbCanvas.getContext('2d');
+
+  if (compCtx && thumbCtx && (movie.sp?.length || 0) > 0) {
+    const peakIndices = findPeakVisibleFrameIndicesForMovie(movie, 4);
+    for (let idx = 0; idx < peakIndices.length; idx++) {
+      const f = peakIndices[idx];
+      compCtx.setTransform(1, 0, 0, 1, 0, 0);
+      compCtx.clearRect(0, 0, W, H);
+      let drawnCount = 0;
+
+      for (const s of movie.sp || []) {
+        const fe = s.fr?.[f];
+        const img = imgElements[s.key];
+        if (!fe || !(fe.a > 0.01) || !img) continue;
+        compCtx.save();
+        compCtx.globalAlpha = Math.max(0, Math.min(1, fe.a));
+        const t = fe.t || [1, 0, 0, 1, 0, 0];
+        compCtx.transform(t[0] ?? 1, t[1] ?? 0, t[2] ?? 0, t[3] ?? 1, t[4] ?? 0, t[5] ?? 0);
+        if (fe.clipPath && typeof Path2D !== 'undefined') {
+          try {
+            compCtx.clip(new Path2D(fe.clipPath));
+          } catch {}
+        }
+        compCtx.drawImage(
+          img,
+          fe.x || 0,
+          fe.y || 0,
+          fe.w || img.naturalWidth || W,
+          fe.h || img.naturalHeight || H
+        );
+        compCtx.restore();
+        drawnCount++;
+      }
+
+      if (drawnCount > 0) {
+        const feat = drawFittedImageOnCanvas(thumbCtx, compCanvas, W, H, 96);
+        frames.push(feat);
+        if (!previewDataUrl) {
+          previewDataUrl = thumbCanvas.toDataURL('image/jpeg', 0.85);
+        }
+      }
+    }
+  }
+
+  // Also add the top 2 largest individual sprite images so single-sprite queries match too
+  if (thumbCtx) {
+    const sortedSprites = Object.values(imgElements).sort(
+      (a, b) =>
+        (b.naturalWidth || 1) * (b.naturalHeight || 1) -
+        (a.naturalWidth || 1) * (a.naturalHeight || 1)
+    );
+    for (const spImg of sortedSprites.slice(0, 2)) {
+      const sw = spImg.naturalWidth || 96;
+      const sh = spImg.naturalHeight || 96;
+      const feat = drawFittedImageOnCanvas(thumbCtx, spImg, sw, sh, 96);
+      frames.push(feat);
+      if (!previewDataUrl) {
+        previewDataUrl = thumbCanvas.toDataURL('image/jpeg', 0.85);
+      }
+    }
+  }
+
+  return { width: W, height: H, frames, previewDataUrl };
+}
+
 export async function extractReferenceVisualFeatures(
   file: File
 ): Promise<ReferenceQueryPayload> {
   const lower = file.name.toLowerCase();
+  const ext = lower.split('.').pop() || '';
+  const isSvga = ext === 'svga';
+  const isPag = ext === 'pag';
+  const isVapOrYyeva = ext === 'vap' || ext === 'yyeva';
   const isVideo =
+    isVapOrYyeva ||
     file.type.startsWith('video/') ||
     /\.(mp4|webm|mov|m4v|mkv)$/i.test(lower);
-  const isSvga = lower.endsWith('.svga');
 
-  if (isVideo) {
-    const url = URL.createObjectURL(file);
-    try {
-      const video = document.createElement('video');
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = 'auto';
-      video.src = url;
-
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Video load timeout')), 8000);
-        video.onloadedmetadata = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        video.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error('Cannot decode reference video'));
-        };
-      });
-
-      const vw = video.videoWidth || 300;
-      const vh = video.videoHeight || 300;
-      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
-      const sampleRatios = [0.15, 0.45, 0.72, 0.9];
-      const frames: VisualFeatureFrame[] = [];
-      let previewDataUrl = '';
-
-      const canvas = document.createElement('canvas');
-      canvas.width = 96;
-      canvas.height = 96;
-      const ctx = canvas.getContext('2d')!;
-
-      for (let i = 0; i < sampleRatios.length; i++) {
-        const targetSec = Math.min(duration - 0.05, Math.max(0, duration * sampleRatios[i]));
-        await new Promise<void>((resolve) => {
-          const onSeeked = () => {
-            video.removeEventListener('seeked', onSeeked);
-            resolve();
-          };
-          video.addEventListener('seeked', onSeeked);
-          video.currentTime = targetSec;
-          setTimeout(resolve, 600);
-        });
-        const feat = drawFittedImageOnCanvas(ctx, video, vw, vh, 96);
-        feat.timestampSec = Number(targetSec.toFixed(2));
-        frames.push(feat);
-        if (i === 1 || !previewDataUrl) {
-          previewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        }
-      }
-
-      return {
-        fileName: file.name,
-        fileType: 'video',
-        width: vw,
-        height: vh,
-        durationSec: Number(duration.toFixed(2)),
-        frames,
-        previewDataUrl,
-      };
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  if (isSvga) {
+  if (isSvga || isPag) {
     const buf = await file.arrayBuffer();
+    const rawBytes = new Uint8Array(buf);
+    try {
+      let movie: SvgaMovie;
+      if (isPag) {
+        const pagDecoded = await decodePagBinaryToMovie(rawBytes);
+        movie = pagDecoded.svgaMovie;
+      } else {
+        const inflated =
+          rawBytes[0] === 0x78 || pako?.inflate ? pako.inflate(rawBytes) : rawBytes;
+        movie = parseMovie(inflated);
+      }
+      const extracted = await extractSvgaMovieVisualFeatures(movie);
+      if (extracted.frames.length > 0) {
+        return {
+          fileName: file.name,
+          fileType: 'svga',
+          width: extracted.width,
+          height: extracted.height,
+          frames: extracted.frames,
+          previewDataUrl: extracted.previewDataUrl,
+        };
+      }
+    } catch {
+      // Fallback to raw embedded PNG scan below
+    }
+
     const spriteBlobs = await extractEmbeddedImagesFromSvgaBuffer(buf);
     if (spriteBlobs.length > 0) {
       spriteBlobs.sort((a, b) => b.size - a.size);
@@ -766,7 +1017,298 @@ export async function extractReferenceVisualFeatures(
     };
   }
 
+  if (isVideo) {
+    let vapMeta: ReturnType<typeof readMeta> = null;
+    try {
+      const headSlice = await file.slice(0, Math.min(file.size, 3 * 1024 * 1024)).arrayBuffer();
+      vapMeta = readMeta(new Uint8Array(headSlice));
+    } catch {}
+
+    const mediaBlob = isVapOrYyeva ? new File([file], file.name, { type: 'video/mp4' }) : file;
+    const url = URL.createObjectURL(mediaBlob);
+    try {
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.src = url;
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Video load timeout')), 6000);
+        video.onloadedmetadata = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        video.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error('Cannot decode reference video'));
+        };
+      });
+
+      const vw = video.videoWidth || 300;
+      const vh = video.videoHeight || 300;
+      const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
+
+      // Full video timeline scan from start (3%) to finish (97%)!
+      // Ensures no matter where in the video the gift appears (beginning, middle, climax, or ending),
+      // we capture its exact visual fingerprint & center foreground zone.
+      const timelineSteps = duration >= 10 ? 18 : duration >= 4 ? 14 : 10;
+      const sampleRatios: number[] = [];
+      for (let sIdx = 0; sIdx < timelineSteps; sIdx++) {
+        const ratio = 0.03 + (sIdx / Math.max(1, timelineSteps - 1)) * 0.94;
+        sampleRatios.push(ratio);
+      }
+
+      const frames: VisualFeatureFrame[] = [];
+      let previewDataUrl = '';
+      let bestPreviewEnergy = -1;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = 96;
+      canvas.height = 96;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+
+      const cropCanvas = document.createElement('canvas');
+      const cropCtx = cropCanvas.getContext('2d');
+
+      for (let i = 0; i < sampleRatios.length; i++) {
+        const targetSec = Math.min(Math.max(0, duration - 0.04), duration * sampleRatios[i]);
+        await new Promise<void>((resolve) => {
+          const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            resolve();
+          };
+          video.addEventListener('seeked', onSeeked);
+          video.currentTime = targetSec;
+          setTimeout(resolve, 350);
+        });
+
+        const secRounded = Number(targetSec.toFixed(2));
+
+        // 1. If VAP/YYEVA RGB region (vapMeta.c) is known, extract the clean RGB region first
+        if (vapMeta?.c && vapMeta.c.length >= 4 && cropCtx) {
+          const [rx, ry, rw, rh] = vapMeta.c;
+          if (rw > 0 && rh > 0) {
+            cropCanvas.width = rw;
+            cropCanvas.height = rh;
+            cropCtx.clearRect(0, 0, rw, rh);
+            cropCtx.drawImage(video, rx, ry, rw, rh, 0, 0, rw, rh);
+            const rgbFeat = drawFittedImageOnCanvas(ctx, cropCanvas, rw, rh, 96);
+            rgbFeat.timestampSec = secRounded;
+            frames.push(rgbFeat);
+            const energy = rgbFeat.colorGrid.reduce((acc, v) => acc + v, 0);
+            if (energy > bestPreviewEnergy || !previewDataUrl) {
+              bestPreviewEnergy = energy;
+              previewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            }
+          }
+        } else if ((isVapOrYyeva || vw >= vh * 1.45) && cropCtx) {
+          // Dual-channel side-by-side fallback: sample left half cleanly
+          const halfW = Math.max(1, Math.floor(vw / 2));
+          cropCanvas.width = halfW;
+          cropCanvas.height = vh;
+          cropCtx.clearRect(0, 0, halfW, vh);
+          cropCtx.drawImage(video, 0, 0, halfW, vh, 0, 0, halfW, vh);
+          const leftFeat = drawFittedImageOnCanvas(ctx, cropCanvas, halfW, vh, 96);
+          leftFeat.timestampSec = secRounded;
+          frames.push(leftFeat);
+          const energy = leftFeat.colorGrid.reduce((acc, v) => acc + v, 0);
+          if (energy > bestPreviewEnergy || !previewDataUrl) {
+            bestPreviewEnergy = energy;
+            previewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          }
+        }
+
+        // 2. Always include the full video frame
+        const feat = drawFittedImageOnCanvas(ctx, video, vw, vh, 96);
+        feat.timestampSec = secRounded;
+        frames.push(feat);
+        const fullEnergy = feat.colorGrid.reduce((acc, v) => acc + v, 0);
+        if (fullEnergy > bestPreviewEnergy || !previewDataUrl) {
+          bestPreviewEnergy = fullEnergy;
+          previewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        }
+
+        // 3. For screen recordings / live-room clips, also extract the central 64% subject crop
+        // on even timeline frames so surrounding chat UI never hides the actual gift!
+        if (!vapMeta && cropCtx && i % 2 === 0 && vw >= 120 && vh >= 120) {
+          const cw = Math.max(64, Math.round(vw * 0.64));
+          const ch = Math.max(64, Math.round(vh * 0.64));
+          const cx = Math.floor((vw - cw) / 2);
+          const cy = Math.floor((vh - ch) / 2);
+          cropCanvas.width = cw;
+          cropCanvas.height = ch;
+          cropCtx.clearRect(0, 0, cw, ch);
+          cropCtx.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
+          const centerFeat = drawFittedImageOnCanvas(ctx, cropCanvas, cw, ch, 96);
+          centerFeat.timestampSec = secRounded;
+          frames.push(centerFeat);
+        }
+      }
+
+      return {
+        fileName: file.name,
+        fileType: 'video',
+        width: vapMeta?.c?.[2] || vapMeta?.videoW || vw,
+        height: vapMeta?.c?.[3] || vapMeta?.videoH || vh,
+        durationSec: Number(duration.toFixed(2)),
+        sampledFrameCount: sampleRatios.length,
+        frames,
+        previewDataUrl,
+      };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
   // Standard image reference (PNG, JPG, WebP, GIF, BMP, SVG)
+  // Extracts 1) full frame, 2) auto-trimmed foreground subject bounding box (removes screenshot/chat margins),
+  // and 3) central 68% crop so uploaded gift screenshots match clean original SVGA/PAG/VAP/MP4 gift files.
+  const extractMultiCropImageFeatures = (
+    source: CanvasImageSource,
+    w: number,
+    h: number
+  ): { frames: VisualFeatureFrame[]; previewDataUrl: string } => {
+    const outFrames: VisualFeatureFrame[] = [];
+    const { frame: fullFrame, previewDataUrl } = extractRgbaFromCanvas(
+      (ctx, dx, dy) => {
+        const scale = Math.min(96 / Math.max(1, w), 96 / Math.max(1, h));
+        ctx.drawImage(
+          source,
+          dx,
+          dy,
+          Math.max(1, Math.round(w * scale)),
+          Math.max(1, Math.round(h * scale))
+        );
+      },
+      w,
+      h
+    );
+    outFrames.push(fullFrame);
+
+    // Sample onto an analysis canvas to find subject bounding box away from uniform/transparent margins
+    try {
+      const scanMax = 256;
+      const scanScale = Math.min(1, scanMax / Math.max(1, w, h));
+      const sw = Math.max(8, Math.round(w * scanScale));
+      const sh = Math.max(8, Math.round(h * scanScale));
+      const scanCanvas = document.createElement('canvas');
+      scanCanvas.width = sw;
+      scanCanvas.height = sh;
+      const sctx = scanCanvas.getContext('2d', { willReadFrequently: true });
+      if (sctx) {
+        sctx.drawImage(source, 0, 0, sw, sh);
+        const px = sctx.getImageData(0, 0, sw, sh).data;
+        // Sample top-left corner pixel as background color guess
+        const bgR = px[0];
+        const bgG = px[1];
+        const bgB = px[2];
+        const bgA = px[3];
+        let minX = sw;
+        let minY = sh;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < sh; y++) {
+          for (let x = 0; x < sw; x++) {
+            const idx = (y * sw + x) * 4;
+            const a = px[idx + 3];
+            if (a < 24) continue;
+            const dr = Math.abs(px[idx] - bgR);
+            const dg = Math.abs(px[idx + 1] - bgG);
+            const db = Math.abs(px[idx + 2] - bgB);
+            const isBgLike = bgA > 200 && dr + dg + db < 42;
+            if (!isBgLike) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+
+        if (maxX > minX + sw * 0.15 && maxY > minY + sh * 0.15) {
+          const bw = maxX - minX + 1;
+          const bh = maxY - minY + 1;
+          // Only extract trimmed crop if margins removed >= 12% of width or height
+          if (bw < sw * 0.88 || bh < sh * 0.88) {
+            const sx = Math.max(0, Math.floor((minX / sw) * w));
+            const sy = Math.max(0, Math.floor((minY / sh) * h));
+            const cropW = Math.min(w - sx, Math.max(16, Math.ceil((bw / sw) * w)));
+            const cropH = Math.min(h - sy, Math.max(16, Math.ceil((bh / sh) * h)));
+            const { frame: trimmedFrame } = extractRgbaFromCanvas(
+              (ctx, dx, dy) => {
+                const sc = Math.min(96 / cropW, 96 / cropH);
+                ctx.drawImage(
+                  source,
+                  sx,
+                  sy,
+                  cropW,
+                  cropH,
+                  dx,
+                  dy,
+                  Math.max(1, Math.round(cropW * sc)),
+                  Math.max(1, Math.round(cropH * sc))
+                );
+              },
+              cropW,
+              cropH
+            );
+            outFrames.push(trimmedFrame);
+          }
+        }
+      }
+    } catch {}
+
+    // Add 68% central subject crop for wide/tall mobile screenshots
+    if (w >= 140 && h >= 140) {
+      const cw = Math.round(w * 0.68);
+      const ch = Math.round(h * 0.68);
+      const cx = Math.floor((w - cw) / 2);
+      const cy = Math.floor((h - ch) / 2);
+      const { frame: centerFrame } = extractRgbaFromCanvas(
+        (ctx, dx, dy) => {
+          const sc = Math.min(96 / cw, 96 / ch);
+          ctx.drawImage(
+            source,
+            cx,
+            cy,
+            cw,
+            ch,
+            dx,
+            dy,
+            Math.max(1, Math.round(cw * sc)),
+            Math.max(1, Math.round(ch * sc))
+          );
+        },
+        cw,
+        ch
+      );
+      outFrames.push(centerFrame);
+    }
+
+    return { frames: outFrames, previewDataUrl };
+  };
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(file);
+      const w = bmp.width || 96;
+      const h = bmp.height || 96;
+      const { frames, previewDataUrl } = extractMultiCropImageFeatures(bmp, w, h);
+      bmp.close?.();
+      return {
+        fileName: file.name,
+        fileType: 'image',
+        width: w,
+        height: h,
+        frames,
+        previewDataUrl,
+      };
+    } catch {
+      // Fallback to HTMLImageElement below (e.g. SVG)
+    }
+  }
+
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -777,20 +1319,13 @@ export async function extractReferenceVisualFeatures(
     });
     const w = img.naturalWidth || 96;
     const h = img.naturalHeight || 96;
-    const { frame, previewDataUrl } = extractRgbaFromCanvas(
-      (ctx, dx, dy) => {
-        const scale = Math.min(96 / Math.max(1, w), 96 / Math.max(1, h));
-        ctx.drawImage(img, dx, dy, Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
-      },
-      w,
-      h
-    );
+    const { frames, previewDataUrl } = extractMultiCropImageFeatures(img, w, h);
     return {
       fileName: file.name,
       fileType: 'image',
       width: w,
       height: h,
-      frames: [frame],
+      frames,
       previewDataUrl,
     };
   } finally {

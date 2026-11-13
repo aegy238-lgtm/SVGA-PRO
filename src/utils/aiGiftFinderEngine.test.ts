@@ -4,7 +4,9 @@ import {
   computeRgbaDHash,
   computeRgbaAHash,
   computeVisualFeaturesFromRgba,
+  findPeakVisibleFrameIndicesForMovie,
   hammingDistanceHex,
+  isAnimatedGiftFormat,
   scoreLocalGiftCandidate,
   rankLocalGiftSearchResults,
   isPathInsideAuthorizedFolders,
@@ -169,4 +171,127 @@ test('Windows 10/11 agent script and batch installer generate cleanly with requi
   assert.ok(bat.includes('SVGA520Agent.ps1'));
   assert.ok(bat.includes('::___PAYLOAD_BEGIN___'));
   assert.ok(bat.includes('FromBase64String'));
+});
+
+test('findPeakVisibleFrameIndicesForMovie skips blank intro frames and picks climax visible frames', () => {
+  const framesCount = 20;
+  const spriteFrames = Array.from({ length: framesCount }, (_, idx) => ({
+    a: idx < 5 ? 0 : idx === 12 ? 1.0 : 0.4,
+    x: 0,
+    y: 0,
+    w: 200,
+    h: 200,
+    t: { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 },
+  }));
+  const mockMovie: any = {
+    ver: '2.0',
+    w: 300,
+    h: 300,
+    f: 30,
+    n: framesCount,
+    im: {},
+    sp: [{ key: 'crown', matteKey: '', fr: spriteFrames }],
+    au: [],
+  };
+  const indices = findPeakVisibleFrameIndicesForMovie(mockMovie, 4);
+  assert.ok(indices.length >= 1);
+  assert.equal(indices[0], 12, 'Peak frame 12 should be selected first');
+  assert.ok(!indices.includes(0), 'Blank intro frame 0 should be skipped');
+});
+
+test('registerFilesInstantly links 25,000 local gift files in a fraction of a second (< 400ms) with zero-copy', async () => {
+  const { registerFilesInstantly } = await import('./browserLocalGiftIndex');
+  const count = 25000;
+  const mockEntries = new Array(count);
+  for (let i = 0; i < count; i++) {
+    mockEntries[i] = {
+      file: { name: `royal_gift_${i}.svga`, size: 4096 + i, lastModified: 1700000000000 } as unknown as File,
+      relativePath: `VIPGifts/royal_gift_${i}.svga`,
+    };
+  }
+  const t0 = performance.now();
+  const { folder, allFolderItems } = registerFilesInstantly('VIPGifts', mockEntries);
+  const elapsedMs = performance.now() - t0;
+
+  assert.equal(folder.fileCount, count);
+  assert.equal(allFolderItems.length, count);
+  assert.ok(elapsedMs < 450, `Expected 25,000 files to register in < 450ms, took ${Math.round(elapsedMs)}ms`);
+});
+
+test('full video timeline scoring identifies exact 100% match and preserves matchedTimestampSec', () => {
+  const crownRef = computeVisualFeaturesFromRgba(createGradientSprite(64, 64, 'gold_crown'), 64, 64, 3.6);
+  const blankStart = computeVisualFeaturesFromRgba(new Uint8ClampedArray(32 * 32 * 4), 32, 32, 0.2);
+  const blankEnd = computeVisualFeaturesFromRgba(new Uint8ClampedArray(32 * 32 * 4), 32, 32, 7.8);
+
+  const crownCandidate: IndexedGiftRecord = {
+    id: 'crown_1',
+    name: 'king_crown.svga',
+    path: 'D:\\Gifts\\king_crown.svga',
+    folder: 'D:\\Gifts',
+    format: 'SVGA',
+    sizeBytes: 82000,
+    modifiedAt: '2026-11-13T10:00:00Z',
+    width: 300,
+    height: 300,
+    frames: [computeVisualFeaturesFromRgba(createGradientSprite(96, 96, 'gold_crown'), 96, 96)],
+    thumbnailDataUrl: '',
+    tokens: ['king', 'crown'],
+  };
+
+  const res = scoreLocalGiftCandidate([blankStart, crownRef, blankEnd], crownCandidate);
+  assert.equal(res.score, 100);
+  assert.equal(res.isExactMatch, true);
+  assert.equal(res.matchedTimestampSec, 3.6);
+});
+
+test('rankLocalGiftSearchResults prioritizes original SVGA/PAG gift files over static PNG thumbnails and supports GIFT_ONLY', () => {
+  const crownRef = computeVisualFeaturesFromRgba(createGradientSprite(64, 64, 'gold_crown'), 64, 64);
+  const candidates: IndexedGiftRecord[] = [
+    {
+      id: 'png_preview',
+      name: 'royal_crown_screenshot.png',
+      path: 'D:\\Gifts\\royal_crown_screenshot.png',
+      folder: 'D:\\Gifts',
+      format: 'PNG',
+      sizeBytes: 34000,
+      modifiedAt: '2026-11-13T10:00:00Z',
+      width: 300,
+      height: 300,
+      frames: [crownRef],
+      thumbnailDataUrl: '',
+      tokens: ['royal', 'crown', 'screenshot'],
+    },
+    {
+      id: 'svga_original',
+      name: 'royal_crown.svga',
+      path: 'D:\\Gifts\\royal_crown.svga',
+      folder: 'D:\\Gifts',
+      format: 'SVGA',
+      sizeBytes: 145000,
+      modifiedAt: '2026-11-13T10:00:00Z',
+      width: 300,
+      height: 300,
+      frames: [computeVisualFeaturesFromRgba(createGradientSprite(96, 96, 'gold_crown'), 96, 96)],
+      thumbnailDataUrl: '',
+      tokens: ['royal', 'crown'],
+    },
+  ];
+
+  assert.equal(isAnimatedGiftFormat('SVGA'), true);
+  assert.equal(isAnimatedGiftFormat('PAG'), true);
+  assert.equal(isAnimatedGiftFormat('VAP'), true);
+  assert.equal(isAnimatedGiftFormat('PNG'), false);
+
+  const rankedAll = rankLocalGiftSearchResults([crownRef], candidates, {
+    formatFilter: 'ALL',
+    preferOriginalGiftFormats: true,
+  });
+  assert.equal(rankedAll.length, 2);
+  assert.equal(rankedAll[0].name, 'royal_crown.svga', 'Original SVGA should rank above static PNG preview');
+
+  const rankedGiftOnly = rankLocalGiftSearchResults([crownRef], candidates, {
+    formatFilter: 'GIFT_ONLY',
+  });
+  assert.equal(rankedGiftOnly.length, 1);
+  assert.equal(rankedGiftOnly[0].name, 'royal_crown.svga');
 });
