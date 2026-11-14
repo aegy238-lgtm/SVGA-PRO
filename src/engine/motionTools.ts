@@ -40,6 +40,23 @@ import {
   extractMaskPreviewRgba,
   computeSlotFitDrawRect,
 } from '../utils/vapYyevaDetection';
+import {
+  CustomEditableVapSlot,
+  VapMaskShapePreset,
+  planVapMaskAtlasLayout,
+  buildVapDynamicMetadataJson,
+  rgbaToWhiteOnBlackMaskBuffer,
+  buildPresetWhiteMaskRgba,
+  buildNextSlotId,
+  makeCustomVapSlot,
+  evenCeil,
+  sortSlotsByZ,
+  reorderMaskSlotsZ,
+  hitTestMaskSlotsOnStage,
+  computeDraggedOrResizedMaskFrame,
+  composerLayerBoxToMaskFrame,
+  parseHexColorRgb,
+} from '../utils/vapDynamicMaskPacking';
 import { removeImageBackgroundData } from '../utils/batchImageOps';
 import { computeAffineMatrix2D, AppliedWatermarkLayer } from '../utils/watermark';
 import {
@@ -455,10 +472,16 @@ export function initMotionToolsFixed() {
         if (
           el.id === 'stageWatermarkOverlay' ||
           el.id === 'projectComposerUnderlayCanvas' ||
-          el.id === 'projectComposerOverlayCanvas'
+          el.id === 'projectComposerOverlayCanvas' ||
+          el.id === 'vapDynamicMaskOverlay'
         ) {
+          el.style.position = 'absolute';
+          el.style.left = '0px';
+          el.style.top = '0px';
           el.style.width = `${displayW}px`;
           el.style.height = `${displayH}px`;
+          el.style.pointerEvents = 'none';
+          if (el.id === 'vapDynamicMaskOverlay') el.style.zIndex = '6';
           return;
         }
         // Skip hidden offscreen video (width: 2px; opacity: 0.001)
@@ -1193,19 +1216,25 @@ export function initMotionToolsFixed() {
     const c = mk(W, H),
       x = c.getContext('2d', { willReadFrequently: true }),
       nk = Math.max(1, Math.round((S.n * fps) / S.fps));
-    for (let k = 0; k < nk; k++) {
-      const t = performance.now();
-      await S.set(Math.min(S.n - 1, Math.round((k * S.fps) / fps)));
-      if (typeof (window as any).__seekComposerOverlays === 'function') {
-        await (window as any).__seekComposerOverlays((k + 0.5) / Math.max(1, fps));
+    const prevExp = (window as any).__vapExportingFrames;
+    (window as any).__vapExportingFrames = true;
+    try {
+      for (let k = 0; k < nk; k++) {
+        const t = performance.now();
+        await S.set(Math.min(S.n - 1, Math.round((k * S.fps) / fps)));
+        if (typeof (window as any).__seekComposerOverlays === 'function') {
+          await (window as any).__seekComposerOverlays((k + 0.5) / Math.max(1, fps));
+        }
+        x.clearRect(0, 0, W, H);
+        S.draw(x, W, H);
+        await cb(c, x, k, t);
+        const pct = Math.round((100 * (k + 1)) / nk);
+        toast('Rendering ' + pct + '%');
+        const stEl = document.getElementById('exportStatus');
+        if (stEl) stEl.textContent = `Rendering frames… ${pct}% (${k + 1}/${nk})`;
       }
-      x.clearRect(0, 0, W, H);
-      S.draw(x, W, H);
-      await cb(c, x, k, t);
-      const pct = Math.round((100 * (k + 1)) / nk);
-      toast('Rendering ' + pct + '%');
-      const stEl = document.getElementById('exportStatus');
-      if (stEl) stEl.textContent = `Rendering frames… ${pct}% (${k + 1}/${nk})`;
+    } finally {
+      (window as any).__vapExportingFrames = prevExp;
     }
   }
   let gifEnc = function (fr, W, H, fps) {
@@ -1353,7 +1382,7 @@ export function initMotionToolsFixed() {
   };
   $('#start').onclick = async () => {
     if (!cur || !S) return toast('Upload a supported file first');
-    const F = $('#fmt').value,
+    const F = (window as any).__overrideExportFmt || $('#fmt').value,
       W = +$('#w').value || S.w,
       H = +$('#h').value || S.h,
       fps = Math.max(1, +$('#fps').value || 15),
@@ -1363,6 +1392,8 @@ export function initMotionToolsFixed() {
     const btn = $('#start');
     btn.disabled = true;
     S.stop();
+    const prevExportFlag = (window as any).__vapExportingFrames;
+    (window as any).__vapExportingFrames = true;
     try {
       if (/^(png|webp|jpg)$/.test(F)) {
         const c = mk(W, H),
@@ -1445,6 +1476,8 @@ export function initMotionToolsFixed() {
       }
     } catch (e) {
       toast(e.message || 'Conversion failed');
+    } finally {
+      (window as any).__vapExportingFrames = prevExportFlag;
     }
     btn.disabled = false;
     if (!S.paused) S.go();
@@ -1532,9 +1565,14 @@ export function initMotionToolsFixed() {
     $('#msave').disabled = !M.dirty;
   }
   async function openEdit(k) {
-    const im = await imgOf(A[k]);
+    const allSlots = (window as any).__getEffectiveVapSlots?.(S) || S?.meta?.dynamicSlots || [];
+    const vapSlot = allSlots.find((sl: any) => sl.assetKey === k);
+    const fallbackUrl =
+      A[k] ||
+      (vapSlot && S?._vapSlotReplacements?.[vapSlot.srcId]?.dataUrl) ||
+      (vapSlot && (window as any).__getVapSlotPreviewUrl?.(S, vapSlot));
+    const im = fallbackUrl ? await imgOf(fallbackUrl) : null;
     if (!im) return toast('Cannot open this image');
-    const vapSlot = S?.meta?.dynamicSlots?.find((sl: any) => sl.assetKey === k);
     const vapRep = vapSlot && S?._vapSlotReplacements?.[vapSlot.srcId];
     const hasCustomImg = vapSlot ? Boolean(vapRep && vapRep.active && vapRep.customImg) : true;
     const isTxtSlot = Boolean(vapSlot && vapSlot.isTextSlot);
@@ -3091,15 +3129,22 @@ export function initMotionToolsFixed() {
     x.putImageData(C, 0, 0);
 
     // Render VAP / YYEVA Dynamic Mask Slots (Image & Text/Name masks)
-    const slots = M.dynamicSlots;
+    const isMainSource = S && S.meta === M;
+    const effRes =
+      isMainSource && typeof (window as any).__getEffectiveVapSlotsAndPlacements === 'function'
+        ? (window as any).__getEffectiveVapSlotsAndPlacements(S, M, m)
+        : null;
+    const slots = effRes ? effRes.slots : M.dynamicSlots;
     if (Array.isArray(slots) && slots.length > 0) {
       const fps = Math.max(1, M.fps || S?.fps || 30);
       const totalFrames = Math.max(1, M.frames || S?.n || 1);
       const curTime = Number(m?.currentTime) || 0;
       const curFrameIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor((curTime + 0.0005) * fps)));
-      const placements = resolveDynamicFramePlacements(M, curFrameIdx);
-      const replacements = S?._vapSlotReplacements || {};
-      const showGuides = Boolean((window as any).__vapShowMaskGuides);
+      const placements = effRes ? effRes.placements(curFrameIdx) : resolveDynamicFramePlacements(M, curFrameIdx);
+      const replacements = (isMainSource ? S?._vapSlotReplacements : null) || {};
+      const isExporting = Boolean((window as any).__vapExportingFrames || window.__busy);
+      const showGuides = !isExporting && Boolean((window as any).__vapShowMaskGuides);
+      const allowBake = !isExporting || (window as any).__bakeReplacedVapSlotsInRender !== false;
 
       if (placements.length > 0) {
         for (const pl of placements) {
@@ -3110,7 +3155,11 @@ export function initMotionToolsFixed() {
           if (dw <= 0 || dh <= 0) continue;
 
           const rep = replacements[slot.srcId];
-          if (rep && rep.active && !rep.hidden && rep.source) {
+          const drawMaskHelper = isMainSource ? (window as any).__drawSlotMaskToCtx : null;
+          const isBehindMain = Number(slot.z ?? 0) < 0;
+          const fillRgb = parseHexColorRgb((slot as any).fillColor);
+
+          if (allowBake && rep && rep.active && !rep.hidden && rep.source) {
             if (!_vapSlotLayerCanvas || _vapSlotLayerCanvas.width !== dw || _vapSlotLayerCanvas.height !== dh) {
               _vapSlotLayerCanvas = mk(dw, dh);
               _vapSlotLayerCtx = _vapSlotLayerCanvas.getContext('2d', { willReadFrequently: true });
@@ -3131,49 +3180,77 @@ export function initMotionToolsFixed() {
             lx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
 
             const useMask = rep.useMask !== false;
-            if (useMask && mw > 0 && mh > 0) {
+            const customMaskCanvas = isMainSource ? S?._customMaskCanvases?.[slot.srcId] : null;
+            if (useMask && (customMaskCanvas || (mw > 0 && mh > 0) || slot.isCustomAdded)) {
               if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
                 _vapSlotMaskCanvas = mk(dw, dh);
                 _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
               }
               const mxCtx = _vapSlotMaskCtx!;
               mxCtx.clearRect(0, 0, dw, dh);
-              mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+              if (drawMaskHelper) {
+                drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
+              } else if (mw > 0 && mh > 0) {
+                mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+              }
               const layerData = lx.getImageData(0, 0, dw, dh);
               const maskData = mxCtx.getImageData(0, 0, dw, dh);
               applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
               lx.putImageData(layerData, 0, 0);
             }
 
+            x.save();
+            if (isBehindMain) x.globalCompositeOperation = 'destination-over';
             x.drawImage(_vapSlotLayerCanvas, dx, dy, dw, dh);
-          } else if (showGuides) {
-            // Render visual mask guide overlay when mask guides are toggled on
-            if (mw > 0 && mh > 0) {
-              if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
-                _vapSlotMaskCanvas = mk(dw, dh);
-                _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
-              }
-              const mxCtx = _vapSlotMaskCtx!;
-              mxCtx.clearRect(0, 0, dw, dh);
-              mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
-              const maskData = mxCtx.getImageData(0, 0, dw, dh);
-              const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [168, 85, 247];
-              const previewRgba = extractMaskPreviewRgba(maskData.data, dw, dh, tint);
-              for (let p = 3; p < previewRgba.length; p += 4) {
-                previewRgba[p] = Math.round(previewRgba[p] * 0.45);
-              }
-              mxCtx.putImageData(new ImageData(previewRgba, dw, dh), 0, 0);
-              x.drawImage(_vapSlotMaskCanvas, dx, dy, dw, dh);
+            x.restore();
+          } else if (allowBake && fillRgb) {
+            // User explicitly selected a mask layer color (e.g. pink or custom) instead of transparent
+            const customMaskCanvas = isMainSource ? S?._customMaskCanvases?.[slot.srcId] : null;
+            if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
+              _vapSlotMaskCanvas = mk(dw, dh);
+              _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
             }
+            const mxCtx = _vapSlotMaskCtx!;
+            mxCtx.clearRect(0, 0, dw, dh);
+            if (customMaskCanvas || (mw > 0 && mh > 0) || slot.isCustomAdded) {
+              if (drawMaskHelper) {
+                drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
+              } else if (mw > 0 && mh > 0) {
+                mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+              }
+              const maskData = mxCtx.getImageData(0, 0, dw, dh);
+              const coloredRgba = extractMaskPreviewRgba(maskData.data, dw, dh, fillRgb);
+              mxCtx.putImageData(new ImageData(coloredRgba, dw, dh), 0, 0);
+            } else {
+              mxCtx.fillStyle = `rgb(${fillRgb[0]},${fillRgb[1]},${fillRgb[2]})`;
+              mxCtx.fillRect(0, 0, dw, dh);
+            }
+            x.save();
+            if (isBehindMain) x.globalCompositeOperation = 'destination-over';
+            x.drawImage(_vapSlotMaskCanvas, dx, dy, dw, dh);
+            x.restore();
           }
 
           if (showGuides) {
+            const isSel = String((window as any).__selectedVapMaskId || '') === String(slot.srcId);
             x.save();
-            x.strokeStyle = slot.isTextSlot ? '#38bdf8' : '#c084fc';
-            x.lineWidth = Math.max(2, Math.round(cw / 280));
-            x.setLineDash([6, 4]);
+            x.strokeStyle = isSel
+              ? '#fbbf24'
+              : slot.isTextSlot
+                ? '#38bdf8'
+                : '#c084fc';
+            x.lineWidth = Math.max(isSel ? 3 : 2, Math.round(cw / (isSel ? 200 : 280)));
+            x.setLineDash(isSel ? [] : [6, 4]);
             x.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
             x.setLineDash([]);
+            // Corner resize grip handle (bottom-right)
+            const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
+            x.fillStyle = isSel ? '#fbbf24' : '#ffffff';
+            x.strokeStyle = slot.isTextSlot ? '#0284c7' : '#7e22ce';
+            x.lineWidth = 2;
+            x.fillRect(dx + dw - hs, dy + dh - hs, hs, hs);
+            x.strokeRect(dx + dw - hs, dy + dh - hs, hs, hs);
+
             const label = `${slot.srcTag} (${slot.srcType})`;
             const fontSize = Math.max(11, Math.min(18, Math.round(cw / 42)));
             x.font = `bold ${fontSize}px system-ui, sans-serif`;
@@ -3181,7 +3258,11 @@ export function initMotionToolsFixed() {
             const th = fontSize + 6;
             const bx = Math.max(0, Math.min(cw - tw, dx));
             const by = Math.max(0, dy - th - 2);
-            x.fillStyle = slot.isTextSlot ? 'rgba(2, 132, 199, 0.9)' : 'rgba(126, 34, 206, 0.9)';
+            x.fillStyle = isSel
+              ? 'rgba(217, 119, 6, 0.95)'
+              : slot.isTextSlot
+                ? 'rgba(2, 132, 199, 0.9)'
+                : 'rgba(126, 34, 206, 0.9)';
             x.fillRect(bx, by, tw, th);
             x.fillStyle = '#fff';
             x.textBaseline = 'middle';
@@ -3950,8 +4031,9 @@ export function initMotionToolsFixed() {
       try {
         window.SVP.setImage(u, k);
       } catch (e) {}
-    if (S?.meta?.dynamicSlots) {
-      const slot = S.meta.dynamicSlots.find((s: any) => s.assetKey === k);
+    const allSlots = (window as any).__getEffectiveVapSlots?.(S) || S?.meta?.dynamicSlots || [];
+    if (allSlots.length > 0) {
+      const slot = allSlots.find((s: any) => s.assetKey === k);
       if (slot) {
         S._vapSlotReplacements = S._vapSlotReplacements || {};
         const im = await imgOf(u);
@@ -3967,6 +4049,8 @@ export function initMotionToolsFixed() {
             fitMode: prev.fitMode || slot.fitType || 'fitXY',
             useMask: prev.useMask !== false,
           };
+          S._bakeReplacedSlots = true;
+          S._hasMaskEdits = true;
           const thumbEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-thumb="${slot.srcId}"]`) as HTMLImageElement | null;
           if (thumbEl) thumbEl.src = u;
           const badgeEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-status="${slot.srcId}"]`) as HTMLElement | null;
@@ -3975,13 +4059,16 @@ export function initMotionToolsFixed() {
             badgeEl.style.background = 'rgba(16, 185, 129, 0.2)';
             badgeEl.style.color = '#34d399';
           }
-          if (S.vid && S._alphaCanvas) {
+          if (S.vid && S._alphaCanvas && S.meta) {
             const x = S._alphaCanvas.getContext('2d');
             if (x) {
               x.clearRect(0, 0, S._alphaCanvas.width, S._alphaCanvas.height);
               vapDraw(x, S._alphaCanvas.width, S._alphaCanvas.height, S.vid, S.meta);
             }
+          } else {
+            (window as any).__syncNonVapMaskStageOverlay?.(S);
           }
+          (window as any).__refreshVapDynamicMasksPanel?.(S);
         }
       }
     }
@@ -4610,6 +4697,87 @@ export function initMotionToolsFixed() {
         | 'horizontal'
         | 'vertical');
 
+      // 4b. Collect active replaced / colored VAP mask slots so SVGA export preserves them cleanly without yellow guides
+      const maskSprites: Array<{
+        id: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        z: number;
+        pngBytes: Uint8Array;
+      }> = [];
+      if (S) {
+        const effSlots = (window as any).__getEffectiveVapSlots?.(S) || [];
+        const reps = S._vapSlotReplacements || {};
+        for (const sl of effSlots) {
+          const rep = reps[sl.srcId];
+          const fillRgb = parseHexColorRgb((sl as any).fillColor);
+          const hasRep = Boolean(rep && rep.active && !rep.hidden && rep.source);
+          if (!hasRep && !fillRgb) continue;
+          const f = sl.defaultFrame || [0, 0, sl.w || 120, sl.h || 120];
+          const sw = Math.max(2, Math.round(f[2]));
+          const sh = Math.max(2, Math.round(f[3]));
+          const mc = mk(sw, sh);
+          const mx = mc.getContext('2d', { willReadFrequently: true });
+          if (!mx) continue;
+          mx.clearRect(0, 0, sw, sh);
+          if (hasRep && rep.source) {
+            const srcEl = rep.source;
+            const sW = Number(srcEl.naturalWidth || srcEl.width || sw) || sw;
+            const sH = Number(srcEl.naturalHeight || srcEl.height || sh) || sh;
+            const rect = computeSlotFitDrawRect(
+              sW,
+              sH,
+              sw,
+              sh,
+              rep.fitMode || sl.fitType || 'fitXY',
+              Number(rep.scale) > 0 ? Number(rep.scale) : 1,
+              Number(rep.offsetX) || 0,
+              Number(rep.offsetY) || 0
+            );
+            mx.imageSmoothingEnabled = true;
+            mx.imageSmoothingQuality = 'high';
+            mx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
+            if (rep.useMask !== false && typeof (window as any).__buildSlotMaskCanvas === 'function') {
+              const maskCv = (window as any).__buildSlotMaskCanvas(sl, S, S.vid, sl.defaultMFrame, sw, sh);
+              const mCtx = maskCv?.getContext('2d', { willReadFrequently: true });
+              if (mCtx) {
+                const ld = mx.getImageData(0, 0, sw, sh);
+                const md = mCtx.getImageData(0, 0, sw, sh);
+                applyLuminanceMaskToRgba(ld.data, md.data, sw, sh);
+                mx.putImageData(ld, 0, 0);
+              }
+            }
+          } else if (fillRgb && typeof (window as any).__buildSlotMaskCanvas === 'function') {
+            const maskCv = (window as any).__buildSlotMaskCanvas(sl, S, S.vid, sl.defaultMFrame, sw, sh);
+            const mCtx = maskCv?.getContext('2d', { willReadFrequently: true });
+            if (mCtx) {
+              const md = mCtx.getImageData(0, 0, sw, sh);
+              const colored = extractMaskPreviewRgba(md.data, sw, sh, fillRgb);
+              mx.putImageData(new ImageData(colored, sw, sh), 0, 0);
+            }
+          }
+          const pngBytes = await new Promise<Uint8Array>((resolve) => {
+            mc.toBlob((blob) => {
+              if (!blob) return resolve(new Uint8Array());
+              blob.arrayBuffer().then((ab) => resolve(new Uint8Array(ab)));
+            }, 'image/png');
+          });
+          if (pngBytes.length > 0) {
+            maskSprites.push({
+              id: `${sl.srcId}_${sl.srcTag}`,
+              x: f[0],
+              y: f[1],
+              w: sw,
+              h: sh,
+              z: Number(sl.z ?? 0),
+              pngBytes,
+            });
+          }
+        }
+      }
+
       // 5. Compose full unflattened movie (Zero canvas rasterization of primary layers!)
       const compositeMovie = composeDecomposedSvgaMovie(
         { ...baseMovie, audiosRaw: finalAudiosRaw },
@@ -4623,6 +4791,7 @@ export function initMotionToolsFixed() {
           imageReplacements,
           overlayMovies,
           overlayRenderedFrames,
+          maskSprites,
         }
       );
 
@@ -4652,7 +4821,7 @@ export function initMotionToolsFixed() {
 
     const prevS = $('#start').onclick;
     $('#start').onclick = async () => {
-      const F = $('#fmt').value,
+      const F = (window as any).__overrideExportFmt || $('#fmt').value,
         ext = cur ? cur.name.split('.').pop().toLowerCase() : '';
       const geomChanged =
         Boolean(S) &&
@@ -4678,10 +4847,18 @@ export function initMotionToolsFixed() {
         try {
           const cfg = getSvgaCompressionConfig();
           const wantCompress = cfg.qualityPercent < 100;
+          const hasMaskEditsForSvga = Boolean(
+            S &&
+              ((S._vapSlotReplacements && Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)) ||
+                (S._customVapSlots && S._customVapSlots.length > 0) ||
+                Object.values(S._slotGeometryOverrides || {}).some((ov: any) => Boolean(parseHexColorRgb(ov?.fillColor))) ||
+                S._hasMaskEdits)
+          );
           const hasEdits =
             AU.dirty ||
             Object.keys(window.EDIT || {}).length > 0 ||
-            Boolean((window as any).__WATERMARK_LAYERS?.length);
+            Boolean((window as any).__WATERMARK_LAYERS?.length) ||
+            hasMaskEditsForSvga;
           const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
           const needsLayoutRepair = Boolean(window.SV?.m?.layoutNormalized);
 
@@ -5671,31 +5848,214 @@ export function initMotionToolsFixed() {
       m.style.cssText =
         'position:absolute;width:2px;height:2px;opacity:0.001;pointer-events:none;left:0;top:0;z-index:-1';
     }
-    function buildVapMaskSilhouetteDataUrl(m: HTMLVideoElement, slot: any): string {
+    function getEffectiveMaskSlots(source: any): CustomEditableVapSlot[] {
+      if (!source) return [];
+      const baseSlots: any[] = Array.isArray(source?.meta?.dynamicSlots) ? source.meta.dynamicSlots : [];
+      const customSlots: any[] = Array.isArray(source?._customVapSlots) ? source._customVapSlots : [];
+      const deletedIds: Set<string> = source?._deletedSlotIds instanceof Set ? source._deletedSlotIds : new Set();
+      const overrides: Record<string, any> = source?._slotGeometryOverrides || {};
+
+      const merged: CustomEditableVapSlot[] = [];
+      let fallbackIdx = 0;
+      for (const sl of [...baseSlots, ...customSlots]) {
+        if (!sl || deletedIds.has(String(sl.srcId))) continue;
+        const ov = overrides[sl.srcId];
+        const baseZ = Number.isFinite(Number(sl.z)) ? Number(sl.z) : fallbackIdx;
+        fallbackIdx++;
+        if (ov) {
+          const resolvedZ = ov.z !== undefined && Number.isFinite(Number(ov.z)) ? Number(ov.z) : baseZ;
+          merged.push({
+            ...sl,
+            ...ov,
+            z: resolvedZ,
+            defaultFrame: Array.isArray(ov.defaultFrame) ? ov.defaultFrame : sl.defaultFrame,
+            w: Number(ov.w || ov.defaultFrame?.[2] || sl.w),
+            h: Number(ov.h || ov.defaultFrame?.[3] || sl.h),
+            isTextSlot: (ov.srcType || sl.srcType) === 'txt',
+            labelAr: (ov.srcType || sl.srcType) === 'txt' ? `قناع الاسم (${ov.srcTag || sl.srcTag})` : `قناع الصورة (${ov.srcTag || sl.srcTag})`,
+            labelEn: (ov.srcType || sl.srcType) === 'txt' ? `Name Mask (${ov.srcTag || sl.srcTag})` : `Image Mask (${ov.srcTag || sl.srcTag})`,
+          });
+        } else {
+          merged.push({ ...sl, z: baseZ });
+        }
+      }
+      return sortSlotsByZ(merged);
+    }
+
+    function resolveEffectivePlacementsForSource(source: any, meta: any, frameIdx: number) {
+      const baseList = meta ? resolveDynamicFramePlacements(meta, frameIdx) : [];
+      const deletedIds: Set<string> = source?._deletedSlotIds instanceof Set ? source._deletedSlotIds : new Set();
+      const overrides: Record<string, any> = source?._slotGeometryOverrides || {};
+      const out: any[] = [];
+      const seen = new Set<string>();
+
+      for (const pl of baseList) {
+        if (deletedIds.has(String(pl.srcId))) continue;
+        seen.add(String(pl.srcId));
+        const ov = overrides[pl.srcId];
+        const resolvedZ = ov && ov.z !== undefined && Number.isFinite(Number(ov.z)) ? Number(ov.z) : Number(pl.z || 0);
+        if (ov && Array.isArray(ov.defaultFrame)) {
+          out.push({ ...pl, frame: ov.defaultFrame, z: resolvedZ });
+        } else {
+          out.push({ ...pl, z: resolvedZ });
+        }
+      }
+
+      const customSlots: any[] = Array.isArray(source?._customVapSlots) ? source._customVapSlots : [];
+      for (const cs of customSlots) {
+        if (!cs || deletedIds.has(String(cs.srcId)) || seen.has(String(cs.srcId))) continue;
+        const ov = overrides[cs.srcId];
+        const fRect = ov?.defaultFrame || cs.defaultFrame || [0, 0, cs.w, cs.h];
+        const resolvedZ = ov && ov.z !== undefined && Number.isFinite(Number(ov.z)) ? Number(ov.z) : Number(cs.z || 0);
+        out.push({
+          srcId: cs.srcId,
+          z: resolvedZ,
+          frame: fRect,
+          mFrame: cs.defaultMFrame || [0, 0, Math.max(8, fRect[2]), Math.max(8, fRect[3])],
+          mt: cs.mt || 0,
+        });
+      }
+      out.sort((a, b) => (a.z || 0) - (b.z || 0));
+      return out;
+    }
+
+    function buildMaskCanvasFromPresetOrSource(
+      slot: CustomEditableVapSlot,
+      source: any,
+      videoEl: HTMLVideoElement | null,
+      srcMFrame: [number, number, number, number] | null | undefined,
+      w: number,
+      h: number
+    ): HTMLCanvasElement {
+      const safeW = Math.max(2, Math.round(w));
+      const safeH = Math.max(2, Math.round(h));
+      const c = mk(safeW, safeH);
+      const x = c.getContext('2d', { willReadFrequently: true })!;
+      x.fillStyle = '#000';
+      x.fillRect(0, 0, safeW, safeH);
+
+      const customCanvas = source?._customMaskCanvases?.[slot.srcId] as HTMLCanvasElement | undefined;
+      if (customCanvas && customCanvas.width > 0 && customCanvas.height > 0) {
+        x.imageSmoothingEnabled = true;
+        x.imageSmoothingQuality = 'high';
+        x.drawImage(customCanvas, 0, 0, safeW, safeH);
+        return c;
+      }
+
+      if (
+        !slot.isCustomAdded &&
+        srcMFrame &&
+        srcMFrame[2] > 0 &&
+        srcMFrame[3] > 0 &&
+        videoEl &&
+        videoEl.readyState >= 2
+      ) {
+        x.imageSmoothingEnabled = true;
+        x.imageSmoothingQuality = 'high';
+        x.drawImage(videoEl, srcMFrame[0], srcMFrame[1], srcMFrame[2], srcMFrame[3], 0, 0, safeW, safeH);
+        return c;
+      }
+
+      const preset: Exclude<VapMaskShapePreset, 'customImage'> =
+        slot.shapePreset && slot.shapePreset !== 'customImage'
+          ? slot.shapePreset
+          : slot.isTextSlot
+            ? 'roundedRect'
+            : 'circle';
+      const rgba = buildPresetWhiteMaskRgba(preset, safeW, safeH);
+      x.putImageData(new ImageData(new Uint8ClampedArray(rgba), safeW, safeH), 0, 0);
+      return c;
+    }
+
+    function drawSlotMaskToCtx(
+      slot: CustomEditableVapSlot,
+      source: any,
+      videoEl: HTMLVideoElement | null,
+      srcMFrame: [number, number, number, number] | null | undefined,
+      targetCtx: CanvasRenderingContext2D,
+      dw: number,
+      dh: number
+    ) {
+      const customCanvas = source?._customMaskCanvases?.[slot.srcId] as HTMLCanvasElement | undefined;
+      if (customCanvas) {
+        targetCtx.drawImage(customCanvas, 0, 0, dw, dh);
+        return;
+      }
+      if (!slot.isCustomAdded && srcMFrame && srcMFrame[2] > 0 && srcMFrame[3] > 0 && videoEl && videoEl.readyState >= 2) {
+        targetCtx.drawImage(videoEl, srcMFrame[0], srcMFrame[1], srcMFrame[2], srcMFrame[3], 0, 0, dw, dh);
+        return;
+      }
+      const presetCanvas = buildMaskCanvasFromPresetOrSource(slot, source, null, null, dw, dh);
+      targetCtx.drawImage(presetCanvas, 0, 0, dw, dh);
+    }
+
+    async function convertUploadedMaskFileToWhiteOnBlack(file: File): Promise<{
+      canvas: HTMLCanvasElement;
+      dataUrl: string;
+      w: number;
+      h: number;
+    } | null> {
+      const objUrl = URL.createObjectURL(file);
+      try {
+        const im = await imgOf(objUrl);
+        if (!im) return null;
+        const mw = Math.max(8, Math.min(1024, im.naturalWidth || 160));
+        const mh = Math.max(8, Math.min(1024, im.naturalHeight || 160));
+        const c = mk(mw, mh);
+        const x = c.getContext('2d', { willReadFrequently: true })!;
+        x.clearRect(0, 0, mw, mh);
+        x.drawImage(im, 0, 0, mw, mh);
+        const raw = x.getImageData(0, 0, mw, mh);
+        const bw = rgbaToWhiteOnBlackMaskBuffer(raw.data, mw, mh);
+        x.putImageData(new ImageData(new Uint8ClampedArray(bw), mw, mh), 0, 0);
+        return { canvas: c, dataUrl: c.toDataURL('image/png'), w: mw, h: mh };
+      } finally {
+        URL.revokeObjectURL(objUrl);
+      }
+    }
+
+    (window as any).__getEffectiveVapSlots = getEffectiveMaskSlots;
+    (window as any).__getEffectiveVapSlotsAndPlacements = (source: any, meta: any, _m: any) => ({
+      slots: getEffectiveMaskSlots(source),
+      placements: (frameIdx: number) => resolveEffectivePlacementsForSource(source, meta, frameIdx),
+    });
+    (window as any).__drawSlotMaskToCtx = drawSlotMaskToCtx;
+    (window as any).__getVapSlotPreviewUrl = (source: any, slot: any) =>
+      buildVapMaskSilhouetteDataUrl(source?.vid, slot, source);
+
+    function buildVapMaskSilhouetteDataUrl(m: HTMLVideoElement | null | undefined, slot: any, source?: any): string {
       const w = Math.max(1, Number(slot.w) || 100);
       const h = Math.max(1, Number(slot.h) || 100);
       const c = mk(w, h);
       const x = c.getContext('2d', { willReadFrequently: true })!;
       const mf = slot.defaultMFrame;
-      if (mf && mf[2] > 0 && mf[3] > 0 && m.readyState >= 2) {
+      const customCanvas = source?._customMaskCanvases?.[slot.srcId];
+      const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [192, 132, 252];
+
+      if (customCanvas) {
+        x.drawImage(customCanvas, 0, 0, w, h);
+        const raw = x.getImageData(0, 0, w, h);
+        const rgba = extractMaskPreviewRgba(raw.data, w, h, tint);
+        x.putImageData(new ImageData(rgba, w, h), 0, 0);
+      } else if (!slot.isCustomAdded && mf && mf[2] > 0 && mf[3] > 0 && m && m.readyState >= 2) {
         try {
           x.drawImage(m, mf[0], mf[1], mf[2], mf[3], 0, 0, w, h);
           const raw = x.getImageData(0, 0, w, h);
-          const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [192, 132, 252];
           const rgba = extractMaskPreviewRgba(raw.data, w, h, tint);
           x.putImageData(new ImageData(rgba, w, h), 0, 0);
         } catch (_) {}
       } else {
-        x.fillStyle = slot.isTextSlot ? 'rgba(56, 189, 248, 0.35)' : 'rgba(192, 132, 252, 0.35)';
-        if (slot.isTextSlot) {
-          x.fillRect(2, 2, Math.max(2, w - 4), Math.max(2, h - 4));
-        } else {
-          x.beginPath();
-          x.arc(w / 2, h / 2, Math.min(w, h) / 2 - 2, 0, Math.PI * 2);
-          x.fill();
-        }
+        const preset: Exclude<VapMaskShapePreset, 'customImage'> =
+          slot.shapePreset && slot.shapePreset !== 'customImage'
+            ? slot.shapePreset
+            : slot.isTextSlot
+              ? 'roundedRect'
+              : 'circle';
+        const bw = buildPresetWhiteMaskRgba(preset, w, h);
+        const rgba = extractMaskPreviewRgba(bw, w, h, tint);
+        x.putImageData(new ImageData(rgba, w, h), 0, 0);
       }
-      // Draw subtle label inside silhouette preview so user recognizes the mask slot in #assets
+      // Draw subtle label inside silhouette preview so user recognizes the mask slot
       x.save();
       x.strokeStyle = slot.isTextSlot ? 'rgba(56, 189, 248, 0.85)' : 'rgba(192, 132, 252, 0.85)';
       x.lineWidth = 2;
@@ -5731,151 +6091,612 @@ export function initMotionToolsFixed() {
       return c;
     }
 
+    (window as any).__buildSlotMaskCanvas = buildMaskCanvasFromPresetOrSource;
+
+    function renderMaskOverlaySlotsIntoCtx(
+      x: CanvasRenderingContext2D,
+      W: number,
+      H: number,
+      source: any,
+      includeGuides: boolean,
+      includeReplacedContent: boolean,
+      passFilter: 'all' | 'below' | 'above' = 'all'
+    ) {
+      const slots = getEffectiveMaskSlots(source);
+      if (!slots.length) return;
+      const baseW = Math.max(1, source.w || W);
+      const baseH = Math.max(1, source.h || H);
+      const sx = W / baseW;
+      const sy = H / baseH;
+      const replacements = source?._vapSlotReplacements || {};
+      const selId = String((window as any).__selectedVapMaskId || '');
+
+      for (const slot of slots) {
+        const zVal = Number(slot.z ?? 0);
+        if (passFilter === 'below' && zVal >= 0) continue;
+        if (passFilter === 'above' && zVal < 0) continue;
+
+        const f = slot.defaultFrame || [0, 0, slot.w, slot.h];
+        const dx = Math.round(f[0] * sx);
+        const dy = Math.round(f[1] * sy);
+        const dw = Math.max(2, Math.round(f[2] * sx));
+        const dh = Math.max(2, Math.round(f[3] * sy));
+        const rep = replacements[slot.srcId];
+        const isSel = selId === String(slot.srcId);
+        const fillRgb = parseHexColorRgb((slot as any).fillColor);
+
+        if (includeReplacedContent && rep && rep.active && !rep.hidden && rep.source) {
+          const lc = mk(dw, dh);
+          const lx = lc.getContext('2d', { willReadFrequently: true })!;
+          const srcEl = rep.source;
+          const srcW = Number(srcEl.naturalWidth || srcEl.width || dw) || dw;
+          const srcH = Number(srcEl.naturalHeight || srcEl.height || dh) || dh;
+          const rect = computeSlotFitDrawRect(
+            srcW,
+            srcH,
+            dw,
+            dh,
+            rep.fitMode || slot.fitType || 'fitXY',
+            Number(rep.scale) > 0 ? Number(rep.scale) : 1,
+            Number(rep.offsetX) || 0,
+            Number(rep.offsetY) || 0
+          );
+          lx.imageSmoothingEnabled = true;
+          lx.imageSmoothingQuality = 'high';
+          lx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
+
+          if (rep.useMask !== false) {
+            const mc = buildMaskCanvasFromPresetOrSource(slot, source, source.vid, slot.defaultMFrame, dw, dh);
+            const mCtx = mc.getContext('2d', { willReadFrequently: true })!;
+            const layerData = lx.getImageData(0, 0, dw, dh);
+            const maskData = mCtx.getImageData(0, 0, dw, dh);
+            applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
+            lx.putImageData(layerData, 0, 0);
+          }
+          x.drawImage(lc, dx, dy, dw, dh);
+        } else if (includeReplacedContent && fillRgb) {
+          const mc = buildMaskCanvasFromPresetOrSource(slot, source, source.vid, slot.defaultMFrame, dw, dh);
+          const mCtx = mc.getContext('2d', { willReadFrequently: true })!;
+          const maskData = mCtx.getImageData(0, 0, dw, dh);
+          const coloredRgba = extractMaskPreviewRgba(maskData.data, dw, dh, fillRgb);
+          mCtx.putImageData(new ImageData(coloredRgba, dw, dh), 0, 0);
+          x.drawImage(mc, dx, dy, dw, dh);
+        }
+
+        if (includeGuides) {
+          x.save();
+          x.strokeStyle = isSel ? '#fbbf24' : slot.isTextSlot ? '#38bdf8' : '#c084fc';
+          x.lineWidth = Math.max(isSel ? 3 : 2, Math.round(W / (isSel ? 180 : 240)));
+          x.setLineDash(isSel ? [] : [6, 4]);
+          x.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
+          x.setLineDash([]);
+
+          // Bottom-right corner resize handle
+          const hs = Math.max(8, Math.min(14, Math.round(W / 32)));
+          x.fillStyle = isSel ? '#fbbf24' : '#ffffff';
+          x.strokeStyle = slot.isTextSlot ? '#0284c7' : '#7e22ce';
+          x.lineWidth = 2;
+          x.fillRect(dx + dw - hs, dy + dh - hs, hs, hs);
+          x.strokeRect(dx + dw - hs, dy + dh - hs, hs, hs);
+
+          const label = `${slot.srcTag}`;
+          const fontSize = Math.max(10, Math.min(16, Math.round(W / 34)));
+          x.font = `bold ${fontSize}px system-ui, sans-serif`;
+          const tw = x.measureText(label).width + 10;
+          const th = fontSize + 5;
+          const bx = Math.max(0, Math.min(W - tw, dx));
+          const by = Math.max(0, dy - th - 2);
+          x.fillStyle = isSel
+            ? 'rgba(217, 119, 6, 0.95)'
+            : slot.isTextSlot
+              ? 'rgba(2, 132, 199, 0.92)'
+              : 'rgba(126, 34, 206, 0.92)';
+          x.fillRect(bx, by, tw, th);
+          x.fillStyle = '#fff';
+          x.textBaseline = 'middle';
+          x.fillText(label, bx + 5, by + th / 2);
+          x.restore();
+        }
+      }
+    }
+
+    function syncNonVapMaskStageOverlay(source: any) {
+      const viewEl = document.getElementById('view');
+      let overlay = document.getElementById('vapDynamicMaskOverlay') as HTMLCanvasElement | null;
+      let underlay = document.getElementById('vapDynamicMaskUnderlay') as HTMLCanvasElement | null;
+      if (!viewEl || !source || source.meta) {
+        if (overlay) overlay.remove();
+        if (underlay) underlay.remove();
+        return;
+      }
+      const slots = getEffectiveMaskSlots(source);
+      const isExporting = Boolean((window as any).__vapExportingFrames || window.__busy);
+      const showGuides = !isExporting && Boolean((window as any).__vapShowMaskGuides);
+      const hasRep = Object.values(source._vapSlotReplacements || {}).some((r: any) => r && r.active && !r.hidden);
+      const hasColoredFill = slots.some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor)));
+      if (!slots.length || (!showGuides && !hasRep && !hasColoredFill)) {
+        if (overlay) overlay.style.display = 'none';
+        if (underlay) underlay.style.display = 'none';
+        return;
+      }
+      const W = Math.max(2, Math.round(source.w || 300));
+      const H = Math.max(2, Math.round(source.h || 300));
+
+      const ensureLayerCanvas = (existing: HTMLCanvasElement | null, id: string, zIndex: string) => {
+        let cv = existing;
+        if (!cv) {
+          cv = document.createElement('canvas');
+          cv.id = id;
+          cv.style.cssText = `position:absolute;left:0;top:0;pointer-events:none;z-index:${zIndex};background:transparent;`;
+          viewEl.appendChild(cv);
+        }
+        cv.style.display = 'block';
+        cv.style.position = 'absolute';
+        cv.style.left = '0px';
+        cv.style.top = '0px';
+        cv.style.zIndex = zIndex;
+        cv.style.pointerEvents = 'none';
+        if (cv.width !== W || cv.height !== H) {
+          cv.width = W;
+          cv.height = H;
+        }
+        return cv;
+      };
+
+      const hasBelow = slots.some((s) => (s.z ?? 0) < 0);
+      if (hasBelow) {
+        underlay = ensureLayerCanvas(underlay, 'vapDynamicMaskUnderlay', '1');
+        const ux = underlay.getContext('2d');
+        if (ux) {
+          ux.clearRect(0, 0, W, H);
+          renderMaskOverlaySlotsIntoCtx(ux, W, H, source, false, true, 'below');
+        }
+      } else if (underlay) {
+        underlay.style.display = 'none';
+      }
+
+      overlay = ensureLayerCanvas(overlay, 'vapDynamicMaskOverlay', '6');
+      const ox = overlay.getContext('2d');
+      if (ox) {
+        ox.clearRect(0, 0, W, H);
+        // Paint guide outlines for below-project slots above main canvas if guides are enabled so they remain grabbable & visible,
+        // while their content stays cleanly behind the main layer.
+        renderMaskOverlaySlotsIntoCtx(ox, W, H, source, showGuides, true, 'above');
+        if (hasBelow && showGuides) {
+          renderMaskOverlaySlotsIntoCtx(ox, W, H, source, true, false, 'below');
+        }
+      }
+      syncPreviewSize(source.w, source.h);
+    }
+    (window as any).__syncNonVapMaskStageOverlay = syncNonVapMaskStageOverlay;
+
     function repaintVapStageNow(source: any) {
+      if (!source) return;
       if (source?.vid && source?._alphaCanvas && source?.meta) {
         const x = source._alphaCanvas.getContext('2d');
         if (x) {
           x.clearRect(0, 0, source._alphaCanvas.width, source._alphaCanvas.height);
           vapDraw(x, source._alphaCanvas.width, source._alphaCanvas.height, source.vid, source.meta);
         }
+      } else {
+        syncNonVapMaskStageOverlay(source);
       }
     }
 
-    function setupVapDynamicMasksUI(source: any, m: HTMLVideoElement, clamped: any) {
-      const panel = document.getElementById('vapDynamicMasksPanel');
-      for (const k in A) delete A[k];
-      source._vapSlotReplacements = source._vapSlotReplacements || {};
-      source._vapOrigSilhouettes = source._vapOrigSilhouettes || {};
+    function updateInfoDynamicMasksSummary(source: any) {
+      const slots = getEffectiveMaskSlots(source);
+      const infoBox = document.getElementById('info');
+      if (!infoBox) return;
+      const existingLine = infoBox.querySelector('[data-dynamic-masks-info="1"]');
+      if (existingLine) existingLine.remove();
+      if (slots.length > 0) {
+        const div = document.createElement('div');
+        div.setAttribute('data-dynamic-masks-info', '1');
+        const label = slots
+          .map((s) => `${s.srcTag} (${s.isTextSlot ? 'Text' : 'Image'} ${s.w}×${s.h})`)
+          .join(' + ');
+        div.innerHTML = `<b>Dynamic Masks:</b> ${label}`;
+        infoBox.appendChild(div);
+      }
+    }
 
-      const slots = clamped?.dynamicSlots || [];
-      if (!slots.length) {
+    function emitVapMasksChange(source: any) {
+      const slots = getEffectiveMaskSlots(source);
+      window.dispatchEvent(
+        new CustomEvent('vapmaskschange', {
+          detail: {
+            slots,
+            selectedSrcId: (window as any).__selectedVapMaskId || null,
+            guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
+          },
+        })
+      );
+    }
+
+    (window as any).__getVapMasksSnapshot = () => {
+      const source = S;
+      return {
+        hasSource: Boolean(source),
+        baseW: Math.max(1, source?.w || 300),
+        baseH: Math.max(1, source?.h || 300),
+        slots: source ? getEffectiveMaskSlots(source) : [],
+        selectedSrcId: (window as any).__selectedVapMaskId || null,
+        guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
+        replacements: source?._vapSlotReplacements || {},
+      };
+    };
+
+    (window as any).__toggleVapMaskGuides = (force?: boolean) => {
+      (window as any).__vapShowMaskGuides =
+        typeof force === 'boolean' ? force : !(window as any).__vapShowMaskGuides;
+      if (S) {
+        setupVapDynamicMasksUI(S, S.vid || null, S.meta || null);
+        repaintVapStageNow(S);
+        emitVapMasksChange(S);
+      }
+    };
+
+    (window as any).__selectVapMaskSlot = (srcId: string | null) => {
+      (window as any).__selectedVapMaskId = srcId ? String(srcId) : null;
+      if (srcId) (window as any).__vapShowMaskGuides = true;
+      if (S) {
+        setupVapDynamicMasksUI(S, S.vid || null, S.meta || null);
+        repaintVapStageNow(S);
+        emitVapMasksChange(S);
+      }
+    };
+
+    (window as any).__reorderVapMaskSlot = (
+      srcId: string,
+      direction: 'up' | 'down' | 'top' | 'bottom' | 'toggleBehind'
+    ) => {
+      const source = S;
+      if (!source) return;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      const slots = getEffectiveMaskSlots(source);
+      const target = slots.find((s) => String(s.srcId) === String(srcId));
+      if (!target) return;
+
+      if (direction === 'toggleBehind') {
+        const curZ = Number(target.z ?? 0);
+        const minZ = Math.min(0, ...slots.map((s) => Number(s.z ?? 0)));
+        const maxZ = Math.max(0, ...slots.map((s) => Number(s.z ?? 0)));
+        const nextZ = curZ < 0 ? maxZ + 1 : minZ - 1;
+        source._slotGeometryOverrides[target.srcId] = {
+          ...(source._slotGeometryOverrides[target.srcId] || {}),
+          z: nextZ,
+        };
+      } else {
+        const zMap = reorderMaskSlotsZ(slots, srcId, direction);
+        for (const [id, nextZ] of Object.entries(zMap)) {
+          source._slotGeometryOverrides[id] = {
+            ...(source._slotGeometryOverrides[id] || {}),
+            z: nextZ,
+          };
+        }
+      }
+      source._hasMaskEdits = true;
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+    };
+
+    (window as any).__deleteVapMaskSlot = (srcId: string) => {
+      const source = S;
+      if (!source) return;
+      const slots = getEffectiveMaskSlots(source);
+      const target = slots.find((s) => String(s.srcId) === String(srcId));
+      source._deletedSlotIds = source._deletedSlotIds instanceof Set ? source._deletedSlotIds : new Set();
+      source._deletedSlotIds.add(String(srcId));
+      source._customVapSlots = (source._customVapSlots || []).filter((s: any) => String(s.srcId) !== String(srcId));
+      if (source._vapSlotReplacements) delete source._vapSlotReplacements[srcId];
+      if (source._customMaskCanvases) delete source._customMaskCanvases[srcId];
+      if (source._customMaskDataUrls) delete source._customMaskDataUrls[srcId];
+      if (source._slotGeometryOverrides) delete source._slotGeometryOverrides[srcId];
+      if (target?.assetKey && A[target.assetKey]) delete A[target.assetKey];
+      if (String((window as any).__selectedVapMaskId || '') === String(srcId)) {
+        (window as any).__selectedVapMaskId = null;
+      }
+      source._hasMaskEdits = true;
+
+      // Unlink Composer layer if attached
+      const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      if (st && target?.linkedComposerLayerId) {
+        const hasMatch = st.overlays.some((o) => o.id === target.linkedComposerLayerId && o.isVapMask);
+        if (hasMatch && typeof (window as any).__setProjectComposerState === 'function') {
+          (window as any).__setProjectComposerState({
+            ...st,
+            overlays: st.overlays.map((o) =>
+              o.id === target.linkedComposerLayerId
+                ? { ...o, isVapMask: false, linkedMaskSlotId: undefined }
+                : o
+            ),
+          });
+        }
+      }
+
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+    };
+
+    (window as any).__updateVapMaskFrame = (
+      srcId: string,
+      frame: [number, number, number, number]
+    ) => {
+      const source = S;
+      if (!source) return;
+      const sw = Math.max(16, source.w || 300);
+      const sh = Math.max(16, source.h || 300);
+      const nw = Math.max(8, Math.min(sw, Math.round(frame[2])));
+      const nh = Math.max(8, Math.min(sh, Math.round(frame[3])));
+      const nx = Math.max(0, Math.min(sw - nw, Math.round(frame[0])));
+      const ny = Math.max(0, Math.min(sh - nh, Math.round(frame[1])));
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      source._slotGeometryOverrides[srcId] = {
+        ...(source._slotGeometryOverrides[srcId] || {}),
+        w: nw,
+        h: nh,
+        defaultFrame: [nx, ny, nw, nh],
+      };
+      source._hasMaskEdits = true;
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+    };
+
+    function setupVapDynamicMasksUI(source: any, m: HTMLVideoElement | null | undefined, clamped: any) {
+      const panel = document.getElementById('vapDynamicMasksPanel');
+      if (!source) {
         if (panel) {
           panel.style.display = 'none';
           panel.innerHTML = '';
         }
-        renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
         return;
       }
+      source._vapSlotReplacements = source._vapSlotReplacements || {};
+      source._vapOrigSilhouettes = source._vapOrigSilhouettes || {};
+      source._customVapSlots = source._customVapSlots || [];
+      source._customMaskCanvases = source._customMaskCanvases || {};
+      source._customMaskDataUrls = source._customMaskDataUrls || {};
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      if (!(source._deletedSlotIds instanceof Set)) source._deletedSlotIds = new Set();
+      if (source._preserveMasksOnExport === undefined) source._preserveMasksOnExport = true;
+      if (source._bakeReplacedSlots === undefined) source._bakeReplacedSlots = true;
 
-      for (const slot of slots) {
-        const silUrl = buildVapMaskSilhouetteDataUrl(m, slot);
-        source._vapOrigSilhouettes[slot.srcId] = silUrl;
-        const rep = source._vapSlotReplacements[slot.srcId];
-        A[slot.assetKey] = rep && rep.active && rep.dataUrl ? rep.dataUrl : silUrl;
+      const slots = getEffectiveMaskSlots(source);
+      const isVapVideo = Boolean(clamped || source.meta);
+
+      if (isVapVideo) {
+        for (const k of Object.keys(A)) {
+          if (k.startsWith('mask_')) delete A[k];
+        }
+        for (const slot of slots) {
+          const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
+          source._vapOrigSilhouettes[slot.srcId] = silUrl;
+          const rep = source._vapSlotReplacements[slot.srcId];
+          A[slot.assetKey] = rep && rep.active && rep.dataUrl ? rep.dataUrl : silUrl;
+        }
+        renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+      } else {
+        for (const slot of slots) {
+          const silUrl = buildVapMaskSilhouetteDataUrl(null, slot, source);
+          source._vapOrigSilhouettes[slot.srcId] = silUrl;
+        }
       }
-      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
 
-      if (m && m.readyState < 2 && !source._vapSilhouetteWaitHooked) {
+      if (m && m.readyState < 2 && !source._vapSilhouetteWaitHooked && slots.length > 0) {
         source._vapSilhouetteWaitHooked = true;
         const refreshSilhouettes = () => {
           m.removeEventListener('loadeddata', refreshSilhouettes);
           m.removeEventListener('canplay', refreshSilhouettes);
           if (source !== S || m.readyState < 2) return;
-          for (const slot of slots) {
-            const silUrl = buildVapMaskSilhouetteDataUrl(m, slot);
+          for (const slot of getEffectiveMaskSlots(source)) {
+            const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
             source._vapOrigSilhouettes[slot.srcId] = silUrl;
             const rep = source._vapSlotReplacements[slot.srcId];
             if (!rep || !rep.active) {
-              A[slot.assetKey] = silUrl;
+              if (isVapVideo) A[slot.assetKey] = silUrl;
               const thumbEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-thumb="${slot.srcId}"]`) as HTMLImageElement | null;
               if (thumbEl) thumbEl.src = silUrl;
             }
           }
-          renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+          if (isVapVideo) renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
         };
         m.addEventListener('loadeddata', refreshSilhouettes);
         m.addEventListener('canplay', refreshSilhouettes);
       }
 
+      updateInfoDynamicMasksSummary(source);
+      emitVapMasksChange(source);
+
       if (!panel) return;
       panel.style.display = 'block';
       const guidesOn = Boolean((window as any).__vapShowMaskGuides);
+      const selectedId = String((window as any).__selectedVapMaskId || '');
+      const addFormOpen = Boolean(source._vapAddFormOpen);
+      const draftTagDefault = (() => {
+        const existingTags = new Set(slots.map((s) => s.srcTag));
+        let idx = 1;
+        while (existingTags.has(`avatar${idx}`)) idx++;
+        return `avatar${idx}`;
+      })();
+      const defImgW = Math.max(40, Math.min(source.w || 300, Math.round((source.w || 300) * 0.42)));
+      const defImgH = defImgW;
+      const defImgX = Math.max(0, Math.round(((source.w || 300) - defImgW) / 2));
+      const defImgY = Math.max(0, Math.round(((source.h || 300) - defImgH) * 0.3));
+      // Display stack front-to-back (top item = highest Z / drawn last / in front)
+      const displaySlots = [...slots].reverse();
 
       panel.innerHTML = `
         <div style="
-          background: linear-gradient(145deg, rgba(26, 22, 43, 0.96), rgba(16, 16, 26, 0.98));
-          border: 1px solid rgba(168, 85, 247, 0.45);
+          background: rgba(19, 17, 32, 0.94);
+          border: 1px solid rgba(168, 85, 247, 0.35);
           border-radius: 12px;
-          padding: 10px;
-          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+          padding: 9px;
         ">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
-            <div>
-              <div style="font-size:12px;font-weight:800;color:#e9d5ff;display:flex;align-items:center;gap:5px;">
-                <span>🎭 أقنعة وطبقات الملف القابلة للاستبدال</span>
-                <span style="background:rgba(168,85,247,0.25);color:#d8b4fe;padding:1px 6px;border-radius:6px;font-size:10px;">${slots.length}</span>
-              </div>
-              <div style="font-size:10px;color:#9ca3af;margin-top:2px;">
-                تم التعرف تلقائياً على قناع الصورة وقناع الاسم داخل ملف ${clamped.kind}
-              </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;">
+            <div style="font-size:12px;font-weight:800;color:#e9d5ff;display:flex;align-items:center;gap:5px;">
+              <span>🎭 الأقنعة</span>
+              <span data-vap-slots-count style="background:rgba(168,85,247,0.22);color:#d8b4fe;padding:1px 6px;border-radius:6px;font-size:10px;">${slots.length}</span>
             </div>
-            <button type="button" id="vapToggleMaskGuidesBtn" style="
-              padding: 4px 8px;
-              font-size: 10px;
-              font-weight: 700;
-              border-radius: 7px;
-              cursor: pointer;
-              border: 1px solid ${guidesOn ? '#38bdf8' : '#3b3b54'};
-              background: ${guidesOn ? 'rgba(56, 189, 248, 0.2)' : '#1e1e2e'};
-              color: ${guidesOn ? '#7dd3fc' : '#cbd5e1'};
-              white-space: nowrap;
-            " title="إظهار أو إخفاء حدود ومكان الأقنعة على شاشة العرض">
-              ${guidesOn ? '👁️ إخفاء الحدود' : '👁️ إظهار مكان الأقنعة'}
-            </button>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <button type="button" id="vapToggleAddMaskBtn" style="
+                padding: 3px 8px;
+                font-size: 10.5px;
+                font-weight: 700;
+                border-radius: 7px;
+                cursor: pointer;
+                border: 1px solid rgba(168, 85, 247, 0.5);
+                background: ${addFormOpen ? 'rgba(168, 85, 247, 0.35)' : 'rgba(139, 92, 246, 0.2)'};
+                color: #f3e8ff;
+                white-space: nowrap;
+              " title="إضافة قناع جديد">+ قناع</button>
+              ${
+                slots.length > 0
+                  ? `<button type="button" id="vapToggleMaskGuidesBtn" style="
+                      padding: 3px 7px;
+                      font-size: 11px;
+                      border-radius: 7px;
+                      cursor: pointer;
+                      border: 1px solid ${guidesOn ? '#38bdf8' : 'rgba(255,255,255,0.14)'};
+                      background: ${guidesOn ? 'rgba(56, 189, 248, 0.2)' : '#1a1a28'};
+                      color: ${guidesOn ? '#7dd3fc' : '#cbd5e1'};
+                    " title="${guidesOn ? 'إخفاء حدود الأقنعة' : 'إظهار حدود الأقنعة للتحريك بالماوس'}">👁️</button>`
+                  : ''
+              }
+            </div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            ${slots
-              .map((slot: any) => {
+
+          ${
+            slots.length > 0
+              ? `<div style="font-size:10px;color:#94a3b8;margin-bottom:6px;line-height:1.35;">
+                  اسحب القناع بالماوس على الشاشة لتحريكه أو من الزاوية لتكبيره، واستخدم ⬆️⬇️ لوضعه خلف أو أمام أي قناع.
+                </div>`
+              : `<div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">أضف قناعاً أو حوّل أي صورة مضافة من قائمة الطبقات إلى قناع.</div>`
+          }
+
+          <div id="vapAddMaskForm" style="
+            display: ${addFormOpen ? 'flex' : 'none'};
+            flex-direction: column;
+            gap: 6px;
+            background: rgba(12, 12, 20, 0.92);
+            border: 1px dashed rgba(168, 85, 247, 0.55);
+            border-radius: 9px;
+            padding: 8px;
+            margin-bottom: 8px;
+          ">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+              <select id="vapNewMaskType" aria-label="نوع القناع" style="padding:4px 6px;font-size:11px;border-radius:6px;background:#161622;border:1px solid #2e2e44;color:#fff;">
+                <option value="img">🖼️ قناع صورة</option>
+                <option value="txt">🏷️ قناع اسم</option>
+              </select>
+              <input id="vapNewMaskTag" type="text" value="${draftTagDefault}" placeholder="avatar1" aria-label="معرف القناع" style="padding:4px 6px;font-size:11px;border-radius:6px;background:#161622;border:1px solid #2e2e44;color:#fff;min-width:0;" />
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
+              <select id="vapNewMaskShape" aria-label="شكل القناع" style="padding:4px 6px;font-size:11px;border-radius:6px;background:#161622;border:1px solid #2e2e44;color:#fff;">
+                <option value="circle">⚪ دائرة</option>
+                <option value="roundedRect">▢ مستطيل دائري</option>
+                <option value="shield">🛡️ درع</option>
+                <option value="rect">⬜ مربع كامل</option>
+                <option value="customImage">🖼️ صورة مخصصة</option>
+              </select>
+              <button type="button" id="vapNewMaskUploadShapeBtn" style="padding:4px 6px;font-size:10.5px;font-weight:700;border-radius:6px;background:#1f1f33;border:1px solid #4c3f7a;color:#e9d5ff;cursor:pointer;white-space:nowrap;">
+                🎭 رفع PNG القناع
+              </button>
+            </div>
+            <div id="vapNewMaskShapeStatus" style="font-size:10px;color:#9ca3af;display:none;align-items:center;gap:6px;"></div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
+              <label style="font-size:9px;color:#9ca3af;">X<input id="vapNewMaskX" type="number" value="${defImgX}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+              <label style="font-size:9px;color:#9ca3af;">Y<input id="vapNewMaskY" type="number" value="${defImgY}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+              <label style="font-size:9px;color:#9ca3af;">W<input id="vapNewMaskW" type="number" value="${defImgW}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+              <label style="font-size:9px;color:#9ca3af;">H<input id="vapNewMaskH" type="number" value="${defImgH}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+            </div>
+            <button type="button" id="vapConfirmAddMaskBtn" style="
+              padding:5px 10px;
+              font-size:11px;
+              font-weight:800;
+              border-radius:7px;
+              border:1px solid #22c55e;
+              background:rgba(16, 185, 129, 0.22);
+              color:#86efac;
+              cursor:pointer;
+            ">✅ إضافة القناع</button>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${displaySlots
+              .map((slot: any, visIdx: number) => {
                 const rep = source._vapSlotReplacements[slot.srcId] || {};
                 const isActive = Boolean(rep.active);
-                const thumbSrc = A[slot.assetKey] || '';
+                const isSelected = selectedId === String(slot.srcId);
+                const thumbSrc =
+                  (rep.active && rep.dataUrl) ||
+                  source._vapOrigSilhouettes?.[slot.srcId] ||
+                  A[slot.assetKey] ||
+                  '';
                 const isTxt = Boolean(slot.isTextSlot);
-                const typeBadgeLabel = isTxt ? 'قناع نص / اسم (Text Mask)' : 'قناع صورة / طبقة (Image Mask)';
                 const typeBadgeColor = isTxt ? '#38bdf8' : '#c084fc';
                 const fitMode = rep.fitMode || slot.fitType || 'fitXY';
                 const useMask = rep.useMask !== false;
+                const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
+                const geomOpen = Boolean(source._openGeomSlotIds?.[slot.srcId]);
+                const currentShape = slot.shapePreset || (source._customMaskCanvases?.[slot.srcId] ? 'customImage' : isTxt ? 'roundedRect' : 'circle');
+                const zVal = Number(slot.z ?? 0);
+                const isBehindProj = zVal < 0;
+                const canMoveUp = visIdx > 0;
+                const canMoveDown = visIdx < displaySlots.length - 1;
+                const currentFill = String((slot as any).fillColor || 'transparent');
+                const isColored = Boolean(parseHexColorRgb(currentFill));
+
                 return `
                   <div data-vap-slot-card="${slot.srcId}" style="
-                    background: rgba(15, 15, 23, 0.9);
-                    border: 1px solid ${isTxt ? 'rgba(56, 189, 248, 0.35)' : 'rgba(192, 132, 252, 0.35)'};
-                    border-radius: 10px;
-                    padding: 8px;
+                    background: ${isSelected ? 'rgba(251, 191, 36, 0.08)' : 'rgba(13, 13, 21, 0.92)'};
+                    border: 1px solid ${isSelected ? 'rgba(251, 191, 36, 0.7)' : isTxt ? 'rgba(56, 189, 248, 0.25)' : 'rgba(192, 132, 252, 0.25)'};
+                    border-radius: 9px;
+                    padding: 6px;
                     display: flex;
                     flex-direction: column;
-                    gap: 7px;
+                    gap: 5px;
+                    cursor: pointer;
+                    min-width: 0;
                   ">
-                    <div style="display:flex;align-items:center;gap:8px;">
-                      <div style="
-                        width: 46px;
-                        height: 46px;
-                        border-radius: 8px;
+                    <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                      <div data-vap-upload-btn="${slot.srcId}" title="اضغط لرفع/استبدال صورة داخل القناع" style="
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 6px;
                         overflow: hidden;
                         flex-shrink: 0;
-                        border: 1px solid rgba(255,255,255,0.12);
-                        background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 10px 10px;
+                        border: 1px solid ${isActive ? '#34d399' : 'rgba(255,255,255,0.14)'};
+                        background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 8px 8px;
                         display: grid;
                         place-items: center;
+                        cursor: pointer;
                       ">
                         <img data-vap-thumb="${slot.srcId}" src="${thumbSrc}" alt="${slot.srcTag}" style="max-width:100%;max-height:100%;object-fit:contain;" />
                       </div>
                       <div style="flex:1;min-width:0;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
-                          <span style="font-size:12px;font-weight:800;color:#f3f4f6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                            ${isTxt ? '🏷️ قناع الاسم:' : '🖼️ قناع الصورة:'} <code style="color:${typeBadgeColor};">${slot.srcTag}</code>
+                        <div style="display:flex;align-items:center;gap:4px;min-width:0;">
+                          <span style="font-size:11px;font-weight:800;color:${isSelected ? '#fde68a' : '#f3f4f6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                            ${slot.srcTag}
                           </span>
-                          <span data-vap-status="${slot.srcId}" style="
-                            font-size:9px;
-                            padding:1px 6px;
-                            border-radius:5px;
-                            font-weight:700;
-                            background:${isActive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.08)'};
-                            color:${isActive ? '#34d399' : '#9ca3af'};
-                          ">${isActive ? '✓ تم الاستبدال' : 'بدون طبقة'}</span>
+                          ${isActive ? `<span style="width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;" title="تم استبدال المحتوى وسيُحفظ في التصدير"></span>` : ''}
                         </div>
-                        <div style="font-size:10px;color:${typeBadgeColor};margin-top:1px;font-weight:600;">
-                          ${typeBadgeLabel} · ${slot.w}×${slot.h}px
+                        <div style="font-size:9px;color:${typeBadgeColor};font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-vap-dims-label="${slot.srcId}">
+                          ${isTxt ? 'اسم' : 'صورة'} · ${Math.round(fRect[2])}×${Math.round(fRect[3])} · (${Math.round(fRect[0])},${Math.round(fRect[1])})
                         </div>
                       </div>
+                      <button type="button" data-vap-delete-btn="${slot.srcId}" title="حذف القناع" aria-label="حذف القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.12);color:#fca5a5;font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center;">×</button>
+                    </div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:3px;">
+                      <div style="display:flex;align-items:center;gap:2px;">
+                        <button type="button" data-vap-zup-btn="${slot.srcId}" title="تقديم القناع للأمام" aria-label="تقديم القناع ${slot.srcTag}" ${!canMoveUp ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveUp ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveUp ? 'pointer' : 'default'};display:grid;place-items:center;">↑</button>
+                        <button type="button" data-vap-zdown-btn="${slot.srcId}" title="إنزال القناع للخلف" aria-label="إنزال القناع ${slot.srcTag}" ${!canMoveDown ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveDown ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveDown ? 'pointer' : 'default'};display:grid;place-items:center;">↓</button>
+                      </div>
+                      <button type="button" data-vap-behind-btn="${slot.srcId}" title="نقل خلف أو أمام المشروع الرئيسي" style="flex:1;min-width:0;height:20px;padding:0 4px;border-radius:5px;border:1px solid ${isBehindProj ? 'rgba(251,191,36,0.45)' : 'rgba(255,255,255,0.1)'};background:${isBehindProj ? 'rgba(251,191,36,0.16)' : '#1b1b2b'};color:${isBehindProj ? '#fde68a' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${isBehindProj ? '⬇️ خلف' : '⬆️ فوق'}</button>
+                      <button type="button" data-vap-fill-toggle="${slot.srcId}" title="${isColored ? 'تحويل الطبقة إلى شفاف (بدون لون)' : 'لون الطبقة الآن: شفاف — اضغط لتلوينها بمبي'}" style="height:20px;padding:0 5px;border-radius:5px;border:1px solid ${isColored ? currentFill : 'rgba(255,255,255,0.14)'};background:${isColored ? currentFill : 'repeating-conic-gradient(#2d2d40 0 25%, #191926 0 50%) 0 0 / 6px 6px'};color:${isColored ? '#fff' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;text-shadow:${isColored ? '0 1px 2px #000' : 'none'};">${isColored ? 'لون' : 'شفاف'}</button>
+                      <input type="color" data-vap-fill-picker="${slot.srcId}" value="${isColored ? currentFill : '#ec4899'}" title="اختر لون مخصص للطبقة (بمبي أو أي لون)" aria-label="لون الطبقة ${slot.srcTag}" style="width:20px;height:20px;padding:0;border:1px solid rgba(255,255,255,0.18);border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;" />
+                      <button type="button" data-vap-geom-toggle="${slot.srcId}" title="خيارات الشكل والمقاس والاستبدال" aria-label="إعدادات القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid ${geomOpen ? '#8b5cf6' : 'rgba(255,255,255,0.1)'};background:${geomOpen ? 'rgba(139,92,246,0.28)' : '#1b1b2b'};color:#e2e8f0;font-size:11px;cursor:pointer;display:grid;place-items:center;">⚙</button>
                     </div>
 
                     ${
@@ -5885,110 +6706,67 @@ export function initMotionToolsFixed() {
                         <input
                           type="text"
                           data-vap-txt-input="${slot.srcId}"
-                          placeholder="اكتب الاسم أو النص هنا..."
+                          placeholder="اكتب الاسم (اضغط Enter)..."
                           value="${rep.text ? String(rep.text).replace(/"/g, '&quot;') : ''}"
-                          style="
-                            flex:1;
-                            min-width:0;
-                            padding:5px 7px;
-                            font-size:11px;
-                            border-radius:6px;
-                            border:1px solid #2e2e42;
-                            background:#141420;
-                            color:#fff;
-                          "
+                          style="flex:1;min-width:0;padding:4px 7px;font-size:11px;border-radius:6px;border:1px solid #2e2e42;background:#141420;color:#fff;"
                         />
                         <input
                           type="color"
                           data-vap-txt-color="${slot.srcId}"
                           value="${rep.textColor || slot.color || '#ffffff'}"
                           title="لون النص"
-                          style="width:26px;height:26px;padding:0;border:1px solid #2e2e42;border-radius:6px;background:transparent;cursor:pointer;flex-shrink:0;"
+                          style="width:24px;height:24px;padding:0;border:1px solid #2e2e42;border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;"
                         />
-                        <button
-                          type="button"
-                          data-vap-txt-apply="${slot.srcId}"
-                          style="
-                            padding:5px 9px;
-                            font-size:11px;
-                            font-weight:700;
-                            border-radius:6px;
-                            border:1px solid rgba(56, 189, 248, 0.5);
-                            background:rgba(14, 165, 233, 0.25);
-                            color:#bae6fd;
-                            cursor:pointer;
-                            white-space:nowrap;
-                          "
-                        >تطبيق الاسم</button>
                       </div>
                     `
                         : ''
                     }
 
-                    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-                      <button
-                        type="button"
-                        data-vap-upload-btn="${slot.srcId}"
-                        style="
-                          flex:1;
-                          padding:5px 8px;
-                          font-size:10.5px;
-                          font-weight:700;
-                          border-radius:6px;
-                          border:1px solid rgba(168, 85, 247, 0.5);
-                          background:rgba(139, 92, 246, 0.22);
-                          color:#e9d5ff;
-                          cursor:pointer;
-                          white-space:nowrap;
-                        "
-                      >📁 استبدال بطبقة / صورة</button>
-                      <button
-                        type="button"
-                        data-vap-edit-btn="${slot.srcId}"
-                        style="
-                          padding:5px 8px;
-                          font-size:10.5px;
-                          font-weight:700;
-                          border-radius:6px;
-                          border:1px solid #323248;
-                          background:#1c1c2b;
-                          color:#d1d5db;
-                          cursor:pointer;
-                          white-space:nowrap;
-                        "
-                        title="فتح محرر الصور والنصوص المتقدم"
-                      >✎ محرر</button>
-                      <button
-                        type="button"
-                        data-vap-reset-btn="${slot.srcId}"
-                        style="
-                          padding:5px 7px;
-                          font-size:10.5px;
-                          font-weight:700;
-                          border-radius:6px;
-                          border:1px solid rgba(239, 68, 68, 0.35);
-                          background:rgba(239, 68, 68, 0.12);
-                          color:#fca5a5;
-                          cursor:pointer;
-                        "
-                        title="إفراغ القناع واستعادة حالته الأصلية"
-                      >↺</button>
-                    </div>
-
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding-top:3px;border-top:1px solid rgba(255,255,255,0.06);font-size:10px;color:#9ca3af;">
-                      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="تطبيق قناع الشفافية المتحرك (mFrame) الخاص بالملف على الطبقة المستبدلة">
-                        <input type="checkbox" data-vap-mask-toggle="${slot.srcId}" ${useMask ? 'checked' : ''} />
-                        <span>قص القناع (mFrame)</span>
-                      </label>
-                      <select
-                        data-vap-fit-select="${slot.srcId}"
-                        style="padding:2px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2d2d42;color:#e5e7eb;"
-                        title="طريقة ملاءمة الطبقة داخل القناع"
-                      >
-                        <option value="cover" ${fitMode === 'cover' ? 'selected' : ''}>تغطية (Cover)</option>
-                        <option value="contain" ${fitMode === 'contain' ? 'selected' : ''}>احتواء (Contain)</option>
-                        <option value="fitXY" ${fitMode === 'fitXY' || fitMode === 'stretch' ? 'selected' : ''}>تمدد كامل (FitXY)</option>
-                      </select>
+                    <div data-vap-geom-box="${slot.srcId}" style="
+                      display: ${geomOpen ? 'flex' : 'none'};
+                      flex-direction: column;
+                      gap: 5px;
+                      padding: 6px;
+                      border-radius: 7px;
+                      background: rgba(9, 9, 16, 0.92);
+                      border: 1px solid rgba(168, 85, 247, 0.28);
+                    ">
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                        <button type="button" data-vap-upload-btn-inner="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(168,85,247,0.45);background:rgba(139,92,246,0.2);color:#e9d5ff;cursor:pointer;">📁 صورة داخل القناع</button>
+                        <button type="button" data-vap-maskfile-btn="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(56,189,248,0.45);background:rgba(14,165,233,0.16);color:#bae6fd;cursor:pointer;">🎭 شكل القناع PNG</button>
+                      </div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                        <input type="text" data-vap-geom-tag="${slot.srcId}" value="${String(slot.srcTag).replace(/"/g, '&quot;')}" aria-label="معرف القناع" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;" />
+                        <select data-vap-geom-shape="${slot.srcId}" aria-label="شكل القص" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;">
+                          <option value="circle" ${currentShape === 'circle' ? 'selected' : ''}>⚪ دائرة</option>
+                          <option value="roundedRect" ${currentShape === 'roundedRect' ? 'selected' : ''}>▢ مستطيل دائري</option>
+                          <option value="shield" ${currentShape === 'shield' ? 'selected' : ''}>🛡️ درع</option>
+                          <option value="rect" ${currentShape === 'rect' ? 'selected' : ''}>⬜ مربع</option>
+                          <option value="customImage" ${currentShape === 'customImage' ? 'selected' : ''}>🎭 مخصص</option>
+                        </select>
+                      </div>
+                      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
+                        <label style="font-size:9px;color:#9ca3af;">X<input type="number" data-vap-geom-x="${slot.srcId}" value="${Math.round(fRect[0])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                        <label style="font-size:9px;color:#9ca3af;">Y<input type="number" data-vap-geom-y="${slot.srcId}" value="${Math.round(fRect[1])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                        <label style="font-size:9px;color:#9ca3af;">W<input type="number" data-vap-geom-w="${slot.srcId}" value="${Math.round(fRect[2])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                        <label style="font-size:9px;color:#9ca3af;">H<input type="number" data-vap-geom-h="${slot.srcId}" value="${Math.round(fRect[3])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                      </div>
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;font-size:10px;color:#9ca3af;">
+                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                          <input type="checkbox" data-vap-mask-toggle="${slot.srcId}" ${useMask ? 'checked' : ''} />
+                          <span>قص (mFrame)</span>
+                        </label>
+                        <select data-vap-fit-select="${slot.srcId}" style="padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2d2d42;color:#e5e7eb;">
+                          <option value="cover" ${fitMode === 'cover' ? 'selected' : ''}>Cover</option>
+                          <option value="contain" ${fitMode === 'contain' ? 'selected' : ''}>Contain</option>
+                          <option value="fitXY" ${fitMode === 'fitXY' || fitMode === 'stretch' ? 'selected' : ''}>FitXY</option>
+                        </select>
+                      </div>
+                      <div style="display:flex;gap:4px;">
+                        <button type="button" data-vap-geom-save="${slot.srcId}" style="flex:1;padding:4px 8px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid #8b5cf6;background:rgba(139,92,246,0.28);color:#f3e8ff;cursor:pointer;">💾 حفظ</button>
+                        <button type="button" data-vap-edit-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#d1d5db;cursor:pointer;" title="محرر">✎</button>
+                        <button type="button" data-vap-reset-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#fde68a;cursor:pointer;" title="استعادة">↺</button>
+                      </div>
                     </div>
                   </div>
                 `;
@@ -5997,6 +6775,116 @@ export function initMotionToolsFixed() {
           </div>
         </div>
       `;
+
+      const toggleAddBtn = document.getElementById('vapToggleAddMaskBtn');
+      if (toggleAddBtn) {
+        toggleAddBtn.onclick = () => {
+          source._vapAddFormOpen = !source._vapAddFormOpen;
+          setupVapDynamicMasksUI(source, m, clamped);
+        };
+      }
+
+      const newTypeEl = document.getElementById('vapNewMaskType') as HTMLSelectElement | null;
+      const newTagEl = document.getElementById('vapNewMaskTag') as HTMLInputElement | null;
+      const newShapeEl = document.getElementById('vapNewMaskShape') as HTMLSelectElement | null;
+      const newXEl = document.getElementById('vapNewMaskX') as HTMLInputElement | null;
+      const newYEl = document.getElementById('vapNewMaskY') as HTMLInputElement | null;
+      const newWEl = document.getElementById('vapNewMaskW') as HTMLInputElement | null;
+      const newHEl = document.getElementById('vapNewMaskH') as HTMLInputElement | null;
+      const newShapeBtn = document.getElementById('vapNewMaskUploadShapeBtn');
+      const newShapeStatus = document.getElementById('vapNewMaskShapeStatus');
+
+      let pendingNewMaskData: { canvas: HTMLCanvasElement; dataUrl: string } | null = null;
+      if (newTypeEl && newTagEl && newWEl && newHEl && newXEl && newYEl && newShapeEl) {
+        newTypeEl.onchange = () => {
+          const isTxt = newTypeEl.value === 'txt';
+          const existingTags = new Set(getEffectiveMaskSlots(source).map((s) => s.srcTag));
+          const prefix = isTxt ? 'textName' : 'avatar';
+          let idx = 1;
+          while (existingTags.has(`${prefix}${idx}`)) idx++;
+          newTagEl.value = `${prefix}${idx}`;
+          const sw = source.w || 300;
+          const sh = source.h || 300;
+          if (isTxt) {
+            const w = Math.max(60, Math.round(sw * 0.68));
+            const h = Math.max(24, Math.round(sh * 0.12));
+            newWEl.value = String(w);
+            newHEl.value = String(h);
+            newXEl.value = String(Math.round((sw - w) / 2));
+            newYEl.value = String(Math.round(sh * 0.72));
+            if (!pendingNewMaskData) newShapeEl.value = 'roundedRect';
+          } else {
+            const w = Math.max(40, Math.round(sw * 0.42));
+            newWEl.value = String(w);
+            newHEl.value = String(w);
+            newXEl.value = String(Math.round((sw - w) / 2));
+            newYEl.value = String(Math.round(sh * 0.2));
+            if (!pendingNewMaskData) newShapeEl.value = 'circle';
+          }
+        };
+      }
+
+      if (newShapeBtn) {
+        newShapeBtn.onclick = () => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = 'image/*';
+          inp.onchange = async () => {
+            const file = inp.files?.[0];
+            if (!file) return;
+            const res = await convertUploadedMaskFileToWhiteOnBlack(file);
+            if (!res) return toast('تعذر قراءة صورة القناع');
+            pendingNewMaskData = { canvas: res.canvas, dataUrl: res.dataUrl };
+            if (newShapeEl) newShapeEl.value = 'customImage';
+            if (newShapeStatus) {
+              newShapeStatus.style.display = 'flex';
+              newShapeStatus.innerHTML = `<img src="${res.dataUrl}" style="width:22px;height:22px;border-radius:4px;border:1px solid #4c3f7a;background:#000;object-fit:contain;" /> <span style="color:#34d399;">✓ شكل قناع جاهز (${res.w}×${res.h})</span>`;
+            }
+          };
+          inp.click();
+        };
+      }
+
+      const confirmAddBtn = document.getElementById('vapConfirmAddMaskBtn');
+      if (confirmAddBtn) {
+        confirmAddBtn.onclick = () => {
+          const srcType = (newTypeEl?.value === 'txt' ? 'txt' : 'img') as 'img' | 'txt';
+          const srcTag = (newTagEl?.value || (srcType === 'txt' ? 'textName1' : 'avatar1')).trim();
+          const sw = source.w || 300;
+          const sh = source.h || 300;
+          const w = Math.max(8, Math.min(sw, Number(newWEl?.value) || 120));
+          const h = Math.max(8, Math.min(sh, Number(newHEl?.value) || 120));
+          const x = Math.max(0, Math.min(sw - w, Number(newXEl?.value) || 0));
+          const y = Math.max(0, Math.min(sh - h, Number(newYEl?.value) || 0));
+          const shape = (newShapeEl?.value || (srcType === 'txt' ? 'roundedRect' : 'circle')) as VapMaskShapePreset;
+          const nextId = buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...(source._customVapSlots || [])]);
+          const maxExistingZ = slots.length ? Math.max(...slots.map((s) => Number(s.z ?? 0))) : -1;
+
+          const slot = makeCustomVapSlot({
+            srcId: nextId,
+            srcType,
+            srcTag,
+            x,
+            y,
+            w,
+            h,
+            shapePreset: pendingNewMaskData ? 'customImage' : shape,
+            maskSilhouetteDataUrl: pendingNewMaskData?.dataUrl,
+            z: maxExistingZ + 1,
+          });
+          source._customVapSlots.push(slot);
+          if (pendingNewMaskData) {
+            source._customMaskCanvases[slot.srcId] = pendingNewMaskData.canvas;
+            source._customMaskDataUrls[slot.srcId] = pendingNewMaskData.dataUrl;
+          }
+          source._vapAddFormOpen = false;
+          (window as any).__selectedVapMaskId = slot.srcId;
+          (window as any).__vapShowMaskGuides = true;
+          setupVapDynamicMasksUI(source, m, clamped);
+          repaintVapStageNow(source);
+          toast(`✅ تمت إضافة القناع "${srcTag}" — اسحبه بالماوس على الشاشة`);
+        };
+      }
 
       const guideBtn = document.getElementById('vapToggleMaskGuidesBtn');
       if (guideBtn) {
@@ -6007,66 +6895,221 @@ export function initMotionToolsFixed() {
         };
       }
 
-      slots.forEach((slot: any) => {
-        const uploadBtn = panel.querySelector(`[data-vap-upload-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
-        if (uploadBtn) {
-          uploadBtn.onclick = () => {
+      displaySlots.forEach((slot: any) => {
+        const card = panel.querySelector(`[data-vap-slot-card="${slot.srcId}"]`) as HTMLElement | null;
+        if (card) {
+          card.onclick = (ev) => {
+            const targetEl = ev.target as HTMLElement;
+            if (targetEl.closest('button, input, select, [data-vap-upload-btn]')) return;
+            (window as any).__selectVapMaskSlot(slot.srcId);
+          };
+        }
+
+        const triggerLayerReplace = () => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = 'image/*';
+          inp.onchange = async () => {
+            const file = inp.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async () => {
+              const dataUrl = String(reader.result || '');
+              if (!dataUrl) return;
+              A[slot.assetKey] = dataUrl;
+              const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
+              if (thImg) thImg.src = dataUrl;
+              const prev = source._vapSlotReplacements[slot.srcId] || {};
+              if (!prev.fitMode && !slot.isTextSlot) {
+                prev.fitMode = 'cover';
+              }
+              source._vapSlotReplacements[slot.srcId] = prev;
+              source._bakeReplacedSlots = true;
+              source._hasMaskEdits = true;
+              await applyEdit(dataUrl, slot.assetKey);
+              setupVapDynamicMasksUI(source, m, clamped);
+              toast(`تم رفع وحفظ الصورة داخل القناع "${slot.srcTag}"`);
+            };
+            reader.readAsDataURL(file);
+          };
+          inp.click();
+        };
+
+        const uploadBtn = panel.querySelector(`[data-vap-upload-btn="${slot.srcId}"]`) as HTMLElement | null;
+        if (uploadBtn) uploadBtn.onclick = (ev) => { ev.stopPropagation(); triggerLayerReplace(); };
+        const uploadInnerBtn = panel.querySelector(`[data-vap-upload-btn-inner="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (uploadInnerBtn) uploadInnerBtn.onclick = (ev) => { ev.stopPropagation(); triggerLayerReplace(); };
+
+        const zUpBtn = panel.querySelector(`[data-vap-zup-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (zUpBtn) {
+          zUpBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            (window as any).__reorderVapMaskSlot(slot.srcId, 'up');
+          };
+        }
+        const zDownBtn = panel.querySelector(`[data-vap-zdown-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (zDownBtn) {
+          zDownBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            (window as any).__reorderVapMaskSlot(slot.srcId, 'down');
+          };
+        }
+        const behindBtn = panel.querySelector(`[data-vap-behind-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (behindBtn) {
+          behindBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            (window as any).__reorderVapMaskSlot(slot.srcId, 'toggleBehind');
+          };
+        }
+
+        const fillToggleBtn = panel.querySelector(`[data-vap-fill-toggle="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (fillToggleBtn) {
+          fillToggleBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            const curColored = Boolean(parseHexColorRgb(source._slotGeometryOverrides?.[slot.srcId]?.fillColor || slot.fillColor));
+            const nextFill = curColored ? 'transparent' : '#ec4899';
+            source._slotGeometryOverrides[slot.srcId] = {
+              ...(source._slotGeometryOverrides[slot.srcId] || {}),
+              fillColor: nextFill,
+            };
+            source._hasMaskEdits = true;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(nextFill === 'transparent' ? `تم جعل القناع "${slot.srcTag}" شفافاً` : `تم تلوين القناع "${slot.srcTag}"`);
+          };
+        }
+
+        const fillPicker = panel.querySelector(`[data-vap-fill-picker="${slot.srcId}"]`) as HTMLInputElement | null;
+        if (fillPicker) {
+          fillPicker.onclick = (ev) => ev.stopPropagation();
+          fillPicker.oninput = (ev) => {
+            ev.stopPropagation();
+            const val = fillPicker.value || '#ec4899';
+            source._slotGeometryOverrides[slot.srcId] = {
+              ...(source._slotGeometryOverrides[slot.srcId] || {}),
+              fillColor: val,
+            };
+            source._hasMaskEdits = true;
+            if (fillToggleBtn) {
+              fillToggleBtn.textContent = 'لون';
+              fillToggleBtn.style.background = val;
+              fillToggleBtn.style.borderColor = val;
+              fillToggleBtn.style.color = '#fff';
+            }
+            repaintVapStageNow(source);
+          };
+          fillPicker.onchange = (ev) => {
+            ev.stopPropagation();
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+          };
+        }
+
+        const maskFileBtn = panel.querySelector(`[data-vap-maskfile-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (maskFileBtn) {
+          maskFileBtn.onclick = (ev) => {
+            ev.stopPropagation();
             const inp = document.createElement('input');
             inp.type = 'file';
             inp.accept = 'image/*';
             inp.onchange = async () => {
               const file = inp.files?.[0];
               if (!file) return;
-              const reader = new FileReader();
-              reader.onload = async () => {
-                const dataUrl = String(reader.result || '');
-                if (!dataUrl) return;
-                A[slot.assetKey] = dataUrl;
-                const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
-                if (thImg) thImg.src = dataUrl;
-                const prev = source._vapSlotReplacements[slot.srcId] || {};
-                // Default image uploads to 'cover' for circular/avatar masks unless user explicitly set it
-                if (!prev.fitMode && !slot.isTextSlot) {
-                  prev.fitMode = 'cover';
-                }
-                source._vapSlotReplacements[slot.srcId] = prev;
-                await applyEdit(dataUrl, slot.assetKey);
-                toast(`تم استبدال القناع "${slot.srcTag}" بالطبقة الجديدة`);
+              const res = await convertUploadedMaskFileToWhiteOnBlack(file);
+              if (!res) return toast('تعذر قراءة صورة القناع');
+              source._customMaskCanvases[slot.srcId] = res.canvas;
+              source._customMaskDataUrls[slot.srcId] = res.dataUrl;
+              source._slotGeometryOverrides[slot.srcId] = {
+                ...(source._slotGeometryOverrides[slot.srcId] || {}),
+                shapePreset: 'customImage',
+                maskSilhouetteDataUrl: res.dataUrl,
               };
-              reader.readAsDataURL(file);
+              source._hasMaskEdits = true;
+              setupVapDynamicMasksUI(source, m, clamped);
+              repaintVapStageNow(source);
+              toast(`🎭 تم تحديث شكل القناع "${slot.srcTag}"`);
             };
             inp.click();
           };
         }
 
-        const editBtn = panel.querySelector(`[data-vap-edit-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
-        if (editBtn) {
-          editBtn.onclick = () => openEdit(slot.assetKey);
-        }
-
-        const resetBtn = panel.querySelector(`[data-vap-reset-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
-        if (resetBtn) {
-          resetBtn.onclick = () => {
-            delete source._vapSlotReplacements[slot.srcId];
-            if (window.EDIT) delete window.EDIT[slot.assetKey];
-            const silUrl = source._vapOrigSilhouettes?.[slot.srcId] || buildVapMaskSilhouetteDataUrl(m, slot);
-            A[slot.assetKey] = silUrl;
-            renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+        const geomToggleBtn = panel.querySelector(`[data-vap-geom-toggle="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (geomToggleBtn) {
+          geomToggleBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            source._openGeomSlotIds = source._openGeomSlotIds || {};
+            source._openGeomSlotIds[slot.srcId] = !source._openGeomSlotIds[slot.srcId];
             setupVapDynamicMasksUI(source, m, clamped);
-            repaintVapStageNow(source);
-            toast(`تمت استعادة القناع "${slot.srcTag}" لحالته الأصلية`);
           };
         }
 
-        const txtApplyBtn = panel.querySelector(`[data-vap-txt-apply="${slot.srcId}"]`) as HTMLButtonElement | null;
+        const geomSaveBtn = panel.querySelector(`[data-vap-geom-save="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (geomSaveBtn) {
+          geomSaveBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            const nextTag = (panel.querySelector(`[data-vap-geom-tag="${slot.srcId}"]`) as HTMLInputElement | null)?.value?.trim() || slot.srcTag;
+            const nextShape = ((panel.querySelector(`[data-vap-geom-shape="${slot.srcId}"]`) as HTMLSelectElement | null)?.value || slot.shapePreset || 'circle') as VapMaskShapePreset;
+            const sw = source.w || 300;
+            const sh = source.h || 300;
+            const nw = Math.max(8, Math.min(sw, Number((panel.querySelector(`[data-vap-geom-w="${slot.srcId}"]`) as HTMLInputElement | null)?.value) || slot.w));
+            const nh = Math.max(8, Math.min(sh, Number((panel.querySelector(`[data-vap-geom-h="${slot.srcId}"]`) as HTMLInputElement | null)?.value) || slot.h));
+            const nx = Math.max(0, Math.min(sw - nw, Number((panel.querySelector(`[data-vap-geom-x="${slot.srcId}"]`) as HTMLInputElement | null)?.value) || 0));
+            const ny = Math.max(0, Math.min(sh - nh, Number((panel.querySelector(`[data-vap-geom-y="${slot.srcId}"]`) as HTMLInputElement | null)?.value) || 0));
+
+            if (nextShape !== 'customImage') {
+              delete source._customMaskCanvases[slot.srcId];
+              delete source._customMaskDataUrls[slot.srcId];
+            }
+
+            source._slotGeometryOverrides[slot.srcId] = {
+              ...(source._slotGeometryOverrides[slot.srcId] || {}),
+              srcTag: nextTag,
+              w: nw,
+              h: nh,
+              defaultFrame: [nx, ny, nw, nh],
+              shapePreset: nextShape,
+            };
+            source._hasMaskEdits = true;
+            source._openGeomSlotIds = source._openGeomSlotIds || {};
+            source._openGeomSlotIds[slot.srcId] = false;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(`✅ تم حفظ القناع "${nextTag}"`);
+          };
+        }
+
+        const editBtn = panel.querySelector(`[data-vap-edit-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (editBtn) editBtn.onclick = (ev) => { ev.stopPropagation(); openEdit(slot.assetKey); };
+
+        const resetBtn = panel.querySelector(`[data-vap-reset-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (resetBtn) {
+          resetBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            delete source._vapSlotReplacements[slot.srcId];
+            if (window.EDIT) delete window.EDIT[slot.assetKey];
+            const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
+            source._vapOrigSilhouettes[slot.srcId] = silUrl;
+            if (isVapVideo) A[slot.assetKey] = silUrl;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(`تمت استعادة القناع "${slot.srcTag}"`);
+          };
+        }
+
+        const delBtn = panel.querySelector(`[data-vap-delete-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
+        if (delBtn) {
+          delBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            (window as any).__deleteVapMaskSlot(slot.srcId);
+            toast(`🗑️ تم حذف القناع "${slot.srcTag}"`);
+          };
+        }
+
         const txtInput = panel.querySelector(`[data-vap-txt-input="${slot.srcId}"]`) as HTMLInputElement | null;
         const txtColor = panel.querySelector(`[data-vap-txt-color="${slot.srcId}"]`) as HTMLInputElement | null;
         const applyQuickText = async () => {
           const val = (txtInput?.value || '').trim();
-          if (!val) {
-            toast('اكتب الاسم أو النص أولاً');
-            return;
-          }
+          if (!val) return;
           const col = txtColor?.value || slot.color || '#ffffff';
           const c = renderTextSlotCanvas(slot, val, col);
           const dataUrl = c.toDataURL('image/png');
@@ -6082,15 +7125,21 @@ export function initMotionToolsFixed() {
           const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
           if (thImg) thImg.src = dataUrl;
           await applyEdit(dataUrl, slot.assetKey);
-          toast(`تم وضع الاسم "${val}" داخل قناع ${slot.srcTag}`);
         };
-        if (txtApplyBtn) txtApplyBtn.onclick = applyQuickText;
         if (txtInput) {
           txtInput.onkeydown = (ev) => {
             if (ev.key === 'Enter') {
               ev.preventDefault();
-              applyQuickText();
+              void applyQuickText();
             }
+          };
+          txtInput.onblur = () => {
+            if ((txtInput.value || '').trim()) void applyQuickText();
+          };
+        }
+        if (txtColor) {
+          txtColor.onchange = () => {
+            if ((txtInput?.value || '').trim()) void applyQuickText();
           };
         }
 
@@ -6115,6 +7164,8 @@ export function initMotionToolsFixed() {
         }
       });
     }
+    (window as any).__refreshVapDynamicMasksPanel = (source: any) =>
+      setupVapDynamicMasksUI(source, source?.vid || null, source?.meta || null);
 
     function applyVideoMetaAndLayout(source, m, f, meta) {
       if (!meta) {
@@ -6123,11 +7174,6 @@ export function initMotionToolsFixed() {
         source.h = m.videoHeight;
         if (source._alphaCanvas) source._alphaCanvas.style.display = 'none';
         m.style.cssText = '';
-        const panel = document.getElementById('vapDynamicMasksPanel');
-        if (panel) {
-          panel.style.display = 'none';
-          panel.innerHTML = '';
-        }
         info({
           Format: f.name.split('.').pop().toUpperCase(),
           Resolution: source.w + ' × ' + source.h,
@@ -6136,6 +7182,7 @@ export function initMotionToolsFixed() {
           'File Name': f.name,
         });
         fin();
+        setupVapDynamicMasksUI(source, m, null);
         return;
       }
       const clamped = clampMetaToVideoBounds(meta, m.videoWidth, m.videoHeight);
@@ -6366,8 +7413,18 @@ export function initMotionToolsFixed() {
       const baseW = Math.max(1, (S && S.w) || W);
       const baseH = Math.max(1, (S && S.h) || H);
 
+      const hasNonVapMaskReps =
+        S &&
+        !S.meta &&
+        (window as any).__bakeReplacedVapSlotsInRender !== false &&
+        (Object.values(S?._vapSlotReplacements || {}).some((r: any) => r && r.active && !r.hidden) ||
+          getEffectiveMaskSlots(S).some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))));
+
       if (typeof (window as any).__drawComposerOverlays === 'function') {
         (window as any).__drawComposerOverlays(x, W, H, 'below');
+      }
+      if (hasNonVapMaskReps) {
+        renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'below');
       }
 
       if (pTrans.visible !== false && (Number(pTrans.opacity ?? 100) || 0) > 0.001) {
@@ -6443,6 +7500,9 @@ export function initMotionToolsFixed() {
           );
           x.restore();
         }
+      }
+      if (hasNonVapMaskReps) {
+        renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'above');
       }
       if ((window as any).__chromaKey?.enabled) {
         applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
@@ -6745,24 +7805,47 @@ export function initMotionToolsFixed() {
         W = even(o.W),
         H = even(o.H),
         Y = format === 'yyeva',
-        aw = Y ? W : even(Math.ceil(W / 2)),
-        ah = Y ? H : even(Math.ceil(H / 2)),
-        VW = Y ? W * 2 : Math.ceil((W + 4 + aw) / 16) * 16,
-        VH = Y ? H : Math.ceil(Math.max(H, ah) / 16) * 16;
-      if (VW > 8192 || VH > 8192) throw Error('Packed video exceeds 8192 pixels. Reduce output dimensions.');
-      const a = [Y ? W : W + 4, 0, aw, ah],
-        rgb = [0, 0, W, H],
         M = S.meta,
         m = S.vid,
         raw = S._rawDraw || S.draw,
-        rgba = mk(W, H),
+        preserveMasks = S?._preserveMasksOnExport !== false,
+        allActiveSlots = preserveMasks ? getEffectiveMaskSlots(S) : [],
+        hasActiveReplacements = Boolean(
+          S?._vapSlotReplacements &&
+            Object.values(S._vapSlotReplacements).some((r: any) => r && r.active && !r.hidden && r.source)
+        ),
+        hasColoredFills = allActiveSlots.some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))),
+        bakeReplaced = Boolean(S?._bakeReplacedSlots !== false && (hasActiveReplacements || hasColoredFills)),
+        exportedSlots = allActiveSlots,
+        plan = planVapMaskAtlasLayout({
+          format: Y ? 'yyeva' : 'vap',
+          W,
+          H,
+          srcW: S.w || W,
+          srcH: S.h || H,
+          slots: exportedSlots,
+        }),
+        { VW, VH, aFrame: a, rgbFrame: rgb, packedSlots } = plan;
+      if (VW > 8192 || VH > 8192) throw Error('Packed video exceeds 8192 pixels. Reduce output dimensions.');
+
+      const { metaJson, srcMFrameAtFrame } = buildVapDynamicMetadataJson({
+        plan,
+        nk: o.nk,
+        fps: o.fps,
+        start: o.start,
+        end: o.end,
+        srcFps: S.fps || o.fps,
+        srcTotalFrames: S.n || o.nk,
+        srcW: S.w || W,
+        srcH: S.h || H,
+        sourceMeta: M,
+      });
+
+      const rgba = mk(W, H),
         rx = rgba.getContext('2d', { willReadFrequently: true }),
         alpha = mk(W, H),
         ax = alpha.getContext('2d'),
-        hasVapMaskEdits = !!(
-          S?._vapSlotReplacements &&
-          Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)
-        ),
+        hasVapMaskEdits = hasActiveReplacements || hasColoredFills,
         hasWatermarkLayers = !!(
           Array.isArray((window as any).__WATERMARK_LAYERS) &&
           (window as any).__WATERMARK_LAYERS.length > 0
@@ -6776,72 +7859,67 @@ export function initMotionToolsFixed() {
           $('#mirror').value === 'none' &&
           !(window as any).__edgeFeather?.enabled &&
           !(window as any).__chromaKey?.enabled &&
-          !hasVapMaskEdits &&
+          (!hasVapMaskEdits || !bakeReplaced) &&
           !hasWatermarkLayers &&
           !hasComposerEdits
         );
-      const out = await encodeMP4({
-        ...o,
-        VW,
-        VH,
-        paint: async (x, k) => {
-          const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
-          if (m) await seekVideo(m, t);
-          else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
-          if (typeof (window as any).__seekComposerOverlays === 'function') {
-            await (window as any).__seekComposerOverlays(t);
-          }
-          x.fillStyle = '#000';
-          x.fillRect(0, 0, VW, VH);
-          x.imageSmoothingQuality = 'high';
-          if (direct) {
-            x.drawImage(m, ...M.c, 0, 0, W, H);
-            x.drawImage(m, ...M.a, ...a);
-            return;
-          }
-          rx.clearRect(0, 0, W, H);
-          contentDraw(raw, rx, W, H);
-          x.drawImage(rgba, 0, 0);
-          const d = rx.getImageData(0, 0, W, H);
-          for (let i = 0; i < d.data.length; i += 4) {
-            d.data[i] = d.data[i + 1] = d.data[i + 2] = d.data[i + 3];
-            d.data[i + 3] = 255;
-          }
-          ax.putImageData(d, 0, 0);
-          x.drawImage(alpha, ...a);
-        },
-      });
-      const meta = Y
-          ? {
-              descript: {
-                width: VW,
-                height: VH,
-                isEffect: 0,
-                version: 1,
-                rgbFrame: rgb,
-                alphaFrame: a,
-                totalFrame: o.nk,
-                fps: o.fps,
-              },
-              effect: [],
-              datas: [],
+
+      const prevBakeFlag = (window as any).__bakeReplacedVapSlotsInRender;
+      (window as any).__bakeReplacedVapSlotsInRender = bakeReplaced;
+      const prevExpFlag = (window as any).__vapExportingFrames;
+      (window as any).__vapExportingFrames = true;
+      let out: Blob;
+      try {
+        out = await encodeMP4({
+          ...o,
+          VW,
+          VH,
+          paint: async (x, k) => {
+            const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
+            if (m) await seekVideo(m, t);
+            else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
+            if (typeof (window as any).__seekComposerOverlays === 'function') {
+              await (window as any).__seekComposerOverlays(t);
             }
-          : {
-              info: {
-                v: 2,
-                f: o.nk,
-                w: W,
-                h: H,
-                fps: o.fps,
-                videoW: VW,
-                videoH: VH,
-                aFrame: a,
-                rgbFrame: rgb,
-                isVapx: 0,
-                orien: 0,
-              },
-            },
-        blob = await packageVideo(out, format, meta),
+            x.fillStyle = '#000';
+            x.fillRect(0, 0, VW, VH);
+            x.imageSmoothingQuality = 'high';
+
+            if (direct) {
+              x.drawImage(m, ...M.c, 0, 0, W, H);
+              x.drawImage(m, ...M.a, ...a);
+            } else {
+              rx.clearRect(0, 0, W, H);
+              contentDraw(raw, rx, W, H);
+              x.drawImage(rgba, 0, 0);
+              const d = rx.getImageData(0, 0, W, H);
+              for (let i = 0; i < d.data.length; i += 4) {
+                d.data[i] = d.data[i + 1] = d.data[i + 2] = d.data[i + 3];
+                d.data[i + 3] = 255;
+              }
+              ax.putImageData(d, 0, 0);
+              x.drawImage(alpha, ...a);
+            }
+
+            // Paint every dynamic slot's white-on-black silhouette (`mFrame`) into the packed atlas below `aFrame`
+            if (packedSlots.length > 0) {
+              const frameMMap = srcMFrameAtFrame[k] || {};
+              for (const packed of packedSlots) {
+                const { slot, mFrame } = packed;
+                const [mx, my, mw, mh] = mFrame;
+                const srcMf = frameMMap[slot.srcId] || slot.defaultMFrame;
+                const maskCanvas = buildMaskCanvasFromPresetOrSource(slot, S, m, srcMf, mw, mh);
+                x.drawImage(maskCanvas, mx, my, mw, mh);
+              }
+            }
+          },
+        });
+      } finally {
+        (window as any).__bakeReplacedVapSlotsInRender = prevBakeFlag;
+        (window as any).__vapExportingFrames = prevExpFlag;
+      }
+
+      const blob = await packageVideo(out, format, metaJson),
         check = await readMediaMeta(new Uint8Array(await blob.arrayBuffer()));
       if (!check || check.kind !== (Y ? 'YYEVA' : 'VAP'))
         throw Error('Export metadata verification failed');
@@ -6921,6 +7999,7 @@ export function initMotionToolsFixed() {
         labelHtml = btn.innerHTML;
       working = true;
       window.__busy = 1;
+      (window as any).__vapExportingFrames = true;
       btn.disabled = true;
       btn.textContent = 'Exporting…';
       $('#saveProject').disabled = $('#openProject').disabled = true;
@@ -6938,14 +8017,24 @@ export function initMotionToolsFixed() {
         const featherOn = !!featherCfg?.enabled;
         const chromaOn = !!(window as any).__chromaKey?.enabled;
         const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
-        if (F === 'orig' && (featherOn || chromaOn || hasComposerEdits) && !source.meta && cur) {
+        const hasActiveMaskEdits = Boolean(
+          source &&
+            ((source._vapSlotReplacements &&
+              Object.values(source._vapSlotReplacements).some((r: any) => r && r.active && !r.hidden)) ||
+              getEffectiveMaskSlots(source).some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))) ||
+              source._customVapSlots?.length > 0 ||
+              source._hasMaskEdits)
+        );
+        if (F === 'orig' && (featherOn || chromaOn || hasComposerEdits || hasActiveMaskEdits) && !source.meta && cur) {
           const ext = cur.name.split('.').pop()?.toLowerCase() || 'svga';
           const extMap: Record<string, string> = {
             svga: 'svga',
             gif: 'gif',
             webp: 'webp',
             apng: 'apng',
-            png: 'apng',
+            png: 'png',
+            jpg: 'jpg',
+            jpeg: 'jpg',
             mp4: 'mp4',
             mov: 'mov',
             webm: 'webm',
@@ -6955,7 +8044,11 @@ export function initMotionToolsFixed() {
           };
           if (extMap[ext]) {
             F = extMap[ext];
-            $('#fmt').value = F;
+            (window as any).__overrideExportFmt = F;
+            const fmtSelect = $('#fmt') as HTMLSelectElement | null;
+            if (fmtSelect && Array.from(fmtSelect.options).some((opt) => opt.value === F)) {
+              fmtSelect.value = F;
+            }
           }
         }
         const exportAeScriptPackage = async (fileInput?: any) => {
@@ -7083,8 +8176,12 @@ export function initMotionToolsFixed() {
           else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
           else if (F === 'orig' && source.meta) {
             const hasVapMaskEdits = !!(
-              S?._vapSlotReplacements &&
-              Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)
+              (S?._vapSlotReplacements &&
+                Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)) ||
+              (S?._customVapSlots && S._customVapSlots.length > 0) ||
+              S?._hasMaskEdits ||
+              S?._deletedSlotIds?.size > 0 ||
+              Object.keys(S?._slotGeometryOverrides || {}).length > 0
             );
             const hasWatermarkLayers = !!(
               Array.isArray((window as any).__WATERMARK_LAYERS) &&
@@ -7123,7 +8220,9 @@ export function initMotionToolsFixed() {
               S.set = oldSet;
             }
           }
+          status('Ready to export or save the project.');
         } finally {
+          delete (window as any).__overrideExportFmt;
           if ($('#fmt').value !== origF) {
             $('#fmt').value = origF;
           }
@@ -7137,6 +8236,7 @@ export function initMotionToolsFixed() {
         controls.forEach((e, i) => (e.disabled = disabled[i]));
         working = false;
         window.__busy = 0;
+        (window as any).__vapExportingFrames = false;
         btn.disabled = false;
         btn.innerHTML = labelHtml;
         $('#saveProject').disabled = $('#openProject').disabled = false;
@@ -7197,8 +8297,36 @@ export function initMotionToolsFixed() {
     }
     async function saveProject() {
       if (!cur || !S) throw Error('Upload a file before saving a project');
-      const add = window.AU.add,
-        p = {
+      const add = window.AU.add;
+      const serializedReplacements: Record<string, any> = {};
+      for (const [sid, rep] of Object.entries(S._vapSlotReplacements || {})) {
+        const r = rep as any;
+        if (!r) continue;
+        serializedReplacements[sid] = {
+          active: Boolean(r.active),
+          hidden: Boolean(r.hidden),
+          customImg: Boolean(r.customImg),
+          dataUrl: r.dataUrl,
+          text: r.text,
+          textColor: r.textColor,
+          fitMode: r.fitMode,
+          useMask: r.useMask !== false,
+          scale: r.scale,
+          offsetX: r.offsetX,
+          offsetY: r.offsetY,
+        };
+      }
+      const vapMasksState = {
+        guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
+        preserveMasksOnExport: S._preserveMasksOnExport !== false,
+        bakeReplacedSlots: Boolean(S._bakeReplacedSlots),
+        customSlots: (S._customVapSlots || []).map((cs: any) => ({ ...cs })),
+        slotOverrides: { ...(S._slotGeometryOverrides || {}) },
+        deletedSlotIds: Array.from(S._deletedSlotIds || []),
+        customSilhouettes: { ...(S._customMaskDataUrls || {}) },
+        replacements: serializedReplacements,
+      };
+      const p = {
           type: 'MotionToolsProject',
           version: 1,
           source: {
@@ -7208,6 +8336,7 @@ export function initMotionToolsFixed() {
           },
           settings: settings(),
           images: { ...(window.EDIT || {}) },
+          vapMasks: vapMasksState,
           audio: {
             vol: window.AU.vol,
             del: window.AU.del,
@@ -7252,6 +8381,57 @@ export function initMotionToolsFixed() {
         await applyEdit(url, key);
         for (const e of $$('#assets .th')) if (e.dataset.k === key) e.querySelector('img').src = url;
       }
+
+      // Restore VAP / YYEVA / Custom dynamic masks, silhouettes, coordinates & replacements
+      if (p.vapMasks && typeof p.vapMasks === 'object') {
+        const vm = p.vapMasks;
+        (window as any).__vapShowMaskGuides = Boolean(vm.guidesEnabled);
+        S._preserveMasksOnExport = vm.preserveMasksOnExport !== false;
+        S._bakeReplacedSlots = vm.bakeReplacedSlots !== undefined ? Boolean(vm.bakeReplacedSlots) : true;
+        S._customVapSlots = Array.isArray(vm.customSlots) ? vm.customSlots.map((cs: any) => ({ ...cs })) : [];
+        S._slotGeometryOverrides = vm.slotOverrides && typeof vm.slotOverrides === 'object' ? { ...vm.slotOverrides } : {};
+        S._deletedSlotIds = new Set(Array.isArray(vm.deletedSlotIds) ? vm.deletedSlotIds.map(String) : []);
+        S._customMaskDataUrls = {};
+        S._customMaskCanvases = {};
+
+        const silEntries = Object.entries(vm.customSilhouettes || {});
+        for (const cs of S._customVapSlots) {
+          if (cs.maskSilhouetteDataUrl && !vm.customSilhouettes?.[cs.srcId]) {
+            silEntries.push([cs.srcId, cs.maskSilhouetteDataUrl]);
+          }
+        }
+        for (const [sid, dataUrl] of silEntries) {
+          if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) continue;
+          const im = await imgOf(dataUrl);
+          if (im) {
+            const c = mk(im.naturalWidth || 120, im.naturalHeight || 120);
+            c.getContext('2d')?.drawImage(im, 0, 0);
+            S._customMaskCanvases[sid] = c;
+            S._customMaskDataUrls[sid] = dataUrl;
+          }
+        }
+
+        S._vapSlotReplacements = S._vapSlotReplacements || {};
+        for (const [sid, rawRep] of Object.entries(vm.replacements || {})) {
+          const r = rawRep as any;
+          if (!r) continue;
+          let sourceImg: HTMLImageElement | null = null;
+          if (typeof r.dataUrl === 'string' && r.dataUrl.startsWith('data:image/')) {
+            sourceImg = await imgOf(r.dataUrl);
+          }
+          S._vapSlotReplacements[sid] = {
+            ...r,
+            source: sourceImg,
+          };
+        }
+
+        if (S._customVapSlots.length > 0 || silEntries.length > 0 || Object.keys(S._slotGeometryOverrides).length > 0 || S._deletedSlotIds.size > 0) {
+          S._hasMaskEdits = true;
+        }
+        (window as any).__refreshVapDynamicMasksPanel?.(S);
+        repaintVapStageNow(S);
+      }
+
       const audio = p.audio || {};
       let add = null;
       if (audio.add) {
@@ -7349,6 +8529,7 @@ export function initMotionToolsFixed() {
           if ((window as any).__chromaKey?.enabled) {
             (window as any).__applyChromaKeyToStageAndAssets?.((window as any).__chromaKey);
           }
+          (window as any).__refreshVapDynamicMasksPanel?.(S);
           status('Ready to export or save the project.');
         } else status('Could not open this file.');
       } catch (e) {
@@ -7457,25 +8638,32 @@ export function initMotionToolsFixed() {
           if (!snapCtx) throw new Error('Could not create canvas context');
 
           snapCtx.clearRect(0, 0, W, H);
-          if (typeof S.draw === 'function') {
-            contentDraw(S.draw, snapCtx, W, H);
-          } else {
-            contentDraw(
-              (x: CanvasRenderingContext2D, w: number, h: number) => {
-                const liveCanvas = document.querySelector(
-                  '#view canvas:not(#projectComposerUnderlayCanvas):not(#projectComposerOverlayCanvas)'
-                ) as HTMLCanvasElement | null;
-                const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
-                if (liveCanvas) {
-                  x.drawImage(liveCanvas, 0, 0, w, h);
-                } else if (liveVid) {
-                  x.drawImage(liveVid, 0, 0, w, h);
-                }
-              },
-              snapCtx,
-              W,
-              H
-            );
+          const prevSnapExp = (window as any).__vapExportingFrames;
+          (window as any).__vapExportingFrames = true;
+          try {
+            const snapRaw = S._rawDraw || S.draw;
+            if (typeof snapRaw === 'function') {
+              contentDraw(snapRaw, snapCtx, W, H);
+            } else {
+              contentDraw(
+                (x: CanvasRenderingContext2D, w: number, h: number) => {
+                  const liveCanvas = document.querySelector(
+                    '#view canvas:not(#projectComposerUnderlayCanvas):not(#projectComposerOverlayCanvas)'
+                  ) as HTMLCanvasElement | null;
+                  const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
+                  if (liveCanvas) {
+                    x.drawImage(liveCanvas, 0, 0, w, h);
+                  } else if (liveVid) {
+                    x.drawImage(liveVid, 0, 0, w, h);
+                  }
+                },
+                snapCtx,
+                W,
+                H
+              );
+            }
+          } finally {
+            (window as any).__vapExportingFrames = prevSnapExp;
           }
 
           // Apply any active watermark layers if present
@@ -7592,7 +8780,10 @@ export function initMotionToolsFixed() {
         for (const ch of children) {
           if (
             ch.id === 'projectComposerUnderlayCanvas' ||
-            ch.id === 'projectComposerOverlayCanvas'
+            ch.id === 'projectComposerOverlayCanvas' ||
+            ch.id === 'vapDynamicMaskOverlay' ||
+            ch.id === 'vapDynamicMaskUnderlay' ||
+            ch.id === 'stageWatermarkOverlay'
           ) {
             continue;
           }
@@ -7646,10 +8837,219 @@ export function initMotionToolsFixed() {
 
       (window as any).__syncComposerStagePreview = syncComposerStagePreview;
 
+      const syncLinkedComposerMasksToSlots = (st: ProjectComposerState) => {
+        const source = S;
+        if (!source || !Array.isArray(st?.overlays)) return;
+        let touched = false;
+        const baseW = Math.max(1, source.w || +($('#w') as HTMLInputElement)?.value || 300);
+        const baseH = Math.max(1, source.h || +($('#h') as HTMLInputElement)?.value || 300);
+        source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+        source._lastSyncedComposerProps = source._lastSyncedComposerProps || {};
+
+        for (const layer of st.overlays) {
+          if (!layer.isVapMask || !layer.linkedMaskSlotId) continue;
+          const slotId = String(layer.linkedMaskSlotId);
+          const propSig = JSON.stringify({
+            zOrder: layer.zOrder,
+            fitMode: layer.fitMode,
+            offsetX: layer.transform?.offsetX || 0,
+            offsetY: layer.transform?.offsetY || 0,
+            scale: layer.transform?.scale || 100,
+            visible: layer.transform?.visible !== false,
+          });
+          const prevSig = source._lastSyncedComposerProps[layer.id];
+          if (prevSig === propSig) continue;
+          source._lastSyncedComposerProps[layer.id] = propSig;
+
+          const rt = overlayRuntimes.get(layer.id);
+          const geom = computeLayerDrawGeometry(
+            Math.max(1, rt?.width || layer.width || baseW),
+            Math.max(1, rt?.height || layer.height || baseH),
+            baseW,
+            baseH,
+            baseW,
+            baseH,
+            layer.fitMode || 'contain',
+            layer.transform || DEFAULT_LAYER_TRANSFORM
+          );
+          const frame = composerLayerBoxToMaskFrame(geom, baseW, baseH);
+          const prevOv = source._slotGeometryOverrides[slotId] || {};
+          const prevFrame = prevOv.defaultFrame;
+          const changedFrame =
+            !prevFrame ||
+            prevFrame[0] !== frame[0] ||
+            prevFrame[1] !== frame[1] ||
+            prevFrame[2] !== frame[2] ||
+            prevFrame[3] !== frame[3];
+          const curZ = Number(prevOv.z ?? 0);
+          const wantBelow = layer.zOrder === 'below';
+          let nextZ = prevOv.z;
+          if (wantBelow && curZ >= 0) nextZ = -1;
+          else if (!wantBelow && curZ < 0) {
+            const allSlots = getEffectiveMaskSlots(source);
+            nextZ = Math.max(0, ...allSlots.map((s) => Number(s.z ?? 0))) + 1;
+          }
+
+          if (changedFrame || nextZ !== prevOv.z) {
+            source._slotGeometryOverrides[slotId] = {
+              ...prevOv,
+              w: frame[2],
+              h: frame[3],
+              defaultFrame: frame,
+              ...(nextZ !== undefined ? { z: nextZ } : {}),
+            };
+            source._hasMaskEdits = true;
+            touched = true;
+          }
+          if (source._vapSlotReplacements?.[slotId]) {
+            source._vapSlotReplacements[slotId].hidden = layer.transform?.visible === false;
+          }
+        }
+        if (touched) {
+          repaintVapStageNow(source);
+          setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        }
+      };
+
       (window as any).__setProjectComposerState = (nextState: ProjectComposerState) => {
         (window as any).__projectComposerState = nextState;
+        syncLinkedComposerMasksToSlots(nextState);
         syncComposerStagePreview();
         emitComposerChange();
+      };
+
+      (window as any).__convertComposerLayerToVapMask = async (layerId: string, enable: boolean) => {
+        const source = S;
+        const st: ProjectComposerState =
+          (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+        const layer = st.overlays.find((o) => o.id === layerId);
+        if (!layer || !source) {
+          toast('يرجى تحميل ملف مشروع أولاً');
+          return;
+        }
+
+        if (!enable) {
+          if (layer.linkedMaskSlotId) {
+            (window as any).__deleteVapMaskSlot?.(layer.linkedMaskSlotId);
+          } else {
+            (window as any).__setProjectComposerState({
+              ...st,
+              overlays: st.overlays.map((o) =>
+                o.id === layerId ? { ...o, isVapMask: false, linkedMaskSlotId: undefined } : o
+              ),
+            });
+          }
+          toast(`تمت إعادة "${layer.name}" كطبقة عادية`);
+          return;
+        }
+
+        const baseW = Math.max(1, source.w || +($('#w') as HTMLInputElement)?.value || 300);
+        const baseH = Math.max(1, source.h || +($('#h') as HTMLInputElement)?.value || 300);
+        const rt = overlayRuntimes.get(layer.id);
+        const srcW = Math.max(1, rt?.width || layer.width || 200);
+        const srcH = Math.max(1, rt?.height || layer.height || 200);
+        const geom = computeLayerDrawGeometry(
+          srcW,
+          srcH,
+          baseW,
+          baseH,
+          baseW,
+          baseH,
+          layer.fitMode || 'contain',
+          layer.transform || DEFAULT_LAYER_TRANSFORM
+        );
+        const frame = composerLayerBoxToMaskFrame(geom, baseW, baseH);
+
+        // Render 1 representative frame of the layer for visual replacement & white-on-black mask silhouette
+        const rw = Math.max(8, Math.min(1024, Math.round(srcW)));
+        const rh = Math.max(8, Math.min(1024, Math.round(srcH)));
+        const layerCv = mk(rw, rh);
+        const lx = layerCv.getContext('2d', { willReadFrequently: true })!;
+        lx.clearRect(0, 0, rw, rh);
+        if (rt) {
+          rt.drawAtTime(lx, rw, rh, 0, layer.alphaMode || 'auto');
+        }
+        const layerDataUrl = layerCv.toDataURL('image/png');
+        const rawData = lx.getImageData(0, 0, rw, rh);
+        const bw = rgbaToWhiteOnBlackMaskBuffer(rawData.data, rw, rh);
+        const maskCv = mk(rw, rh);
+        const mx = maskCv.getContext('2d')!;
+        mx.putImageData(new ImageData(new Uint8ClampedArray(bw), rw, rh), 0, 0);
+        const maskDataUrl = maskCv.toDataURL('image/png');
+
+        source._customVapSlots = source._customVapSlots || [];
+        source._customMaskCanvases = source._customMaskCanvases || {};
+        source._customMaskDataUrls = source._customMaskDataUrls || {};
+        source._vapSlotReplacements = source._vapSlotReplacements || {};
+        source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+
+        const existingSlots = getEffectiveMaskSlots(source);
+        const slotId =
+          layer.linkedMaskSlotId ||
+          buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...source._customVapSlots]);
+        const existingTags = new Set(existingSlots.map((s) => s.srcTag));
+        let tag = layer.maskTag || '';
+        if (!tag) {
+          let idx = 1;
+          while (existingTags.has(`avatar${idx}`)) idx++;
+          tag = `avatar${idx}`;
+        }
+
+        const minZ = existingSlots.length ? Math.min(0, ...existingSlots.map((s) => Number(s.z ?? 0))) : 0;
+        const maxZ = existingSlots.length ? Math.max(0, ...existingSlots.map((s) => Number(s.z ?? 0))) : -1;
+        const slotZ = layer.zOrder === 'below' ? minZ - 1 : maxZ + 1;
+
+        const existingCustomIdx = source._customVapSlots.findIndex((s: any) => String(s.srcId) === String(slotId));
+        const slotObj = makeCustomVapSlot({
+          srcId: slotId,
+          srcType: 'img',
+          srcTag: tag,
+          x: frame[0],
+          y: frame[1],
+          w: frame[2],
+          h: frame[3],
+          shapePreset: 'customImage',
+          maskSilhouetteDataUrl: maskDataUrl,
+          z: slotZ,
+          linkedComposerLayerId: layer.id,
+        });
+
+        if (existingCustomIdx >= 0) {
+          source._customVapSlots[existingCustomIdx] = slotObj;
+        } else {
+          source._customVapSlots.push(slotObj);
+        }
+
+        source._customMaskCanvases[slotId] = maskCv;
+        source._customMaskDataUrls[slotId] = maskDataUrl;
+        const layerImg = await imgOf(layerDataUrl);
+        if (layerImg) {
+          source._vapSlotReplacements[slotId] = {
+            active: true,
+            hidden: layer.transform?.visible === false,
+            customImg: true,
+            source: layerImg,
+            dataUrl: layerDataUrl,
+            fitMode: 'fitXY',
+            useMask: true,
+          };
+          A[slotObj.assetKey] = layerDataUrl;
+        }
+        source._hasMaskEdits = true;
+        (window as any).__selectedVapMaskId = slotId;
+        (window as any).__vapShowMaskGuides = true;
+
+        (window as any).__setProjectComposerState({
+          ...st,
+          overlays: st.overlays.map((o) =>
+            o.id === layerId
+              ? { ...o, isVapMask: true, linkedMaskSlotId: slotId, maskTag: tag }
+              : o
+          ),
+        });
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        toast(`🎭 تم تحويل "${layer.name}" إلى قناع VAP (${tag}) — اسحبه بالماوس بحرية!`);
       };
 
       (window as any).__getProjectBaseDims = () => {
@@ -7705,6 +9105,7 @@ export function initMotionToolsFixed() {
           typeof overrideTimeSec === 'number' ? overrideTimeSec : getCurrentPrimaryTimeSec();
 
         for (const layer of st.overlays) {
+          if (layer.isVapMask && layer.linkedMaskSlotId && S) continue;
           if ((layer.zOrder || 'above') !== pass) continue;
           if (layer.transform?.visible === false) continue;
           const rt = overlayRuntimes.get(layer.id);
@@ -8313,6 +9714,13 @@ export function initMotionToolsFixed() {
       };
 
       (window as any).__removeSecondaryOverlayFile = (layerId: string) => {
+        const stBefore: ProjectComposerState =
+          (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+        const removedLayer = stBefore.overlays.find((l) => l.id === layerId);
+        if (removedLayer?.linkedMaskSlotId) {
+          (window as any).__deleteVapMaskSlot?.(removedLayer.linkedMaskSlotId);
+        }
+
         const rt = overlayRuntimes.get(layerId);
         if (rt) {
           rt.dispose?.();
@@ -8335,7 +9743,7 @@ export function initMotionToolsFixed() {
         toast('🗑️ تم حذف الملف الإضافي من المشروع');
       };
 
-      // Direct mouse / touch drag & mouse wheel scaling inside #view
+      // Direct mouse / touch drag & corner resize inside #view for BOTH VAP masks and Composer layers
       const viewStageEl = document.getElementById('view');
       if (viewStageEl) {
         let dragActive = false;
@@ -8348,12 +9756,55 @@ export function initMotionToolsFixed() {
         let startScale = 100;
         let startDistFromCenter = 1;
 
-        // 1. Mouse Wheel Scale (عجلة الماوس لتكبير وتصغير الطبقة النشطة فوراً)
+        let maskDrag: {
+          srcId: string;
+          mode: 'move' | 'resize';
+          startClientX: number;
+          startClientY: number;
+          startFrame: [number, number, number, number];
+        } | null = null;
+
+        const clientToStageXY = (clientX: number, clientY: number) => {
+          const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 300);
+          const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 300);
+          const rect = viewStageEl.getBoundingClientRect();
+          const stageX = ((clientX - rect.left) / Math.max(1, rect.width)) * baseW;
+          const stageY = ((clientY - rect.top) / Math.max(1, rect.height)) * baseH;
+          return { stageX, stageY, baseW, baseH, rect };
+        };
+
+        // 1. Mouse Wheel Scale (for VAP mask if hovered & selected, else Composer active target)
         viewStageEl.addEventListener(
           'wheel',
           (e: WheelEvent) => {
             const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
             const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
+            const slots = S ? getEffectiveMaskSlots(S) : [];
+            const guidesOn = Boolean((window as any).__vapShowMaskGuides);
+            const { stageX, stageY, baseW, baseH } = clientToStageXY(e.clientX, e.clientY);
+
+            if (slots.length > 0 && guidesOn) {
+              const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+                selectedSrcId: (window as any).__selectedVapMaskId || null,
+                handleRadius: Math.max(18, Math.round(baseW * 0.045)),
+              });
+              if (hit) {
+                e.preventDefault();
+                const targetSlot = slots.find((s) => String(s.srcId) === String(hit.srcId));
+                if (targetSlot) {
+                  const f = targetSlot.defaultFrame || [0, 0, targetSlot.w, targetSlot.h];
+                  const factor = e.deltaY < 0 ? 1.06 : 0.94;
+                  const nw = Math.max(16, Math.min(baseW, Math.round(f[2] * factor)));
+                  const nh = Math.max(16, Math.min(baseH, Math.round(f[3] * factor)));
+                  const nx = Math.max(0, Math.min(baseW - nw, Math.round(f[0] + (f[2] - nw) / 2)));
+                  const ny = Math.max(0, Math.min(baseH - nh, Math.round(f[1] + (f[3] - nh) / 2)));
+                  (window as any).__selectedVapMaskId = targetSlot.srcId;
+                  (window as any).__updateVapMaskFrame(targetSlot.srcId, [nx, ny, nw, nh]);
+                  return;
+                }
+              }
+            }
+
             if (!st || !st.directDragEnabled) return;
             if (!panelOpen && !hasActiveComposerModifications(st)) return;
 
@@ -8367,9 +9818,6 @@ export function initMotionToolsFixed() {
 
             const curScale = activeTransform.scale || 100;
             const delta = e.deltaY < 0 ? 5 : -5;
-            const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 750);
-            const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 1334);
-
             const nextScale = Math.max(5, Math.min(500, Math.round(curScale + delta)));
 
             if (st.activeTargetId === 'primary') {
@@ -8402,13 +9850,46 @@ export function initMotionToolsFixed() {
           { passive: false }
         );
 
-        // 2. Direct Pointer Down (Shift key held = scale mode, Normal = position move mode)
+        // 2. Direct Pointer Down (hits VAP mask first when guides/selection active, otherwise Composer active target)
         viewStageEl.addEventListener('pointerdown', (e: PointerEvent) => {
+          if (e.button !== 0) return;
+
+          const slots = S ? getEffectiveMaskSlots(S) : [];
+          const guidesOn = Boolean((window as any).__vapShowMaskGuides);
+          const selectedMaskId = (window as any).__selectedVapMaskId || null;
+          if (slots.length > 0 && (guidesOn || selectedMaskId)) {
+            const { stageX, stageY, baseW } = clientToStageXY(e.clientX, e.clientY);
+            const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+              selectedSrcId: selectedMaskId,
+              handleRadius: Math.max(18, Math.round(baseW * 0.045)),
+            });
+            if (hit) {
+              const slot = slots.find((s) => String(s.srcId) === String(hit.srcId));
+              if (slot) {
+                const startFrame = [...(slot.defaultFrame || [0, 0, slot.w, slot.h])] as [number, number, number, number];
+                (window as any).__selectedVapMaskId = slot.srcId;
+                maskDrag = {
+                  srcId: slot.srcId,
+                  mode: hit.mode,
+                  startClientX: e.clientX,
+                  startClientY: e.clientY,
+                  startFrame,
+                };
+                dragMoved = false;
+                try {
+                  viewStageEl.setPointerCapture(e.pointerId);
+                } catch (_) {}
+                repaintVapStageNow(S);
+                emitVapMasksChange(S);
+                return;
+              }
+            }
+          }
+
           const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
           const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
           if (!st || !st.directDragEnabled) return;
           if (!panelOpen && !hasActiveComposerModifications(st)) return;
-          if (e.button !== 0) return;
 
           const activeTransform =
             st.activeTargetId === 'primary'
@@ -8435,9 +9916,70 @@ export function initMotionToolsFixed() {
           } catch (_) {}
         });
 
-        // 3. Pointer Move (handles position move or mouse drag scale)
+        // 3. Pointer Move (mask drag/resize, hover cursor feedback, or Composer move/scale)
         viewStageEl.addEventListener('pointermove', (e: PointerEvent) => {
-          if (!dragActive) return;
+          if (maskDrag && S) {
+            const dxScreen = e.clientX - maskDrag.startClientX;
+            const dyScreen = e.clientY - maskDrag.startClientY;
+            if (Math.abs(dxScreen) > 2 || Math.abs(dyScreen) > 2) {
+              dragMoved = true;
+              (window as any).__composerStageJustDragged = true;
+            }
+            const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 300);
+            const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 300);
+            const rect = viewStageEl.getBoundingClientRect();
+            const dxStage = (dxScreen / Math.max(1, rect.width)) * baseW;
+            const dyStage = (dyScreen / Math.max(1, rect.height)) * baseH;
+
+            const nextFrame = computeDraggedOrResizedMaskFrame(
+              maskDrag.startFrame,
+              maskDrag.mode,
+              dxStage,
+              dyStage,
+              baseW,
+              baseH,
+              e.shiftKey
+            );
+
+            S._slotGeometryOverrides = S._slotGeometryOverrides || {};
+            S._slotGeometryOverrides[maskDrag.srcId] = {
+              ...(S._slotGeometryOverrides[maskDrag.srcId] || {}),
+              w: nextFrame[2],
+              h: nextFrame[3],
+              defaultFrame: nextFrame,
+            };
+            S._hasMaskEdits = true;
+            repaintVapStageNow(S);
+
+            // Live numeric badge update without re-rendering DOM mid-drag
+            const dimsEl = document.querySelector(`[data-vap-dims-label="${maskDrag.srcId}"]`);
+            if (dimsEl) {
+              const slotsNow = getEffectiveMaskSlots(S);
+              const sl = slotsNow.find((s) => String(s.srcId) === String(maskDrag!.srcId));
+              dimsEl.textContent = `${sl?.isTextSlot ? 'اسم' : 'صورة'} · ${nextFrame[2]}×${nextFrame[3]} · (${nextFrame[0]},${nextFrame[1]})`;
+            }
+            return;
+          }
+
+          if (!dragActive) {
+            // Update hover cursor over VAP masks
+            const slots = S ? getEffectiveMaskSlots(S) : [];
+            const guidesOn = Boolean((window as any).__vapShowMaskGuides);
+            if (slots.length > 0 && guidesOn) {
+              const { stageX, stageY, baseW } = clientToStageXY(e.clientX, e.clientY);
+              const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+                selectedSrcId: (window as any).__selectedVapMaskId || null,
+                handleRadius: Math.max(18, Math.round(baseW * 0.045)),
+              });
+              if (hit) {
+                viewStageEl.style.cursor = hit.mode === 'resize' ? 'nwse-resize' : 'grab';
+                return;
+              }
+            }
+            viewStageEl.style.cursor = '';
+            return;
+          }
+
           const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
           if (!st) return;
 
@@ -8531,6 +10073,25 @@ export function initMotionToolsFixed() {
         });
 
         const endPointerDrag = (e: PointerEvent) => {
+          if (maskDrag) {
+            const finishedId = maskDrag.srcId;
+            maskDrag = null;
+            try {
+              viewStageEl.releasePointerCapture(e.pointerId);
+            } catch (_) {}
+            if (S) {
+              setupVapDynamicMasksUI(S, S.vid || null, S.meta || null);
+              repaintVapStageNow(S);
+            }
+            if (dragMoved) {
+              setTimeout(() => {
+                (window as any).__composerStageJustDragged = false;
+              }, 140);
+            }
+            void finishedId;
+            return;
+          }
+
           if (!dragActive) return;
           dragActive = false;
           try {

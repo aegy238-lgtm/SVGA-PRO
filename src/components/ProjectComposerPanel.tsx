@@ -67,6 +67,29 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
     }
   }, [composerState.activeTargetId, composerState.overlays.length]);
 
+  const [vapMasksSnap, setVapMasksSnap] = useState<{
+    slots: any[];
+    selectedSrcId: string | null;
+    guidesEnabled: boolean;
+  }>({ slots: [], selectedSrcId: null, guidesEnabled: false });
+
+  useEffect(() => {
+    const syncSnap = () => {
+      const snapFn = (window as any).__getVapMasksSnapshot;
+      if (typeof snapFn === 'function') {
+        const res = snapFn();
+        setVapMasksSnap({
+          slots: Array.isArray(res?.slots) ? res.slots : [],
+          selectedSrcId: res?.selectedSrcId || null,
+          guidesEnabled: Boolean(res?.guidesEnabled),
+        });
+      }
+    };
+    syncSnap();
+    window.addEventListener('vapmaskschange', syncSnap);
+    return () => window.removeEventListener('vapmaskschange', syncSnap);
+  }, [open, composerState.overlays.length]);
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       if (!dragRef.current) return;
@@ -616,6 +639,40 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                       <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                         <button
                           type="button"
+                          id={`composer_toggle_mask_${ov.id}`}
+                          title={
+                            ov.isVapMask
+                              ? isAr
+                                ? 'مُفعّل كقناع VAP (اضغط لإعادته طبقة عادية)'
+                                : 'Active VAP Mask (click to unlink)'
+                              : isAr
+                              ? 'تحويل هذه الصورة إلى قناع VAP يتحرك بالماوس'
+                              : 'Convert this image to a VAP Mask'
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            (window as any).__convertComposerLayerToVapMask?.(ov.id, !ov.isVapMask);
+                          }}
+                          style={{
+                            padding: '3px 6px',
+                            borderRadius: '5px',
+                            border: ov.isVapMask
+                              ? '1px solid #34d399'
+                              : '1px solid rgba(168, 85, 247, 0.5)',
+                            background: ov.isVapMask
+                              ? 'rgba(16, 185, 129, 0.22)'
+                              : 'rgba(139, 92, 246, 0.22)',
+                            color: ov.isVapMask ? '#6ee7b7' : '#e9d5ff',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {ov.isVapMask ? (isAr ? '✓ قناع' : '✓ Mask') : isAr ? '🎭 قناع' : '🎭 Mask'}
+                        </button>
+                        <button
+                          type="button"
                           title={isAr ? 'رفع المستوى للأعلى' : 'Move Up'}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -702,6 +759,137 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                 })}
               </div>
             )}
+
+            {vapMasksSnap.slots.length > 0 && (
+              <div
+                style={{
+                  marginTop: '6px',
+                  paddingTop: '8px',
+                  borderTop: '1px solid rgba(168, 85, 247, 0.25)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '5px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 800, color: '#e9d5ff' }}>
+                    {isAr ? `🎭 الأقنعة النشطة (${vapMasksSnap.slots.length})` : `🎭 Active Masks (${vapMasksSnap.slots.length})`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => (window as any).__toggleVapMaskGuides?.()}
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: '6px',
+                      border: vapMasksSnap.guidesEnabled ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.14)',
+                      background: vapMasksSnap.guidesEnabled ? 'rgba(56, 189, 248, 0.2)' : '#1a1c2e',
+                      color: vapMasksSnap.guidesEnabled ? '#7dd3fc' : '#cbd5e1',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {vapMasksSnap.guidesEnabled ? '👁️ إخفاء الحدود' : '👁️ تحريك بالماوس'}
+                  </button>
+                </div>
+                {[...vapMasksSnap.slots].reverse().map((slot: any, idx: number, arr: any[]) => {
+                  const isSelMask = String(vapMasksSnap.selectedSrcId || '') === String(slot.srcId);
+                  const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
+                  return (
+                    <div
+                      key={slot.srcId}
+                      onClick={() => (window as any).__selectVapMaskSlot?.(slot.srcId)}
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '7px',
+                        border: isSelMask ? '1px solid #fbbf24' : '1px solid rgba(168, 85, 247, 0.25)',
+                        background: isSelMask ? 'rgba(251, 191, 36, 0.1)' : '#101120',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '6px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: isSelMask ? '#fde68a' : '#f3e8ff' }}>
+                          🎭 {slot.srcTag}{' '}
+                          {Number(slot.z ?? 0) < 0 && (
+                            <span style={{ fontSize: '9px', color: '#fbbf24' }}>({isAr ? 'خلف المشروع' : 'Behind'})</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '9.5px', color: '#94a3b8', fontVariantNumeric: 'tabular-nums' }}>
+                          {Math.round(fRect[2])}×{Math.round(fRect[3])} · ({Math.round(fRect[0])},{Math.round(fRect[1])})
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          title={isAr ? 'تقديم للأمام' : 'Bring Forward'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            (window as any).__reorderVapMaskSlot?.(slot.srcId, 'up');
+                          }}
+                          style={{
+                            width: '22px',
+                            height: '22px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            background: '#1b1d30',
+                            color: idx === 0 ? '#4b5563' : '#f8fafc',
+                            fontSize: '10px',
+                            cursor: idx === 0 ? 'default' : 'pointer',
+                          }}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === arr.length - 1}
+                          title={isAr ? 'تنزيل خلف القناع التالي' : 'Send Backward'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            (window as any).__reorderVapMaskSlot?.(slot.srcId, 'down');
+                          }}
+                          style={{
+                            width: '22px',
+                            height: '22px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            background: '#1b1d30',
+                            color: idx === arr.length - 1 ? '#4b5563' : '#f8fafc',
+                            fontSize: '10px',
+                            cursor: idx === arr.length - 1 ? 'default' : 'pointer',
+                          }}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          title={isAr ? 'وضع خلف / أمام المشروع الرئيسي' : 'Toggle Behind Main Project'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            (window as any).__reorderVapMaskSlot?.(slot.srcId, 'toggleBehind');
+                          }}
+                          style={{
+                            padding: '2px 5px',
+                            height: '22px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(251, 191, 36, 0.3)',
+                            background: Number(slot.z ?? 0) < 0 ? 'rgba(251, 191, 36, 0.2)' : '#1b1d30',
+                            color: '#fde68a',
+                            fontSize: '9.5px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {Number(slot.z ?? 0) < 0 ? '⬆️' : '⬇️'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : activeTab === 'stack' ? (
           /* Stack Layer Tree Navigation View */
@@ -726,6 +914,118 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {vapMasksSnap.slots.length > 0 && (
+                <div
+                  style={{
+                    padding: '7px 8px',
+                    borderRadius: '8px',
+                    background: 'rgba(168, 85, 247, 0.08)',
+                    border: '1px solid rgba(168, 85, 247, 0.25)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '5px',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#e9d5ff' }}>
+                    {isAr ? '🎭 ترتيب الأقنعة (فوق / خلف القناع الآخر)' : '🎭 Masks Z-Order Stack'}
+                  </div>
+                  {[...vapMasksSnap.slots].reverse().map((slot: any, idx: number, arr: any[]) => {
+                    const isSelMask = String(vapMasksSnap.selectedSrcId || '') === String(slot.srcId);
+                    const isBehind = Number(slot.z ?? 0) < 0;
+                    return (
+                      <div
+                        key={`stack_mask_${slot.srcId}`}
+                        onClick={() => (window as any).__selectVapMaskSlot?.(slot.srcId)}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: '7px',
+                          border: isSelMask ? '1px solid #fbbf24' : '1px solid rgba(255,255,255,0.08)',
+                          background: isSelMask ? 'rgba(251, 191, 36, 0.12)' : '#101221',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '6px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: isSelMask ? '#fde68a' : '#f3e8ff' }}>
+                            🎭 {slot.srcTag} {isBehind ? (isAr ? '· خلف المشروع' : '· Behind') : ''}
+                          </div>
+                          <div style={{ fontSize: '9.5px', color: '#94a3b8' }}>
+                            {slot.isTextSlot ? (isAr ? 'قناع اسم' : 'Text Mask') : isAr ? 'قناع صورة' : 'Image Mask'} · {slot.w}×{slot.h}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            title={isAr ? 'رفع القناع للأمام' : 'Move Mask Up'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'up');
+                            }}
+                            style={{
+                              width: '24px',
+                              height: '24px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(255,255,255,0.14)',
+                              background: '#1e2035',
+                              color: idx === 0 ? '#4b5563' : '#f8fafc',
+                              fontSize: '11px',
+                              cursor: idx === 0 ? 'default' : 'pointer',
+                            }}
+                          >
+                            ⬆️
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === arr.length - 1}
+                            title={isAr ? 'تنزيل خلف القناع التالي' : 'Move Mask Down'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'down');
+                            }}
+                            style={{
+                              width: '24px',
+                              height: '24px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(255,255,255,0.14)',
+                              background: '#1e2035',
+                              color: idx === arr.length - 1 ? '#4b5563' : '#f8fafc',
+                              fontSize: '11px',
+                              cursor: idx === arr.length - 1 ? 'default' : 'pointer',
+                            }}
+                          >
+                            ⬇️
+                          </button>
+                          <button
+                            type="button"
+                            title={isAr ? 'خلف / أمام المشروع الرئيسي' : 'Toggle Behind Main Project'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'toggleBehind');
+                            }}
+                            style={{
+                              padding: '2px 6px',
+                              height: '24px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(251, 191, 36, 0.35)',
+                              background: isBehind ? 'rgba(251, 191, 36, 0.22)' : '#171928',
+                              color: '#fde68a',
+                              fontSize: '10px',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {isBehind ? 'أمام' : 'خلف'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               {getUnifiedVisualLayerStack(
                 composerState,
                 isAr ? 'المشروع الأساسي الرئيسي' : 'Main Project File'

@@ -26,6 +26,9 @@ export interface SecondaryOverlayLayer {
   fitMode: OverlayFitMode;
   alphaMode: OverlayAlphaMode;
   transform: ProjectLayerTransform;
+  isVapMask?: boolean;
+  linkedMaskSlotId?: string;
+  maskTag?: string;
 }
 
 export interface ProjectComposerState {
@@ -637,6 +640,15 @@ export interface ComposeDecomposedSvgaOptions {
     string,
     { width: number; height: number; frames: Uint8Array[] }
   >;
+  maskSprites?: Array<{
+    id: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    z: number;
+    pngBytes: Uint8Array;
+  }>;
 }
 
 /**
@@ -703,6 +715,7 @@ export function composeDecomposedSvgaMovie(
   const overlays = composerState?.overlays || [];
   for (const layer of overlays) {
     if (layer.transform?.visible === false) continue;
+    if (layer.isVapMask && layer.linkedMaskSlotId) continue;
     const isBelow = (layer.zOrder || 'above') === 'below';
     const targetBucket = isBelow ? underlaySprites : overlaySprites;
 
@@ -818,6 +831,25 @@ export function composeDecomposedSvgaMovie(
         }
       }
     }
+  }
+
+  // 4. Process active replaced/colored mask sprites cleanly in Z-order
+  const maskSprites = [...(options.maskSprites || [])].sort((a, b) => a.z - b.z);
+  const scaleX = targetW / baseW;
+  const scaleY = targetH / baseH;
+  for (const ms of maskSprites) {
+    if (!ms.pngBytes || ms.pngBytes.length === 0) continue;
+    const key = `vapmask_${ms.id}`;
+    composedImages[key] = ms.pngBytes;
+    const lw = Math.max(2, Math.round(ms.w));
+    const lh = Math.max(2, Math.round(ms.h));
+    const mat: AffineMatrix = [scaleX, 0, 0, scaleY, ms.x * scaleX, ms.y * scaleY];
+    const spriteFrames: any[] = [];
+    for (let fi = 0; fi < totalFrames; fi++) {
+      spriteFrames.push({ a: 1, x: 0, y: 0, w: lw, h: lh, t: mat });
+    }
+    const targetBucket = ms.z < 0 ? underlaySprites : overlaySprites;
+    targetBucket.push({ key, fr: spriteFrames });
   }
 
   // Combine in exact visual order: Underlays -> Decomposed Primary Sprites -> Overlays
