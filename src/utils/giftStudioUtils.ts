@@ -1927,5 +1927,221 @@ export function stepMobilePreviewItemIndex(
   return validIds[nextIdx];
 }
 
+export interface VideoFrameClaritySample {
+  timeSec: number;
+  visiblePixels: number;
+  clarityScore: number;
+  meanAlpha?: number;
+}
+
+export interface VideoCoverAndActiveWindow {
+  /** Timestamp inside the gift with the richest/clearest visual frame to use as the video cover (واجهة الفيديو). */
+  heroTimeSec: number;
+  /** First timestamp where the gift animation is visibly active on screen (eliminating any ~1s blank start). */
+  firstActiveSec: number;
+  /** Peak clarity score observed across samples. */
+  peakClarityScore: number;
+  /** Peak visible pixel count observed across samples. */
+  peakVisiblePixels: number;
+}
+
+/**
+ * Generates a sorted, deduplicated list of sample timestamps (in seconds) for a gift of `nativeDurationSec`:
+ * - Early lead-in probe points (0s .. up to 1.2s / 45% of native duration) to detect and skip any dead/blank opening frames.
+ * - Mid-animation hero probe points (25% .. 78% of native duration) to capture the sharpest, most vibrant cover shot from inside the video.
+ */
+export function buildVideoHeroAndStartSampleTimes(nativeDurationSec: number): number[] {
+  const safeDur = Math.max(0.2, Number(nativeDurationSec) || 3);
+  const maxEarlySec = Math.min(1.4, safeDur * 0.45);
+  const earlySteps = [0, 0.05, 0.12, 0.20, 0.30, 0.42, 0.56, 0.72, 0.90, 1.10, 1.30].filter(
+    (t) => t <= maxEarlySec + 1e-4
+  );
+  const heroRatios = [0.48, 0.58, 0.38, 0.68, 0.28, 0.78, 0.20];
+  const rawTimes = [
+    ...earlySteps,
+    ...heroRatios.map((r) => Number((safeDur * r).toFixed(3))),
+  ];
+  const clamped = rawTimes.map((t) =>
+    Math.max(0, Math.min(Number((safeDur - 0.002).toFixed(4)), Number(t.toFixed(4))))
+  );
+  const unique: number[] = [];
+  for (const t of clamped.sort((a, b) => a - b)) {
+    if (unique.length === 0 || Math.abs(t - unique[unique.length - 1]) >= 0.025) {
+      unique.push(t);
+    }
+  }
+  return unique;
+}
+
+/**
+ * Analyzes clarity samples from a gift video/animation to select:
+ * 1. `heroTimeSec`: The clearest, most vibrant shot from inside the video to place at the start as a professional video cover (`واجهة للفيديو`).
+ * 2. `firstActiveSec`: The exact timestamp where the gift's visual content begins, eliminating any empty ~1-second lead-in.
+ */
+export function selectVideoCoverAndActiveWindow(
+  samples: VideoFrameClaritySample[],
+  nativeDurationSec: number
+): VideoCoverAndActiveWindow {
+  const safeDur = Math.max(0.1, Number(nativeDurationSec) || 3);
+  const defaultHero = Number((safeDur * 0.48).toFixed(4));
+  if (!Array.isArray(samples) || samples.length === 0) {
+    return {
+      heroTimeSec: defaultHero,
+      firstActiveSec: 0,
+      peakClarityScore: 0,
+      peakVisiblePixels: 0,
+    };
+  }
+
+  const valid = samples
+    .filter((s) => s && Number.isFinite(s.timeSec) && s.timeSec >= 0)
+    .slice()
+    .sort((a, b) => a.timeSec - b.timeSec);
+
+  if (valid.length === 0) {
+    return {
+      heroTimeSec: defaultHero,
+      firstActiveSec: 0,
+      peakClarityScore: 0,
+      peakVisiblePixels: 0,
+    };
+  }
+
+  let peakClarityScore = 0;
+  let peakVisiblePixels = 0;
+  for (const s of valid) {
+    if ((s.clarityScore || 0) > peakClarityScore) peakClarityScore = s.clarityScore || 0;
+    if ((s.visiblePixels || 0) > peakVisiblePixels) peakVisiblePixels = s.visiblePixels || 0;
+  }
+
+  // 1) Pick the best Hero Cover frame from inside the video (preferring 15%..88% of duration)
+  let bestHeroSample: VideoFrameClaritySample | null = null;
+  let bestWeightedScore = -1;
+  for (const s of valid) {
+    const vis = Math.max(0, s.visiblePixels || 0);
+    const clar = Math.max(0, s.clarityScore || 0);
+    if (vis <= 0 && clar <= 0) continue;
+    const ratio = s.timeSec / safeDur;
+    const inHeartWindow = ratio >= 0.15 && ratio <= 0.88;
+    const weight = inHeartWindow ? 1.15 : ratio < 0.05 ? 0.65 : 0.9;
+    const weighted = clar * weight;
+    if (weighted > bestWeightedScore) {
+      bestWeightedScore = weighted;
+      bestHeroSample = s;
+    }
+  }
+
+  const heroTimeSec = bestHeroSample
+    ? Math.max(0, Math.min(safeDur - 0.002, bestHeroSample.timeSec))
+    : defaultHero;
+
+  // 2) Detect firstActiveSec: skip leading blank/near-empty frames (up to 45% of nativeDur or 1.8s)
+  const maxSkipSec = Math.min(1.8, safeDur * 0.45);
+  const minActivePixels = Math.max(16, Math.round(peakVisiblePixels * 0.025));
+  const minActiveClarity = peakClarityScore * 0.015;
+
+  let firstActiveSec = 0;
+  if (peakVisiblePixels >= 16) {
+    let foundActive = false;
+    for (const s of valid) {
+      if (s.timeSec > maxSkipSec + 1e-4) break;
+      if ((s.visiblePixels || 0) >= minActivePixels && (s.clarityScore || 0) >= minActiveClarity) {
+        firstActiveSec = s.timeSec;
+        foundActive = true;
+        break;
+      }
+    }
+    if (!foundActive) {
+      // If all probed frames in the first maxSkipSec were blank, start at maxSkipSec (or heroTimeSec if shorter)
+      firstActiveSec = Math.min(maxSkipSec, heroTimeSec);
+    }
+  }
+
+  return {
+    heroTimeSec: Number(heroTimeSec.toFixed(4)),
+    firstActiveSec: Number(Math.max(0, Math.min(maxSkipSec, firstActiveSec)).toFixed(4)),
+    peakClarityScore,
+    peakVisiblePixels,
+  };
+}
+
+export interface GiftVideoExportFrameState {
+  /** True on frame 0 so the encoder paints the pre-rendered Hero Cover Canvas (`واجهة الفيديو`) at the start. */
+  useHeroCoverFrame: boolean;
+  /** Target seek timestamp (seconds) inside the gift player for this frame. */
+  seekTimeSec: number;
+}
+
+/**
+ * Maps an export frame index (`0 .. totalFrames - 1`) to either:
+ * - Frame 0 (`useHeroCoverFrame: true`, `seekTimeSec: heroTimeSec`): places the sharpest hero shot from inside the video as the video cover (`واجهة الفيديو`) at the very start so there is never a black/blank opening or thumbnail.
+ * - Frames `1 .. totalFrames - 1`: plays the gift animation starting immediately at `firstActiveSec` (skipping any ~1s blank intro) across the gift's full native duration (`nativeDurationSec`) or custom duration if explicitly enabled.
+ */
+export function computeGiftVideoExportFramePlan(params: {
+  frameIndex: number;
+  totalFrames: number;
+  fps: number;
+  nativeDurationSec: number;
+  exportDurationSec: number;
+  heroTimeSec: number;
+  firstActiveSec: number;
+  isMp4Source?: boolean;
+  customDurationEnabled?: boolean;
+  customDurationMode?: 'loop' | 'fit';
+}): GiftVideoExportFrameState {
+  const safeFps = Math.max(1, Number(params.fps) || 30);
+  const safeTotal = Math.max(2, Math.round(params.totalFrames || 2));
+  const fIdx = Math.max(0, Math.min(safeTotal - 1, Math.round(params.frameIndex || 0)));
+  const nativeDur = Math.max(0.05, Number(params.nativeDurationSec) || 3);
+  const exportDur = Math.max(0.05, Number(params.exportDurationSec) || nativeDur);
+  const endMargin = params.isMp4Source ? 0.002 : 0.0005;
+  const maxValidSec = Math.max(0, nativeDur - endMargin);
+
+  const clampedHero = Math.max(0, Math.min(maxValidSec, Number(params.heroTimeSec) || nativeDur * 0.48));
+  const clampedFirstActive = Math.max(
+    0,
+    Math.min(Math.min(1.8, nativeDur * 0.45), Number(params.firstActiveSec) || 0)
+  );
+
+  // Frame 0 is ALWAYS the Hero Cover Frame captured from inside the video itself
+  if (fIdx === 0) {
+    return {
+      useHeroCoverFrame: true,
+      seekTimeSec: clampedHero,
+    };
+  }
+
+  const activeSpan = Math.max(0.05, nativeDur - clampedFirstActive);
+
+  if (params.customDurationEnabled) {
+    const sampleOff = params.isMp4Source ? 0.35 : 0;
+    const globalSec = (fIdx + sampleOff) / safeFps;
+    let cycleRatio = 0;
+    if (params.customDurationMode === 'fit') {
+      const cycles = Math.max(1, Math.round(exportDur / nativeDur));
+      const cycleDur = exportDur / cycles;
+      cycleRatio = (globalSec % cycleDur) / cycleDur;
+    } else if (nativeDur > exportDur * 1.02) {
+      cycleRatio = Math.min(1, globalSec / exportDur);
+    } else {
+      cycleRatio = (globalSec % nativeDur) / nativeDur;
+    }
+    const localSec = clampedFirstActive + cycleRatio * activeSpan;
+    return {
+      useHeroCoverFrame: false,
+      seekTimeSec: Math.max(0, Math.min(maxValidSec, localSec)),
+    };
+  }
+
+  // Native duration mode (default): play the active animation [firstActiveSec .. nativeDur] across frames 1..totalFrames-1
+  const animProgress = (fIdx - 1) / Math.max(1, safeTotal - 2);
+  const localSec = clampedFirstActive + animProgress * activeSpan;
+  return {
+    useHeroCoverFrame: false,
+    seekTimeSec: Math.max(0, Math.min(maxValidSec, localSec)),
+  };
+}
+
+
 
 

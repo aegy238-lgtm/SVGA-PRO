@@ -66,6 +66,9 @@ import {
   getOptimalAudioFrameSize,
   computeAudioChunkSampleOffset,
   interleaveTimestampedMediaChunks,
+  buildVideoHeroAndStartSampleTimes,
+  selectVideoCoverAndActiveWindow,
+  computeGiftVideoExportFramePlan,
 } from '../utils/giftStudioUtils';
 import {
   analyzePngBinary,
@@ -7938,12 +7941,99 @@ export function initMotionToolsFixed() {
         x = c.getContext('2d', { willReadFrequently: true }),
         g = mk(W, H),
         gx = g.getContext('2d');
+
+      const spanDur = Math.max(0.1, (o.end || o.dur || 3) - (o.start || 0));
+      let heroTimeSec = spanDur * 0.48;
+      let firstActiveSec = 0;
+      let heroCanvas: HTMLCanvasElement | null = null;
+
+      if (!dual) {
+        try {
+          const probeW = Math.max(64, Math.min(160, Math.round(W / 3)));
+          const probeH = Math.max(64, Math.min(160, Math.round(H / 3)));
+          const probeCv = mk(probeW, probeH);
+          const probeCx = probeCv.getContext('2d', { willReadFrequently: true });
+          const isOpaqueVid = Boolean(S.vid && !S.meta);
+          const sampleTimes = buildVideoHeroAndStartSampleTimes(spanDur);
+          const samples: Array<{ timeSec: number; visiblePixels: number; clarityScore: number }> = [];
+          for (const relT of sampleTimes) {
+            const absT = Math.min(o.start + relT, o.end - 0.0005);
+            if (S.vid) await seekVideo(S.vid, absT);
+            else await S.set(Math.min(S.n - 1, Math.max(0, Math.floor(absT * S.fps))));
+            if (typeof (window as any).__seekComposerOverlays === 'function') {
+              await (window as any).__seekComposerOverlays(absT);
+            }
+            probeCx.clearRect(0, 0, probeW, probeH);
+            contentDraw(raw, probeCx, probeW, probeH);
+            const rgba = probeCx.getImageData(0, 0, probeW, probeH).data;
+            let visiblePixels = 0;
+            let clarityScore = 0;
+            for (let i = 0; i < rgba.length; i += 4) {
+              const r = rgba[i],
+                gr = rgba[i + 1],
+                b = rgba[i + 2],
+                a = rgba[i + 3];
+              if (isOpaqueVid) {
+                const maxCh = Math.max(r, gr, b);
+                if (maxCh > 22) {
+                  visiblePixels++;
+                  const luma = 0.299 * r + 0.587 * gr + 0.114 * b;
+                  clarityScore += (luma / 255) * 0.7 + ((maxCh - Math.min(r, gr, b)) / 255) * 0.3;
+                }
+              } else if (a > 14 && (Math.max(r, gr, b) > 8 || a > 40)) {
+                visiblePixels++;
+                const luma = 0.299 * r + 0.587 * gr + 0.114 * b;
+                clarityScore += (a / 255) * (0.4 + 0.6 * (luma / 255));
+              }
+            }
+            samples.push({ timeSec: relT, visiblePixels, clarityScore });
+          }
+          const win = selectVideoCoverAndActiveWindow(samples, spanDur);
+          heroTimeSec = win.heroTimeSec;
+          firstActiveSec = win.firstActiveSec;
+
+          const absHeroT = Math.min(o.start + heroTimeSec, o.end - 0.0005);
+          if (S.vid) await seekVideo(S.vid, absHeroT);
+          else await S.set(Math.min(S.n - 1, Math.max(0, Math.floor(absHeroT * S.fps))));
+          if (typeof (window as any).__seekComposerOverlays === 'function') {
+            await (window as any).__seekComposerOverlays(absHeroT);
+          }
+          x.clearRect(0, 0, W, H);
+          contentDraw(raw, x, W, H);
+          heroCanvas = mk(VW, VH);
+          const hCx = heroCanvas.getContext('2d');
+          hCx.fillStyle = '#000';
+          hCx.fillRect(0, 0, VW, VH);
+          hCx.drawImage(c, 0, 0);
+        } catch (_) {}
+      }
+
       let blob = await encodeMP4({
         ...o,
         VW,
         VH,
         paint: async (out, k) => {
-          const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
+          if (!dual && k === 0 && heroCanvas) {
+            out.drawImage(heroCanvas, 0, 0);
+            return;
+          }
+          let t: number;
+          if (!dual) {
+            const plan = computeGiftVideoExportFramePlan({
+              frameIndex: k,
+              totalFrames: Math.max(2, o.frames || Math.round(spanDur * o.fps)),
+              fps: o.fps,
+              nativeDurationSec: spanDur,
+              exportDurationSec: spanDur,
+              heroTimeSec,
+              firstActiveSec,
+              isMp4Source: Boolean(S.vid),
+              customDurationEnabled: false,
+            });
+            t = Math.min(o.start + plan.seekTimeSec, o.end - 0.0001);
+          } else {
+            t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
+          }
           if (S.vid) await seekVideo(S.vid, t);
           else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
           if (typeof (window as any).__seekComposerOverlays === 'function') {

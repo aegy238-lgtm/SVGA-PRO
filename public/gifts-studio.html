@@ -820,9 +820,8 @@ const customDur={
  mode:'loop' // 'loop' | 'fit'
 };
 try{
- const savedDur=JSON.parse(localStorage.getItem('gifts_studio_custom_dur_v1')||'null');
+ const savedDur=JSON.parse(localStorage.getItem('gifts_studio_custom_dur_v2')||'null');
  if(savedDur&&typeof savedDur==='object'){
-  if(typeof savedDur.enabled==='boolean')customDur.enabled=savedDur.enabled;
   if(typeof savedDur.seconds==='number'&&savedDur.seconds>=0.5&&savedDur.seconds<=120){
    customDur.seconds=savedDur.seconds;
   }
@@ -832,7 +831,7 @@ try{
  }
 }catch(e){}
 function saveCustomDurState(){
- try{localStorage.setItem('gifts_studio_custom_dur_v1',JSON.stringify({enabled:customDur.enabled,seconds:customDur.seconds,mode:customDur.mode}))}catch(e){}
+ try{localStorage.setItem('gifts_studio_custom_dur_v2',JSON.stringify({enabled:customDur.enabled,seconds:customDur.seconds,mode:customDur.mode}))}catch(e){}
 }
 const dur=it=>{
  if(customDur.enabled){
@@ -2642,16 +2641,18 @@ async function mkPlayer(it,host,o){
     task.lastT=v.currentTime;task.drawn=true;
    }
   };
+  let hasSoughtOnce=false;
   const seekAccurate=async(sec)=>{
    const vDur=(v.duration&&isFinite(v.duration)&&v.duration>0)?v.duration:(it.dur||3);
    const target=Math.max(0,Math.min(vDur-0.002,sec));
-   if(Math.abs(v.currentTime-target)>0.0008||v.seeking||v.readyState<2){
+   if(!hasSoughtOnce||Math.abs(v.currentTime-target)>0.0008||v.seeking||v.readyState<2){
     await new Promise(res=>{
      let finished=false,timedOut=false;
      const done=()=>{
       if(finished)return;
       if(v.seeking&&!timedOut)return;
       finished=true;
+      hasSoughtOnce=true;
       clearTimeout(tm);
       v.removeEventListener('seeked',onS);
       v.removeEventListener('canplay',onS);
@@ -2678,8 +2679,14 @@ async function mkPlayer(it,host,o){
     });
    }
    if(o.manual){
-    v.pause();
-    await seekAccurate(0);
+    try{
+     v.muted=true;
+     await v.play();
+     await waitCompositorTick();
+     v.pause();
+    }catch(e){}
+    hasSoughtOnce=false;
+    await seekAccurate(0.001);
    }else{
     syncSpeed();
     syncNow();
@@ -4427,6 +4434,194 @@ async function decodeItemAudioBuffer(it){
  }
 }
 
+function scanStageFrameActivity(rgba,w,h,isOpaqueVideo){
+ let visiblePixels=0,clarityScore=0;
+ const len=w*h*4;
+ for(let i=0;i<len;i+=4){
+  const r=rgba[i],g=rgba[i+1],b=rgba[i+2],a=rgba[i+3];
+  if(isOpaqueVideo){
+   const maxCh=Math.max(r,g,b);
+   if(maxCh>22){
+    visiblePixels++;
+    const luma=0.299*r+0.587*g+0.114*b;
+    const sat=maxCh-Math.min(r,g,b);
+    clarityScore+=(luma/255)*0.65+(sat/255)*0.35;
+   }
+  }else if(a>14){
+   const maxCh=Math.max(r,g,b);
+   if(maxCh>8||a>40){
+    visiblePixels++;
+    const luma=0.299*r+0.587*g+0.114*b;
+    clarityScore+=(a/255)*(0.4+0.6*(luma/255));
+   }
+  }
+ }
+ return{visiblePixels,clarityScore};
+}
+
+function buildVideoHeroAndStartSampleTimes(nativeDurationSec){
+ const safeDur=Math.max(0.2,Number(nativeDurationSec)||3);
+ const maxEarlySec=Math.min(1.4,safeDur*0.45);
+ const earlySteps=[0,0.05,0.12,0.20,0.30,0.42,0.56,0.72,0.90,1.10,1.30].filter(t=>t<=maxEarlySec+1e-4);
+ const heroRatios=[0.48,0.58,0.38,0.68,0.28,0.78,0.20];
+ const rawTimes=[...earlySteps,...heroRatios.map(r=>Number((safeDur*r).toFixed(3)))];
+ const clamped=rawTimes.map(t=>Math.max(0,Math.min(Number((safeDur-0.002).toFixed(4)),Number(t.toFixed(4)))));
+ const unique=[];
+ for(const t of clamped.sort((a,b)=>a-b)){
+  if(!unique.length||Math.abs(t-unique[unique.length-1])>=0.025)unique.push(t);
+ }
+ return unique;
+}
+
+function selectVideoCoverAndActiveWindow(samples,nativeDurationSec){
+ const safeDur=Math.max(0.1,Number(nativeDurationSec)||3);
+ const defaultHero=Number((safeDur*0.48).toFixed(4));
+ if(!Array.isArray(samples)||!samples.length){
+  return{heroTimeSec:defaultHero,firstActiveSec:0,peakClarityScore:0,peakVisiblePixels:0};
+ }
+ const valid=samples.filter(s=>s&&Number.isFinite(s.timeSec)&&s.timeSec>=0).slice().sort((a,b)=>a.timeSec-b.timeSec);
+ if(!valid.length){
+  return{heroTimeSec:defaultHero,firstActiveSec:0,peakClarityScore:0,peakVisiblePixels:0};
+ }
+ let peakClarityScore=0,peakVisiblePixels=0;
+ for(const s of valid){
+  if((s.clarityScore||0)>peakClarityScore)peakClarityScore=s.clarityScore||0;
+  if((s.visiblePixels||0)>peakVisiblePixels)peakVisiblePixels=s.visiblePixels||0;
+ }
+ let bestHeroSample=null,bestWeightedScore=-1;
+ for(const s of valid){
+  const vis=Math.max(0,s.visiblePixels||0),clar=Math.max(0,s.clarityScore||0);
+  if(vis<=0&&clar<=0)continue;
+  const ratio=s.timeSec/safeDur;
+  const weight=(ratio>=0.15&&ratio<=0.88)?1.15:(ratio<0.05?0.65:0.9);
+  const weighted=clar*weight;
+  if(weighted>bestWeightedScore){bestWeightedScore=weighted;bestHeroSample=s}
+ }
+ const heroTimeSec=bestHeroSample?Math.max(0,Math.min(safeDur-0.002,bestHeroSample.timeSec)):defaultHero;
+ const maxSkipSec=Math.min(1.8,safeDur*0.45);
+ const minActivePixels=Math.max(16,Math.round(peakVisiblePixels*0.025));
+ const minActiveClarity=peakClarityScore*0.015;
+ let firstActiveSec=0;
+ if(peakVisiblePixels>=16){
+  let foundActive=false;
+  for(const s of valid){
+   if(s.timeSec>maxSkipSec+1e-4)break;
+   if((s.visiblePixels||0)>=minActivePixels&&(s.clarityScore||0)>=minActiveClarity){
+    firstActiveSec=s.timeSec;
+    foundActive=true;
+    break;
+   }
+  }
+  if(!foundActive)firstActiveSec=Math.min(maxSkipSec,heroTimeSec);
+ }
+ return{
+  heroTimeSec:Number(heroTimeSec.toFixed(4)),
+  firstActiveSec:Number(Math.max(0,Math.min(maxSkipSec,firstActiveSec)).toFixed(4)),
+  peakClarityScore,
+  peakVisiblePixels
+ };
+}
+
+function computeGiftVideoExportFramePlan(params){
+ const safeFps=Math.max(1,Number(params.fps)||30);
+ const safeTotal=Math.max(2,Math.round(params.totalFrames||2));
+ const fIdx=Math.max(0,Math.min(safeTotal-1,Math.round(params.frameIndex||0)));
+ const nativeDur=Math.max(0.05,Number(params.nativeDurationSec)||3);
+ const exportDur=Math.max(0.05,Number(params.exportDurationSec)||nativeDur);
+ const endMargin=params.isMp4Source?0.002:0.0005;
+ const maxValidSec=Math.max(0,nativeDur-endMargin);
+ const clampedHero=Math.max(0,Math.min(maxValidSec,Number(params.heroTimeSec)||nativeDur*0.48));
+ const clampedFirstActive=Math.max(0,Math.min(Math.min(1.8,nativeDur*0.45),Number(params.firstActiveSec)||0));
+ if(fIdx===0){
+  return{useHeroCoverFrame:true,seekTimeSec:clampedHero};
+ }
+ const activeSpan=Math.max(0.05,nativeDur-clampedFirstActive);
+ if(params.customDurationEnabled){
+  const sampleOff=params.isMp4Source?0.35:0;
+  const globalSec=(fIdx+sampleOff)/safeFps;
+  let cycleRatio=0;
+  if(params.customDurationMode==='fit'){
+   const cycles=Math.max(1,Math.round(exportDur/nativeDur));
+   const cycleDur=exportDur/cycles;
+   cycleRatio=(globalSec%cycleDur)/cycleDur;
+  }else if(nativeDur>exportDur*1.02){
+   cycleRatio=Math.min(1,globalSec/exportDur);
+  }else{
+   cycleRatio=(globalSec%nativeDur)/nativeDur;
+  }
+  const localSec=clampedFirstActive+cycleRatio*activeSpan;
+  return{useHeroCoverFrame:false,seekTimeSec:Math.max(0,Math.min(maxValidSec,localSec))};
+ }
+ const animProgress=(fIdx-1)/Math.max(1,safeTotal-2);
+ const localSec=clampedFirstActive+animProgress*activeSpan;
+ return{useHeroCoverFrame:false,seekTimeSec:Math.max(0,Math.min(maxValidSec,localSec))};
+}
+
+/**
+ * يفحص الهدية قبل بدء التصدير لالتقاط أفضل لقطة واضحة من داخل الفيديو نفسه كواجهة للفيديو في البداية (Frame 0)،
+ * ويحدد أول فريم يظهر فيه محتوى الهدية الفعلي لتخطي أي ثانية فارغة في البداية مع تشغيل الفيديو بمدته الأساسية كاملة.
+ */
+async function preparePlayerHeroCoverAndActiveStart(P,it,stageW,stageH,fullW,fullH){
+ const nativeDur=Math.max(0.2,(it&&it.dur>0)?it.dur:3);
+ const isOpaqueVideo=Boolean(it&&it.fmt==='mp4'&&!it.rects);
+ const probeW=Math.max(64,Math.min(192,Math.round((stageW||256)/3)));
+ const probeH=Math.max(64,Math.min(192,Math.round((stageH||256)/3)));
+ const probeCv=E('canvas');probeCv.width=probeW;probeCv.height=probeH;
+ const probeCx=probeCv.getContext('2d',{willReadFrequently:true});
+ const sampleTimes=buildVideoHeroAndStartSampleTimes(nativeDur);
+ const samples=[];
+ if(P&&P.stepTo){
+  for(const t of sampleTimes){
+   try{
+    await P.stepTo(t);
+    P.syncNow&&P.syncNow();
+    probeCx.clearRect(0,0,probeW,probeH);
+    fit(probeCx,P.src(),probeW,probeH,it);
+    const d=probeCx.getImageData(0,0,probeW,probeH).data;
+    const act=scanStageFrameActivity(d,probeW,probeH,isOpaqueVideo);
+    samples.push({timeSec:t,visiblePixels:act.visiblePixels,clarityScore:act.clarityScore});
+   }catch(e){}
+  }
+ }
+ const win=selectVideoCoverAndActiveWindow(samples,nativeDur);
+ if(P&&P.stepTo){
+  try{
+   await P.stepTo(win.heroTimeSec);
+   P.syncNow&&P.syncNow();
+  }catch(e){}
+ }
+ const heroStageCv=E('canvas');
+ heroStageCv.width=Math.max(2,stageW||512);
+ heroStageCv.height=Math.max(2,stageH||512);
+ const heroStageCx=heroStageCv.getContext('2d');
+ if(heroStageCx&&P&&P.src()){
+  fit(heroStageCx,P.src(),heroStageCv.width,heroStageCv.height,it);
+ }
+ let heroFullFrameCv=null;
+ if(fullW>0&&fullH>0){
+  heroFullFrameCv=E('canvas');
+  heroFullFrameCv.width=fullW;
+  heroFullFrameCv.height=fullH;
+  const hfx=heroFullFrameCv.getContext('2d',{alpha:false});
+  drawBg(hfx,fullW,fullH);
+  fit(hfx,P&&P.src()?P.src():heroStageCv,fullW,fullH,it);
+  drawWatermark(hfx,fullW,fullH,false);
+ }
+ return{
+  nativeDur,
+  heroTimeSec:win.heroTimeSec,
+  firstActiveSec:win.firstActiveSec,
+  peakVisiblePixels:win.peakVisiblePixels,
+  isOpaqueVideo,
+  heroStageCv,
+  heroFullFrameCv,
+  probeCv,
+  probeCx,
+  probeW,
+  probeH
+ };
+}
+
 async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
  const MuxerLib=getMuxerLib();
  if(!MuxerLib||!window.VideoEncoder||!window.VideoFrame)return null;
@@ -4514,30 +4709,44 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
     const P=await mkPlayer(o.it,h,{loop:true,hiRes:true,manual:true});
     if(P.waitReady)await P.waitReady();
     P.pause&&P.pause();
-    slots.push({o,cell,h,P});
+    const heroInfo=await preparePlayerHeroCoverAndActiveStart(P,o.it,cell.width,cell.height,0,0);
+    slots.push({o,cell,h,P,heroInfo});
    }
-   const totalFrames=Math.max(1,Math.round(maxDur*safeFps));
-   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
+   const totalFrames=Math.max(2,Math.round(maxDur*safeFps));
    $('#dt').textContent=`جارٍ تصدير ${list.length} هدايا جنب بعض في فيديو واحد…`;
    try{
     for(let fIdx=0;fIdx<totalFrames;fIdx++){
      if(sig.stop||encErr)break;
-     await Promise.all(slots.map(async s=>{
-      const sec=mapExportSeekSec(s.o.it,s.o.dur,fIdx,safeFps,true);
-      if(s.P.stepTo)await s.P.stepTo(sec);
-      s.P.syncNow&&s.P.syncNow();
-     }));
+     if(fIdx>0){
+      await Promise.all(slots.map(async s=>{
+       const plan=computeGiftVideoExportFramePlan({
+        frameIndex:fIdx,
+        totalFrames,
+        fps:safeFps,
+        nativeDurationSec:s.heroInfo.nativeDur,
+        exportDurationSec:s.o.dur,
+        heroTimeSec:s.heroInfo.heroTimeSec,
+        firstActiveSec:s.heroInfo.firstActiveSec,
+        isMp4Source:s.o.it&&s.o.it.fmt==='mp4',
+        customDurationEnabled:customDur.enabled,
+        customDurationMode:customDur.mode
+       });
+       if(s.P.stepTo)await s.P.stepTo(plan.seekTimeSec);
+       s.P.syncNow&&s.P.syncNow();
+      }));
+     }
 
      const bufIdx=globalFrameIdx&1;
      const curCv=cvs[bufIdx],curCx=cxs[bufIdx];
      curCx.fillStyle='#07070a';
      curCx.fillRect(0,0,W,H);
      for(const s of slots){
-      fitInRect(curCx,s.P.src(),s.cell.x,s.cell.y,s.cell.width,s.cell.height,s.o.it);
+      const drawSrc=(fIdx===0&&s.heroInfo&&s.heroInfo.heroStageCv)?s.heroInfo.heroStageCv:s.P.src();
+      fitInRect(curCx,drawSrc,s.cell.x,s.cell.y,s.cell.width,s.cell.height,s.o.it);
      }
      drawWatermark(curCx,W,H,false);
 
-     if(poster&&!posterCv&&fIdx>=posterFrame){
+     if(poster&&!posterCv&&fIdx===0){
       posterCv=E('canvas');posterCv.width=W;posterCv.height=H;
       posterCv.getContext('2d').drawImage(curCv,0,0);
      }
@@ -4546,7 +4755,7 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
      const nextTs=Math.round(((globalFrameIdx+1)*1e6)/safeFps);
      const vf=new VideoFrame(curCv,{timestamp:ts,duration:nextTs-ts});
      try{
-      ve.encode(vf,{keyFrame:globalFrameIdx%Math.max(1,Math.round(safeFps))===0});
+      ve.encode(vf,{keyFrame:fIdx===0||globalFrameIdx%Math.max(1,Math.round(safeFps))===0});
      }finally{
       vf.close();
      }
@@ -4566,29 +4775,64 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
     }
    }
   }else{
-   // تصدير هدية مفردة
+   // تصدير هدية مفردة: وضع أفضل لقطة من داخل الفيديو كواجهة احترافية في البداية ثم تشغيل الفيديو بمدته الأساسية بدون أي ثانية فارغة
    const o=list[0];
    const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);
    const P=await mkPlayer(o.it,h,{loop:false,hiRes:true,manual:true});
    if(P.waitReady)await P.waitReady();
    P.pause&&P.pause();
 
-   const totalFrames=Math.max(1,Math.round(o.dur*safeFps));
-   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
+   const heroInfo=await preparePlayerHeroCoverAndActiveStart(P,o.it,W,H,W,H);
+   const totalFrames=Math.max(2,Math.round(o.dur*safeFps));
+   let hasShownActiveAnimFrame=false;
 
    for(let fIdx=0;fIdx<totalFrames;fIdx++){
     if(sig.stop||encErr)break;
-    const sec=mapExportSeekSec(o.it,o.dur,fIdx,safeFps,false);
-    if(P.stepTo)await P.stepTo(sec);
-    P.syncNow&&P.syncNow();
+    const plan=computeGiftVideoExportFramePlan({
+     frameIndex:fIdx,
+     totalFrames,
+     fps:safeFps,
+     nativeDurationSec:heroInfo.nativeDur,
+     exportDurationSec:o.dur,
+     heroTimeSec:heroInfo.heroTimeSec,
+     firstActiveSec:heroInfo.firstActiveSec,
+     isMp4Source:o.it&&o.it.fmt==='mp4',
+     customDurationEnabled:customDur.enabled,
+     customDurationMode:customDur.mode
+    });
 
     const bufIdx=globalFrameIdx&1;
     const curCv=cvs[bufIdx],curCx=cxs[bufIdx];
-    drawBg(curCx,W,H);
-    fit(curCx,P.src(),W,H,o.it);
-    drawWatermark(curCx,W,H,false);
 
-    if(poster&&!posterCv&&fIdx>=posterFrame){
+    if(plan.useHeroCoverFrame&&heroInfo.heroFullFrameCv){
+     curCx.drawImage(heroInfo.heroFullFrameCv,0,0,W,H);
+    }else{
+     if(P.stepTo)await P.stepTo(plan.seekTimeSec);
+     P.syncNow&&P.syncNow();
+     let useFallbackHero=false;
+     if(!hasShownActiveAnimFrame&&fIdx<=Math.ceil(safeFps)&&heroInfo.peakVisiblePixels>=16&&heroInfo.heroFullFrameCv){
+      try{
+       const pCx=heroInfo.probeCx,pW=heroInfo.probeW,pH=heroInfo.probeH;
+       pCx.clearRect(0,0,pW,pH);
+       fit(pCx,P.src(),pW,pH,o.it);
+       const act=scanStageFrameActivity(pCx.getImageData(0,0,pW,pH).data,pW,pH,heroInfo.isOpaqueVideo);
+       if(act.visiblePixels>=Math.max(12,Math.round(heroInfo.peakVisiblePixels*0.015))){
+        hasShownActiveAnimFrame=true;
+       }else{
+        useFallbackHero=true;
+       }
+      }catch(e){hasShownActiveAnimFrame=true}
+     }
+     if(useFallbackHero){
+      curCx.drawImage(heroInfo.heroFullFrameCv,0,0,W,H);
+     }else{
+      drawBg(curCx,W,H);
+      fit(curCx,P.src(),W,H,o.it);
+      drawWatermark(curCx,W,H,false);
+     }
+    }
+
+    if(poster&&!posterCv&&fIdx===0){
      posterCv=E('canvas');posterCv.width=W;posterCv.height=H;
      posterCv.getContext('2d').drawImage(curCv,0,0);
     }
@@ -4597,7 +4841,7 @@ async function recordWebCodecsMP4(list,W,H,reqFps,prog,poster){
     const nextTs=Math.round(((globalFrameIdx+1)*1e6)/safeFps);
     const vf=new VideoFrame(curCv,{timestamp:ts,duration:nextTs-ts});
     try{
-     ve.encode(vf,{keyFrame:globalFrameIdx%Math.max(1,Math.round(safeFps))===0});
+     ve.encode(vf,{keyFrame:fIdx===0||globalFrameIdx%Math.max(1,Math.round(safeFps))===0});
     }finally{
      vf.close();
     }
@@ -4769,35 +5013,53 @@ async function record(list,W,H,fps,mt,prog,poster){
     root.append(h);
     const P=await mkPlayer(o.it,h,{loop:true,hiRes:true,manual:true});
     if(P.waitReady)await P.waitReady();
-    if(P.stepTo)await P.stepTo(0);
-    P.syncNow&&P.syncNow();
     P.pause&&P.pause();
-    slots.push({o,cell,h,P});
+    const heroInfo=await preparePlayerHeroCoverAndActiveStart(P,o.it,cell.width,cell.height,0,0);
+    slots.push({o,cell,h,P,heroInfo});
    }
+   cx.fillStyle='#07070a';
+   cx.fillRect(0,0,W,H);
+   for(const s of slots){
+    fitInRect(cx,s.heroInfo&&s.heroInfo.heroStageCv?s.heroInfo.heroStageCv:s.P.src(),s.cell.x,s.cell.y,s.cell.width,s.cell.height,s.o.it);
+   }
+   drawWatermark(cx,W,H,false);
    rec.start(500);
    activeAudioNodes.forEach(s=>{try{s.start(0)}catch(e){}});
-   const totalFrames=Math.max(1,Math.round(maxDur*safeFps));
-   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
+   const totalFrames=Math.max(2,Math.round(maxDur*safeFps));
    $('#dt').textContent=`جارٍ تصدير ${list.length} هدايا جنب بعض في فيديو واحد…`;
    try{
     for(let fIdx=0;fIdx<totalFrames;fIdx++){
      if(sig.stop)break;
      const tStart=performance.now();
-     await Promise.all(slots.map(async s=>{
-      const sec=mapExportSeekSec(s.o.it,s.o.dur,fIdx,safeFps,true);
-      if(s.P.stepTo)await s.P.stepTo(sec);
-      s.P.syncNow&&s.P.syncNow();
-     }));
+     if(fIdx>0){
+      await Promise.all(slots.map(async s=>{
+       const plan=computeGiftVideoExportFramePlan({
+        frameIndex:fIdx,
+        totalFrames,
+        fps:safeFps,
+        nativeDurationSec:s.heroInfo.nativeDur,
+        exportDurationSec:s.o.dur,
+        heroTimeSec:s.heroInfo.heroTimeSec,
+        firstActiveSec:s.heroInfo.firstActiveSec,
+        isMp4Source:s.o.it&&s.o.it.fmt==='mp4',
+        customDurationEnabled:customDur.enabled,
+        customDurationMode:customDur.mode
+       });
+       if(s.P.stepTo)await s.P.stepTo(plan.seekTimeSec);
+       s.P.syncNow&&s.P.syncNow();
+      }));
+     }
      cx.fillStyle='#07070a';
      cx.fillRect(0,0,W,H);
      for(const s of slots){
-      fitInRect(cx,s.P.src(),s.cell.x,s.cell.y,s.cell.width,s.cell.height,s.o.it);
+      const drawSrc=(fIdx===0&&s.heroInfo&&s.heroInfo.heroStageCv)?s.heroInfo.heroStageCv:s.P.src();
+      fitInRect(cx,drawSrc,s.cell.x,s.cell.y,s.cell.width,s.cell.height,s.o.it);
      }
      drawWatermark(cx,W,H,false);
      if(vTrack&&typeof vTrack.requestFrame==='function'){
       try{vTrack.requestFrame()}catch(e){}
      }
-     if(poster&&!poster.p&&fIdx>=posterFrame){
+     if(poster&&!poster.p&&fIdx===0){
       poster.p=new Promise(r=>cv.toBlob(r,'image/png'));
      }
      prog(Math.min(1,(fIdx+1)/totalFrames));
@@ -4816,32 +5078,69 @@ async function record(list,W,H,fps,mt,prog,poster){
    const h=E('div');h.style.cssText=`position:absolute;inset:0;width:${W}px;height:${H}px;display:flex`;root.append(h);
    const P=await mkPlayer(o.it,h,{loop:false,hiRes:true,manual:true});
    if(P.waitReady)await P.waitReady();
-   if(P.stepTo)await P.stepTo(0);
-   P.syncNow&&P.syncNow();
-   drawBg(cx,W,H);
-   fit(cx,P.src(),W,H,o.it);
-   drawWatermark(cx,W,H,false);
-   rec.start(500);
-   activeAudioNodes.forEach(s=>{try{s.start(0)}catch(e){}});
    P.pause&&P.pause();
-   const totalFrames=Math.max(1,Math.round(o.dur*safeFps));
-   const posterFrame=Math.min(totalFrames-1,Math.max(0,Math.floor(totalFrames*0.45)));
-   for(let fIdx=0;fIdx<totalFrames;fIdx++){
-    if(sig.stop)break;
-    const tStart=performance.now();
-    const sec=mapExportSeekSec(o.it,o.dur,fIdx,safeFps,false);
-    if(P.stepTo)await P.stepTo(sec);
+   const heroInfo=await preparePlayerHeroCoverAndActiveStart(P,o.it,W,H,W,H);
+   if(heroInfo.heroFullFrameCv){
+    cx.drawImage(heroInfo.heroFullFrameCv,0,0,W,H);
+   }else{
     drawBg(cx,W,H);
     fit(cx,P.src(),W,H,o.it);
     drawWatermark(cx,W,H,false);
+   }
+   rec.start(500);
+   activeAudioNodes.forEach(s=>{try{s.start(0)}catch(e){}});
+   const totalFrames=Math.max(2,Math.round(o.dur*safeFps));
+   let hasShownActiveAnimFrame=false;
+   for(let fIdx=0;fIdx<totalFrames;fIdx++){
+    if(sig.stop)break;
+    const tStart=performance.now();
+    const plan=computeGiftVideoExportFramePlan({
+     frameIndex:fIdx,
+     totalFrames,
+     fps:safeFps,
+     nativeDurationSec:heroInfo.nativeDur,
+     exportDurationSec:o.dur,
+     heroTimeSec:heroInfo.heroTimeSec,
+     firstActiveSec:heroInfo.firstActiveSec,
+     isMp4Source:o.it&&o.it.fmt==='mp4',
+     customDurationEnabled:customDur.enabled,
+     customDurationMode:customDur.mode
+    });
+    if(plan.useHeroCoverFrame&&heroInfo.heroFullFrameCv){
+     cx.drawImage(heroInfo.heroFullFrameCv,0,0,W,H);
+    }else{
+     if(P.stepTo)await P.stepTo(plan.seekTimeSec);
+     P.syncNow&&P.syncNow();
+     let useFallbackHero=false;
+     if(!hasShownActiveAnimFrame&&fIdx<=Math.ceil(safeFps)&&heroInfo.peakVisiblePixels>=16&&heroInfo.heroFullFrameCv){
+      try{
+       const pCx=heroInfo.probeCx,pW=heroInfo.probeW,pH=heroInfo.probeH;
+       pCx.clearRect(0,0,pW,pH);
+       fit(pCx,P.src(),pW,pH,o.it);
+       const act=scanStageFrameActivity(pCx.getImageData(0,0,pW,pH).data,pW,pH,heroInfo.isOpaqueVideo);
+       if(act.visiblePixels>=Math.max(12,Math.round(heroInfo.peakVisiblePixels*0.015))){
+        hasShownActiveAnimFrame=true;
+       }else{
+        useFallbackHero=true;
+       }
+      }catch(e){hasShownActiveAnimFrame=true}
+     }
+     if(useFallbackHero){
+      cx.drawImage(heroInfo.heroFullFrameCv,0,0,W,H);
+     }else{
+      drawBg(cx,W,H);
+      fit(cx,P.src(),W,H,o.it);
+      drawWatermark(cx,W,H,false);
+     }
+    }
     if(vTrack&&typeof vTrack.requestFrame==='function'){
      try{vTrack.requestFrame()}catch(e){}
     }
-    if(poster&&!poster.p&&fIdx>=posterFrame){
+    if(poster&&!poster.p&&fIdx===0){
      const pCv=E('canvas');pCv.width=W;pCv.height=H;
      const pCx=pCv.getContext('2d');
      pCx.clearRect(0,0,W,H);
-     fit(pCx,P.src(),W,H,o.it);
+     fit(pCx,heroInfo.heroStageCv||P.src(),W,H,o.it);
      poster.p=new Promise(r=>pCv.toBlob(r,'image/png'));
     }
     prog(Math.min(1,(fIdx+1)/totalFrames));

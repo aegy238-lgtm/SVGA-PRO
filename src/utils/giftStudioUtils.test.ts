@@ -40,6 +40,9 @@ import {
   getOptimalAudioFrameSize,
   computeAudioChunkSampleOffset,
   interleaveTimestampedMediaChunks,
+  buildVideoHeroAndStartSampleTimes,
+  selectVideoCoverAndActiveWindow,
+  computeGiftVideoExportFramePlan,
   type GiftStudioExportItemLike,
 } from './giftStudioUtils.ts';
 
@@ -616,5 +619,77 @@ test('computeSideBySideSlotRenderPlan places uploaded background image inside ea
   const bgCenterX5 = plan5.bgImageDrawRect.x + plan5.bgImageDrawRect.width / 2;
   assert.ok(Math.abs(stageCenterX5 - bgCenterX5) < 0.5);
 });
+
+test('selectVideoCoverAndActiveWindow picks peak clarity hero shot and skips ~1s blank start', () => {
+  const nativeDur = 5.0;
+  const sampleTimes = buildVideoHeroAndStartSampleTimes(nativeDur);
+  assert.ok(sampleTimes.length >= 8);
+  assert.equal(sampleTimes[0], 0);
+
+  // Simulate a gift that is blank for the first 0.85s, enters at 0.90s, and peaks at 2.40s (48% of 5s)
+  const samples = sampleTimes.map((t) => {
+    if (t < 0.88) {
+      return { timeSec: t, visiblePixels: 0, clarityScore: 0 };
+    }
+    if (Math.abs(t - 2.4) < 0.05) {
+      return { timeSec: t, visiblePixels: 95000, clarityScore: 185000 };
+    }
+    return { timeSec: t, visiblePixels: 42000, clarityScore: 68000 };
+  });
+
+  const win = selectVideoCoverAndActiveWindow(samples, nativeDur);
+  assert.equal(win.heroTimeSec, 2.4);
+  assert.equal(win.firstActiveSec, 0.9);
+  assert.equal(win.peakVisiblePixels, 95000);
+});
+
+test('computeGiftVideoExportFramePlan places hero cover at frame 0 and plays full native duration with zero blank start', () => {
+  const nativeDur = 5.0;
+  const fps = 30;
+  const totalFrames = Math.round(nativeDur * fps); // 150 frames = 5.0s native duration
+
+  // Frame 0 is the Hero Cover Frame captured from inside the video (t = 2.4s)
+  const frame0 = computeGiftVideoExportFramePlan({
+    frameIndex: 0,
+    totalFrames,
+    fps,
+    nativeDurationSec: nativeDur,
+    exportDurationSec: nativeDur,
+    heroTimeSec: 2.4,
+    firstActiveSec: 0.9,
+    customDurationEnabled: false,
+  });
+  assert.equal(frame0.useHeroCoverFrame, true);
+  assert.equal(frame0.seekTimeSec, 2.4);
+
+  // Frame 1 immediately starts at firstActiveSec (0.9s), completely skipping the 0.9s blank start
+  const frame1 = computeGiftVideoExportFramePlan({
+    frameIndex: 1,
+    totalFrames,
+    fps,
+    nativeDurationSec: nativeDur,
+    exportDurationSec: nativeDur,
+    heroTimeSec: 2.4,
+    firstActiveSec: 0.9,
+    customDurationEnabled: false,
+  });
+  assert.equal(frame1.useHeroCoverFrame, false);
+  assert.ok(Math.abs(frame1.seekTimeSec - 0.9) < 1e-4);
+
+  // Last frame reaches the end of nativeDurationSec (5.0s)
+  const frameLast = computeGiftVideoExportFramePlan({
+    frameIndex: totalFrames - 1,
+    totalFrames,
+    fps,
+    nativeDurationSec: nativeDur,
+    exportDurationSec: nativeDur,
+    heroTimeSec: 2.4,
+    firstActiveSec: 0.9,
+    customDurationEnabled: false,
+  });
+  assert.equal(frameLast.useHeroCoverFrame, false);
+  assert.ok(frameLast.seekTimeSec >= 4.99);
+});
+
 
 
