@@ -1,9 +1,18 @@
+export const MAX_EDGE_FEATHER_MARGIN_PCT = 100;
+
+export function clampEdgeFeatherMargin(val: number): number {
+  return Math.max(
+    0,
+    Math.min(MAX_EDGE_FEATHER_MARGIN_PCT, Number.isFinite(val) ? Math.round(val) : 0)
+  );
+}
+
 export interface EdgeFeatherConfig {
   enabled: boolean;
-  topMargin: number;     // 0 - 50 (%)
-  bottomMargin: number;  // 0 - 50 (%)
-  leftMargin: number;    // 0 - 50 (%)
-  rightMargin: number;   // 0 - 50 (%)
+  topMargin: number;     // 0 - 100 (%)
+  bottomMargin: number;  // 0 - 100 (%)
+  leftMargin: number;    // 0 - 100 (%)
+  rightMargin: number;   // 0 - 100 (%)
   featherRadius: number; // 0 - 200 (px)
   // Animation duration & time trimming
   trimEnabled?: boolean;
@@ -44,7 +53,7 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 
 /**
  * Computes the 1D alpha profile (0..1) along a dimension of length `len`
- * given `startMarginPct` (0..50), `endMarginPct` (0..50), and `featherRadius` (0..200).
+ * given `startMarginPct` (0..100), `endMarginPct` (0..100), and `featherRadius` (0..200).
  */
 export function compute1DFeatherProfile(
   len: number,
@@ -73,17 +82,26 @@ export function compute1DFeatherProfile(
     return out;
   }
 
-  // Start edge (Top or Left)
+  // Start edge (Top or Left) — supports 0% up to 100%
   if (startMarginPct > 0) {
-    const marginPx = (startMarginPct / 100) * len;
+    const clampedStart = Math.max(0, Math.min(100, startMarginPct));
+    if (clampedStart >= 100) {
+      out.fill(0);
+      return out;
+    }
+    const marginPx = (clampedStart / 100) * len;
     if (featherRadius <= 0) {
       for (let i = 0; i < len; i++) {
         if (i < marginPx) out[i] = 0;
       }
     } else {
-      const rRatio = featherRadius / 200;
-      const fadeSpan = Math.max(2, marginPx * (0.35 + 0.95 * rRatio) + radiusPx * 0.25);
-      const fadeEnd = Math.min(len, marginPx + fadeSpan * 0.18 * rRatio);
+      const rRatio = Math.max(0, Math.min(1, featherRadius / 200));
+      const remainingRatio = Math.max(0, 1 - clampedStart / 100);
+      const effMargin = Math.min(marginPx, len * 0.5);
+      const rawSpan = Math.max(2, effMargin * (0.35 + 0.95 * rRatio) + radiusPx * 0.25);
+      const spanScale = clampedStart <= 50 ? 1 : Math.max(0.05, remainingRatio * 1.2);
+      const fadeSpan = Math.min(rawSpan * spanScale, Math.max(2, (len - marginPx) * 1.15));
+      const fadeEnd = Math.min(len, marginPx + fadeSpan * 0.18 * rRatio * remainingRatio);
       const fadeStart = Math.max(0, fadeEnd - fadeSpan);
       for (let i = 0; i < len; i++) {
         if (i <= fadeStart) {
@@ -95,18 +113,27 @@ export function compute1DFeatherProfile(
     }
   }
 
-  // End edge (Bottom or Right)
+  // End edge (Bottom or Right) — supports 0% up to 100%
   if (endMarginPct > 0) {
-    const marginPx = (endMarginPct / 100) * len;
+    const clampedEnd = Math.max(0, Math.min(100, endMarginPct));
+    if (clampedEnd >= 100) {
+      out.fill(0);
+      return out;
+    }
+    const marginPx = (clampedEnd / 100) * len;
     if (featherRadius <= 0) {
       for (let i = 0; i < len; i++) {
         const dist = len - 1 - i;
         if (dist < marginPx) out[i] = 0;
       }
     } else {
-      const rRatio = featherRadius / 200;
-      const fadeSpan = Math.max(2, marginPx * (0.35 + 0.95 * rRatio) + radiusPx * 0.25);
-      const fadeEnd = Math.min(len, marginPx + fadeSpan * 0.18 * rRatio);
+      const rRatio = Math.max(0, Math.min(1, featherRadius / 200));
+      const remainingRatio = Math.max(0, 1 - clampedEnd / 100);
+      const effMargin = Math.min(marginPx, len * 0.5);
+      const rawSpan = Math.max(2, effMargin * (0.35 + 0.95 * rRatio) + radiusPx * 0.25);
+      const spanScale = clampedEnd <= 50 ? 1 : Math.max(0.05, remainingRatio * 1.2);
+      const fadeSpan = Math.min(rawSpan * spanScale, Math.max(2, (len - marginPx) * 1.15));
+      const fadeEnd = Math.min(len, marginPx + fadeSpan * 0.18 * rRatio * remainingRatio);
       const fadeStart = Math.max(0, fadeEnd - fadeSpan);
       for (let i = 0; i < len; i++) {
         const dist = len - 1 - i;

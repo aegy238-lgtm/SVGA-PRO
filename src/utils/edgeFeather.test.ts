@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MAX_EDGE_FEATHER_MARGIN_PCT,
+  clampEdgeFeatherMargin,
   compute1DFeatherProfile,
   applyFeatherToRgbaPixels,
   type EdgeFeatherConfig,
@@ -60,3 +62,29 @@ test('applyFeatherToRgbaPixels bakes bottom/top margin transparency directly int
   const lastPixelAlpha = rgba[(imgH - 1) * imgW * 4 + 3];
   assert.equal(lastPixelAlpha, 0); // Completely transparent at bottom
 });
+
+test('clampEdgeFeatherMargin and compute1DFeatherProfile support margins up to 100%', () => {
+  assert.equal(MAX_EDGE_FEATHER_MARGIN_PCT, 100);
+  assert.equal(clampEdgeFeatherMargin(50), 50);
+  assert.equal(clampEdgeFeatherMargin(85), 85);
+  assert.equal(clampEdgeFeatherMargin(100), 100);
+  assert.equal(clampEdgeFeatherMargin(120), 100);
+  assert.equal(clampEdgeFeatherMargin(-10), 0);
+
+  // At 80% top margin, top 60%+ is completely transparent (0) while bottom 10% remains opaque (1)
+  const prof80 = compute1DFeatherProfile(100, 80, 0, 100, false);
+  assert.equal(prof80[0], 0);
+  assert.equal(prof80[60], 0);
+  assert.equal(prof80[95], 1);
+
+  // At 100% top or bottom margin, the entire profile is 0 (100% cropped/transparent)
+  const prof100Top = compute1DFeatherProfile(100, 100, 0, 150, false);
+  for (let i = 0; i < 100; i++) {
+    assert.equal(prof100Top[i], 0);
+  }
+  const prof100Bottom = compute1DFeatherProfile(100, 0, 100, 150, false);
+  for (let i = 0; i < 100; i++) {
+    assert.equal(prof100Bottom[i], 0);
+  }
+});
+

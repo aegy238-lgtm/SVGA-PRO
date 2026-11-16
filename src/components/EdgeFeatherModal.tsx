@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   EdgeFeatherConfig,
+  MAX_EDGE_FEATHER_MARGIN_PCT,
+  clampEdgeFeatherMargin,
   applyEdgeFeatherToContext,
   formatDurationSec,
 } from '../utils/edgeFeather';
@@ -285,16 +287,16 @@ export default function EdgeFeatherModal({
 
       if (draggingSide === 'top') {
         const pct = Math.round(((e.clientY - rect.top) / rect.height) * 100);
-        setTopMargin(Math.max(0, Math.min(50, pct)));
+        setTopMargin(clampEdgeFeatherMargin(pct));
       } else if (draggingSide === 'bottom') {
         const pct = Math.round(((rect.bottom - e.clientY) / rect.height) * 100);
-        setBottomMargin(Math.max(0, Math.min(50, pct)));
+        setBottomMargin(clampEdgeFeatherMargin(pct));
       } else if (draggingSide === 'left') {
         const pct = Math.round(((e.clientX - rect.left) / rect.width) * 100);
-        setLeftMargin(Math.max(0, Math.min(50, pct)));
+        setLeftMargin(clampEdgeFeatherMargin(pct));
       } else if (draggingSide === 'right') {
         const pct = Math.round(((rect.right - e.clientX) / rect.width) * 100);
-        setRightMargin(Math.max(0, Math.min(50, pct)));
+        setRightMargin(clampEdgeFeatherMargin(pct));
       }
     };
 
@@ -545,8 +547,7 @@ export default function EdgeFeatherModal({
 
   if (!open) return null;
 
-  const clampMargin = (val: number) =>
-    Math.max(0, Math.min(50, Number.isFinite(val) ? Math.round(val) : 0));
+  const clampMargin = (val: number) => clampEdgeFeatherMargin(val);
   const clampRadius = (val: number) =>
     Math.max(0, Math.min(200, Number.isFinite(val) ? Math.round(val) : 0));
 
@@ -1856,7 +1857,7 @@ export default function EdgeFeatherModal({
                         id={item.id}
                         type="number"
                         min={0}
-                        max={50}
+                        max={MAX_EDGE_FEATHER_MARGIN_PCT}
                         value={item.val}
                         onChange={(e) => item.set(clampMargin(Number(e.target.value)))}
                         style={{

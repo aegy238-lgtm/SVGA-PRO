@@ -57,6 +57,13 @@ import {
   composerLayerBoxToMaskFrame,
   parseHexColorRgb,
 } from '../utils/vapDynamicMaskPacking';
+import {
+  detectVapEmbeddedFramesFromRgba,
+  extractEmbeddedFrameRgbaCrop,
+  applyEmbeddedFrameOverridesToRgba,
+  VapDetectedEmbeddedFrame,
+  VapEmbeddedFrameOverride,
+} from '../utils/vapFrameLayerDetection';
 import { removeImageBackgroundData } from '../utils/batchImageOps';
 import { computeAffineMatrix2D, AppliedWatermarkLayer } from '../utils/watermark';
 import {
@@ -3129,15 +3136,104 @@ export function initMotionToolsFixed() {
     if ((window as any).__chromaKey?.enabled) {
       applyChromaKeyToRgbaBuffer(d, cw, ch, (window as any).__chromaKey);
     }
-    x.putImageData(C, 0, 0);
 
-    // Render VAP / YYEVA Dynamic Mask Slots (Image & Text/Name masks)
     const isMainSource = S && S.meta === M;
+    const isExporting = Boolean((window as any).__vapExportingFrames || window.__busy);
+    const showGuides = !isExporting && Boolean((window as any).__vapShowMaskGuides);
     const effRes =
       isMainSource && typeof (window as any).__getEffectiveVapSlotsAndPlacements === 'function'
         ? (window as any).__getEffectiveVapSlotsAndPlacements(S, M, m)
         : null;
     const slots = effRes ? effRes.slots : M.dynamicSlots;
+
+    // Auto-detect embedded video frames (Avatar Frame, Name Banner Frame, Main Scene) once an active frame is rendered
+    if (
+      isMainSource &&
+      !isExporting &&
+      (!Array.isArray(S._detectedEmbeddedFrames) || S._detectedEmbeddedFrames.length === 0) &&
+      typeof (window as any).__ingestDetectedVapEmbeddedFramesFromRgba === 'function'
+    ) {
+      let sampledVisible = 0;
+      const stride = 16; // every 4th pixel
+      for (let i = 0; i < d.length; i += stride) {
+        if (d[i + 3] >= 32 && (d[i] >= 12 || d[i + 1] >= 12 || d[i + 2] >= 12 || d[i + 3] >= 70)) {
+          sampledVisible++;
+        }
+      }
+      if (sampledVisible >= Math.max(24, (cw * ch * 0.015) / 4)) {
+        (window as any).__ingestDetectedVapEmbeddedFramesFromRgba(S, d, cw, ch, slots || []);
+      }
+    }
+
+    // Apply any user overrides (hide/erase, move/scale, or clear for replacement) on detected embedded video frames
+    if (
+      isMainSource &&
+      Array.isArray(S._detectedEmbeddedFrames) &&
+      S._detectedEmbeddedFrames.length > 0 &&
+      S._embeddedFrameOverrides
+    ) {
+      applyEmbeddedFrameOverridesToRgba(d, cw, ch, S._detectedEmbeddedFrames, S._embeddedFrameOverrides);
+    }
+
+    x.putImageData(C, 0, 0);
+
+    // Draw replacement images or guide boxes for detected embedded video frames
+    if (isMainSource && Array.isArray(S._detectedEmbeddedFrames) && S._detectedEmbeddedFrames.length > 0) {
+      const fOverrides: Record<string, VapEmbeddedFrameOverride> = S._embeddedFrameOverrides || {};
+      for (const df of S._detectedEmbeddedFrames as VapDetectedEmbeddedFrame[]) {
+        const ov = fOverrides[df.id];
+        if (ov?.hidden) continue;
+        const [fx, fy, fw, fh] = Array.isArray(ov?.customFrame)
+          ? ov.customFrame
+          : [
+              Math.round(df.frame[0] + (Number(ov?.offsetX) || 0)),
+              Math.round(df.frame[1] + (Number(ov?.offsetY) || 0)),
+              Math.max(4, Math.round(df.frame[2] * (Number(ov?.scale) > 0 ? Number(ov.scale) : 1))),
+              Math.max(4, Math.round(df.frame[3] * (Number(ov?.scale) > 0 ? Number(ov.scale) : 1))),
+            ];
+
+        if (ov?.replacementSource) {
+          x.save();
+          x.imageSmoothingEnabled = true;
+          x.imageSmoothingQuality = 'high';
+          x.drawImage(ov.replacementSource, fx, fy, fw, fh);
+          x.restore();
+        }
+
+        const isSelFrame = String((window as any).__selectedVapMaskId || '') === String(df.id);
+        if (showGuides && (df.isIsolatedFrame || isSelFrame)) {
+          x.save();
+          x.strokeStyle = isSelFrame ? '#fbbf24' : '#10b981';
+          x.lineWidth = Math.max(isSelFrame ? 3 : 2, Math.round(cw / (isSelFrame ? 200 : 280)));
+          x.setLineDash(isSelFrame ? [] : [5, 3]);
+          x.strokeRect(fx + 1, fy + 1, Math.max(2, fw - 2), Math.max(2, fh - 2));
+          x.setLineDash([]);
+
+          const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
+          x.fillStyle = isSelFrame ? '#fbbf24' : '#10b981';
+          x.strokeStyle = '#064e3b';
+          x.lineWidth = 2;
+          x.fillRect(fx + fw - hs, fy + fh - hs, hs, hs);
+          x.strokeRect(fx + fw - hs, fy + fh - hs, hs, hs);
+
+          const label = `🖼️ ${df.labelAr}`;
+          const fontSize = Math.max(10, Math.min(16, Math.round(cw / 45)));
+          x.font = `bold ${fontSize}px system-ui, sans-serif`;
+          const tw = x.measureText(label).width + 10;
+          const th = fontSize + 6;
+          const bx = Math.max(0, Math.min(cw - tw, fx));
+          const by = Math.max(0, fy - th - 2);
+          x.fillStyle = isSelFrame ? 'rgba(217, 119, 6, 0.95)' : 'rgba(5, 150, 105, 0.92)';
+          x.fillRect(bx, by, tw, th);
+          x.fillStyle = '#fff';
+          x.textBaseline = 'middle';
+          x.fillText(label, bx + 5, by + th / 2);
+          x.restore();
+        }
+      }
+    }
+
+    // Render VAP / YYEVA Dynamic Mask Slots (Image & Text/Name masks)
     if (Array.isArray(slots) && slots.length > 0) {
       const fps = Math.max(1, M.fps || S?.fps || 30);
       const totalFrames = Math.max(1, M.frames || S?.n || 1);
@@ -3145,8 +3241,6 @@ export function initMotionToolsFixed() {
       const curFrameIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor((curTime + 0.0005) * fps)));
       const placements = effRes ? effRes.placements(curFrameIdx) : resolveDynamicFramePlacements(M, curFrameIdx);
       const replacements = (isMainSource ? S?._vapSlotReplacements : null) || {};
-      const isExporting = Boolean((window as any).__vapExportingFrames || window.__busy);
-      const showGuides = !isExporting && Boolean((window as any).__vapShowMaskGuides);
       const allowBake = !isExporting || (window as any).__bakeReplacedVapSlotsInRender !== false;
 
       if (placements.length > 0) {
@@ -4070,6 +4164,31 @@ export function initMotionToolsFixed() {
             }
           } else {
             (window as any).__syncNonVapMaskStageOverlay?.(S);
+          }
+          (window as any).__refreshVapDynamicMasksPanel?.(S);
+        }
+      }
+    }
+    const detectedFrames: VapDetectedEmbeddedFrame[] = S?._detectedEmbeddedFrames || [];
+    if (detectedFrames.length > 0) {
+      const df = detectedFrames.find((f) => f.assetKey === k || f.id === k);
+      if (df) {
+        S._embeddedFrameOverrides = S._embeddedFrameOverrides || {};
+        const im = await imgOf(u);
+        if (im) {
+          S._embeddedFrameOverrides[df.id] = {
+            ...(S._embeddedFrameOverrides[df.id] || { id: df.id }),
+            hidden: false,
+            replacementDataUrl: u,
+            replacementSource: im,
+          };
+          S._hasMaskEdits = true;
+          if (S.vid && S._alphaCanvas && S.meta) {
+            const x = S._alphaCanvas.getContext('2d');
+            if (x) {
+              x.clearRect(0, 0, S._alphaCanvas.width, S._alphaCanvas.height);
+              vapDraw(x, S._alphaCanvas.width, S._alphaCanvas.height, S.vid, S.meta);
+            }
           }
           (window as any).__refreshVapDynamicMasksPanel?.(S);
         }
@@ -6288,10 +6407,13 @@ export function initMotionToolsFixed() {
 
     function updateInfoDynamicMasksSummary(source: any) {
       const slots = getEffectiveMaskSlots(source);
+      const detectedFrames: VapDetectedEmbeddedFrame[] = source?._detectedEmbeddedFrames || [];
       const infoBox = document.getElementById('info');
       if (!infoBox) return;
       const existingLine = infoBox.querySelector('[data-dynamic-masks-info="1"]');
       if (existingLine) existingLine.remove();
+      const existingFramesLine = infoBox.querySelector('[data-embedded-frames-info="1"]');
+      if (existingFramesLine) existingFramesLine.remove();
       if (slots.length > 0) {
         const div = document.createElement('div');
         div.setAttribute('data-dynamic-masks-info', '1');
@@ -6299,6 +6421,15 @@ export function initMotionToolsFixed() {
           .map((s) => `${s.srcTag} (${s.isTextSlot ? 'Text' : 'Image'} ${s.w}×${s.h})`)
           .join(' + ');
         div.innerHTML = `<b>Dynamic Masks:</b> ${label}`;
+        infoBox.appendChild(div);
+      }
+      if (detectedFrames.length > 0) {
+        const div = document.createElement('div');
+        div.setAttribute('data-embedded-frames-info', '1');
+        const label = detectedFrames
+          .map((df) => `${df.labelAr} (${df.frame[2]}×${df.frame[3]})`)
+          .join(' + ');
+        div.innerHTML = `<b>Video Frames:</b> ${label}`;
         infoBox.appendChild(div);
       }
     }
@@ -6447,6 +6578,159 @@ export function initMotionToolsFixed() {
       emitVapMasksChange(source);
     };
 
+    (window as any).__updateVapEmbeddedFrameBox = (
+      frameId: string,
+      box: [number, number, number, number]
+    ) => {
+      const source = S;
+      if (!source) return;
+      const sw = Math.max(16, source.w || 300);
+      const sh = Math.max(16, source.h || 300);
+      const nw = Math.max(8, Math.min(sw, Math.round(box[2])));
+      const nh = Math.max(8, Math.min(sh, Math.round(box[3])));
+      const nx = Math.max(0, Math.min(sw - nw, Math.round(box[0])));
+      const ny = Math.max(0, Math.min(sh - nh, Math.round(box[1])));
+      source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
+      source._embeddedFrameOverrides[frameId] = {
+        ...(source._embeddedFrameOverrides[frameId] || { id: frameId }),
+        customFrame: [nx, ny, nw, nh],
+        offsetX: 0,
+        offsetY: 0,
+        scale: 1,
+      };
+      source._hasMaskEdits = true;
+      const dimEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-frame-dims="${frameId}"]`);
+      if (dimEl) {
+        dimEl.textContent = `${nw}×${nh} · (${nx},${ny})`;
+      }
+      repaintVapStageNow(source);
+    };
+
+    function ingestDetectedVapEmbeddedFramesFromRgba(
+      source: any,
+      rgba: Uint8ClampedArray | Uint8Array,
+      cw: number,
+      ch: number,
+      slots: any[]
+    ): VapDetectedEmbeddedFrame[] {
+      if (!source || !rgba || cw < 16 || ch < 16) return [];
+      const detected = detectVapEmbeddedFramesFromRgba(rgba, cw, ch, slots || []);
+      if (!detected.length) return [];
+
+      source._detectedEmbeddedFrames = detected;
+      source._embeddedFrameThumbnails = source._embeddedFrameThumbnails || {};
+      source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
+
+      for (const k of Object.keys(A)) {
+        if (k.startsWith('vap_frame_')) delete A[k];
+      }
+
+      for (const df of detected) {
+        const crop = extractEmbeddedFrameRgbaCrop(rgba, cw, ch, df.frame);
+        const cv = mk(crop.width, crop.height);
+        const ctx = cv.getContext('2d')!;
+        ctx.putImageData(new ImageData(crop.rgba, crop.width, crop.height), 0, 0);
+        const cropUrl = cv.toDataURL('image/png');
+        source._embeddedFrameThumbnails[df.id] = cropUrl;
+        const ov = source._embeddedFrameOverrides[df.id];
+        A[df.assetKey] = ov?.replacementDataUrl || cropUrl;
+      }
+
+      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+      updateInfoDynamicMasksSummary(source);
+      if (!source._refreshingEmbeddedFramesUI) {
+        source._refreshingEmbeddedFramesUI = true;
+        requestAnimationFrame(() => {
+          source._refreshingEmbeddedFramesUI = false;
+          if (source === S) {
+            setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+          }
+        });
+      }
+      return detected;
+    }
+    (window as any).__ingestDetectedVapEmbeddedFramesFromRgba = ingestDetectedVapEmbeddedFramesFromRgba;
+
+    async function scanVapEmbeddedVideoFrames(
+      source: any,
+      m: HTMLVideoElement | null | undefined,
+      clamped: any,
+      forceToast = false
+    ): Promise<VapDetectedEmbeddedFrame[]> {
+      const M = clamped || source?.meta;
+      if (!source || !m || !M || !Array.isArray(M.c) || !Array.isArray(M.a)) return [];
+      const [cx, cy, cw, ch] = M.c;
+      const [ax, ay, aw, ah] = M.a;
+      if (cw < 16 || ch < 16) return [];
+
+      const extractAtCurrentTime = (): { rgba: Uint8ClampedArray; visibleCount: number } | null => {
+        if (m.readyState < 2) return null;
+        const sc = mk(cw, ch);
+        const sx = sc.getContext('2d', { willReadFrequently: true })!;
+        sx.clearRect(0, 0, cw, ch);
+        sx.drawImage(m, cx, cy, cw, ch, 0, 0, cw, ch);
+        const C = sx.getImageData(0, 0, cw, ch);
+        sx.clearRect(0, 0, cw, ch);
+        sx.drawImage(m, ax, ay, aw, ah, 0, 0, cw, ch);
+        const A_alpha = sx.getImageData(0, 0, cw, ch);
+        const d = C.data;
+        let visibleCount = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const a = A_alpha.data[i];
+          d[i + 3] = a;
+          if (a > 0 && a < 255) {
+            const k = 255 / a;
+            d[i] = Math.min(255, d[i] * k);
+            d[i + 1] = Math.min(255, d[i + 1] * k);
+            d[i + 2] = Math.min(255, d[i + 2] * k);
+          }
+          if (a >= 32 && (d[i] >= 12 || d[i + 1] >= 12 || d[i + 2] >= 12 || a >= 70)) {
+            visibleCount++;
+          }
+        }
+        return { rgba: d, visibleCount };
+      };
+
+      let snap = extractAtCurrentTime();
+      const minPixels = Math.max(80, cw * ch * 0.015);
+      if ((!snap || snap.visibleCount < minPixels) && !forceToast && Number.isFinite(m.duration) && m.duration > 0.15) {
+        const origTime = m.currentTime;
+        const wasPaused = m.paused;
+        for (const ratio of [0.35, 0.55, 0.2]) {
+          try {
+            await seekVideo(m, Math.min(m.duration - 0.05, Math.max(0.05, m.duration * ratio)));
+            const candidate = extractAtCurrentTime();
+            if (candidate && (!snap || candidate.visibleCount > snap.visibleCount)) {
+              snap = candidate;
+            }
+            if (snap && snap.visibleCount >= minPixels) break;
+          } catch (_) {}
+        }
+        try {
+          await seekVideo(m, origTime);
+          if (!wasPaused) void m.play().catch(() => {});
+        } catch (_) {}
+      }
+
+      if (!snap || snap.visibleCount === 0) {
+        if (forceToast) toast('⚠️ اللقطة الحالية فارغة — قدم الفيديو قليلاً ثم اضغط فحص الإطارات');
+        return [];
+      }
+
+      const slots = getEffectiveMaskSlots(source);
+      const detected = ingestDetectedVapEmbeddedFramesFromRgba(source, snap.rgba, cw, ch, slots);
+      if (forceToast) {
+        const isolatedCount = detected.filter((d) => d.isIsolatedFrame).length;
+        toast(
+          detected.length > 0
+            ? `✅ تم التعرف على ${detected.length} من إطارات وطبقات الفيديو (${isolatedCount} إطار منفصل)`
+            : 'لم يتم العثور على إطارات منفصلة في هذه اللقطة'
+        );
+      }
+      return detected;
+    }
+    (window as any).__scanVapEmbeddedVideoFrames = scanVapEmbeddedVideoFrames;
+
     function setupVapDynamicMasksUI(source: any, m: HTMLVideoElement | null | undefined, clamped: any) {
       const panel = document.getElementById('vapDynamicMasksPanel');
       if (!source) {
@@ -6462,22 +6746,31 @@ export function initMotionToolsFixed() {
       source._customMaskCanvases = source._customMaskCanvases || {};
       source._customMaskDataUrls = source._customMaskDataUrls || {};
       source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      source._detectedEmbeddedFrames = source._detectedEmbeddedFrames || [];
+      source._embeddedFrameThumbnails = source._embeddedFrameThumbnails || {};
+      source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
       if (!(source._deletedSlotIds instanceof Set)) source._deletedSlotIds = new Set();
       if (source._preserveMasksOnExport === undefined) source._preserveMasksOnExport = true;
       if (source._bakeReplacedSlots === undefined) source._bakeReplacedSlots = true;
 
       const slots = getEffectiveMaskSlots(source);
+      const detectedFrames: VapDetectedEmbeddedFrame[] = source._detectedEmbeddedFrames || [];
       const isVapVideo = Boolean(clamped || source.meta);
 
       if (isVapVideo) {
         for (const k of Object.keys(A)) {
-          if (k.startsWith('mask_')) delete A[k];
+          if (k.startsWith('mask_') || k.startsWith('vap_frame_')) delete A[k];
         }
         for (const slot of slots) {
           const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
           source._vapOrigSilhouettes[slot.srcId] = silUrl;
           const rep = source._vapSlotReplacements[slot.srcId];
           A[slot.assetKey] = rep && rep.active && rep.dataUrl ? rep.dataUrl : silUrl;
+        }
+        for (const df of detectedFrames) {
+          const ov = source._embeddedFrameOverrides[df.id];
+          const thumbUrl = ov?.replacementDataUrl || source._embeddedFrameThumbnails[df.id];
+          if (thumbUrl) A[df.assetKey] = thumbUrl;
         }
         renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
       } else {
@@ -6487,26 +6780,34 @@ export function initMotionToolsFixed() {
         }
       }
 
-      if (m && m.readyState < 2 && !source._vapSilhouetteWaitHooked && slots.length > 0) {
-        source._vapSilhouetteWaitHooked = true;
-        const refreshSilhouettes = () => {
-          m.removeEventListener('loadeddata', refreshSilhouettes);
-          m.removeEventListener('canplay', refreshSilhouettes);
+      if (m && isVapVideo && !source._vapEmbeddedFramesScanHooked) {
+        source._vapEmbeddedFramesScanHooked = true;
+        const triggerInitialFrameScan = () => {
+          m.removeEventListener('loadeddata', triggerInitialFrameScan);
+          m.removeEventListener('canplay', triggerInitialFrameScan);
           if (source !== S || m.readyState < 2) return;
           for (const slot of getEffectiveMaskSlots(source)) {
             const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
             source._vapOrigSilhouettes[slot.srcId] = silUrl;
             const rep = source._vapSlotReplacements[slot.srcId];
             if (!rep || !rep.active) {
-              if (isVapVideo) A[slot.assetKey] = silUrl;
+              A[slot.assetKey] = silUrl;
               const thumbEl = document.querySelector(`#vapDynamicMasksPanel [data-vap-thumb="${slot.srcId}"]`) as HTMLImageElement | null;
               if (thumbEl) thumbEl.src = silUrl;
             }
           }
-          if (isVapVideo) renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+          if (!source._detectedEmbeddedFrames || source._detectedEmbeddedFrames.length === 0) {
+            void scanVapEmbeddedVideoFrames(source, m, clamped || source.meta, false);
+          } else {
+            renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+          }
         };
-        m.addEventListener('loadeddata', refreshSilhouettes);
-        m.addEventListener('canplay', refreshSilhouettes);
+        if (m.readyState >= 2) {
+          setTimeout(triggerInitialFrameScan, 30);
+        } else {
+          m.addEventListener('loadeddata', triggerInitialFrameScan);
+          m.addEventListener('canplay', triggerInitialFrameScan);
+        }
       }
 
       updateInfoDynamicMasksSummary(source);
@@ -6517,6 +6818,10 @@ export function initMotionToolsFixed() {
       const guidesOn = Boolean((window as any).__vapShowMaskGuides);
       const selectedId = String((window as any).__selectedVapMaskId || '');
       const addFormOpen = Boolean(source._vapAddFormOpen);
+      const activeTab: 'all' | 'frames' | 'masks' = source._vapPanelTab || 'all';
+      const showFramesSection = isVapVideo && (activeTab === 'all' || activeTab === 'frames');
+      const showMasksSection = activeTab === 'all' || activeTab === 'masks';
+
       const draftTagDefault = (() => {
         const existingTags = new Set(slots.map((s) => s.srcTag));
         let idx = 1;
@@ -6532,20 +6837,38 @@ export function initMotionToolsFixed() {
 
       panel.innerHTML = `
         <div style="
-          background: rgba(19, 17, 32, 0.94);
+          background: rgba(19, 17, 32, 0.95);
           border: 1px solid rgba(168, 85, 247, 0.35);
           border-radius: 12px;
           padding: 9px;
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
         ">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px;">
-            <div style="font-size:12px;font-weight:800;color:#e9d5ff;display:flex;align-items:center;gap:5px;">
-              <span>🎭 الأقنعة</span>
-              <span data-vap-slots-count style="background:rgba(168,85,247,0.22);color:#d8b4fe;padding:1px 6px;border-radius:6px;font-size:10px;">${slots.length}</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:5px;flex-wrap:wrap;">
+            <div style="font-size:11.5px;font-weight:800;color:#e9d5ff;display:flex;align-items:center;gap:5px;">
+              <span>🎭 إطارات وأقنعة الفيديو</span>
+              <span data-vap-slots-count style="background:rgba(168,85,247,0.22);color:#d8b4fe;padding:1px 6px;border-radius:6px;font-size:10px;">${slots.length + detectedFrames.length}</span>
             </div>
             <div style="display:flex;gap:4px;align-items:center;">
+              ${
+                isVapVideo
+                  ? `<button type="button" id="vapRescanFramesBtn" style="
+                      padding: 3px 7px;
+                      font-size: 10px;
+                      font-weight: 700;
+                      border-radius: 7px;
+                      cursor: pointer;
+                      border: 1px solid rgba(16, 185, 129, 0.5);
+                      background: rgba(16, 185, 129, 0.16);
+                      color: #6ee7b7;
+                      white-space: nowrap;
+                    " title="التعرف على الإطارات والطبقات المحطوطة داخل الفيديو في هذه اللقطة">🔍 فحص الإطارات</button>`
+                  : ''
+              }
               <button type="button" id="vapToggleAddMaskBtn" style="
-                padding: 3px 8px;
-                font-size: 10.5px;
+                padding: 3px 7px;
+                font-size: 10px;
                 font-weight: 700;
                 border-radius: 7px;
                 cursor: pointer;
@@ -6555,7 +6878,7 @@ export function initMotionToolsFixed() {
                 white-space: nowrap;
               " title="إضافة قناع جديد">+ قناع</button>
               ${
-                slots.length > 0
+                slots.length > 0 || detectedFrames.length > 0
                   ? `<button type="button" id="vapToggleMaskGuidesBtn" style="
                       padding: 3px 7px;
                       font-size: 11px;
@@ -6564,18 +6887,20 @@ export function initMotionToolsFixed() {
                       border: 1px solid ${guidesOn ? '#38bdf8' : 'rgba(255,255,255,0.14)'};
                       background: ${guidesOn ? 'rgba(56, 189, 248, 0.2)' : '#1a1a28'};
                       color: ${guidesOn ? '#7dd3fc' : '#cbd5e1'};
-                    " title="${guidesOn ? 'إخفاء حدود الأقنعة' : 'إظهار حدود الأقنعة للتحريك بالماوس'}">👁️</button>`
+                    " title="${guidesOn ? 'إخفاء حدود الإطارات والأقنعة' : 'إظهار حدود الإطارات والأقنعة للتحريك بالماوس'}">👁️</button>`
                   : ''
               }
             </div>
           </div>
 
           ${
-            slots.length > 0
-              ? `<div style="font-size:10px;color:#94a3b8;margin-bottom:6px;line-height:1.35;">
-                  اسحب القناع بالماوس على الشاشة لتحريكه أو من الزاوية لتكبيره، واستخدم ⬆️⬇️ لوضعه خلف أو أمام أي قناع.
+            isVapVideo
+              ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:#11111c;padding:3px;border-radius:8px;border:1px solid rgba(255,255,255,0.07);">
+                  <button type="button" data-vap-tab-btn="all" style="padding:4px 4px;font-size:10px;font-weight:700;border-radius:6px;border:none;cursor:pointer;background:${activeTab === 'all' ? 'rgba(139,92,246,0.32)' : 'transparent'};color:${activeTab === 'all' ? '#f3e8ff' : '#94a3b8'};">الكل (${slots.length + detectedFrames.length})</button>
+                  <button type="button" data-vap-tab-btn="frames" style="padding:4px 4px;font-size:10px;font-weight:700;border-radius:6px;border:none;cursor:pointer;background:${activeTab === 'frames' ? 'rgba(16,185,129,0.28)' : 'transparent'};color:${activeTab === 'frames' ? '#6ee7b7' : '#94a3b8'};">🖼️ الإطارات (${detectedFrames.length})</button>
+                  <button type="button" data-vap-tab-btn="masks" style="padding:4px 4px;font-size:10px;font-weight:700;border-radius:6px;border:none;cursor:pointer;background:${activeTab === 'masks' ? 'rgba(168,85,247,0.32)' : 'transparent'};color:${activeTab === 'masks' ? '#e9d5ff' : '#94a3b8'};">🎭 الأقنعة (${slots.length})</button>
                 </div>`
-              : `<div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">أضف قناعاً أو حوّل أي صورة مضافة من قائمة الطبقات إلى قناع.</div>`
+              : ''
           }
 
           <div id="vapAddMaskForm" style="
@@ -6586,7 +6911,6 @@ export function initMotionToolsFixed() {
             border: 1px dashed rgba(168, 85, 247, 0.55);
             border-radius: 9px;
             padding: 8px;
-            margin-bottom: 8px;
           ">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">
               <select id="vapNewMaskType" aria-label="نوع القناع" style="padding:4px 6px;font-size:11px;border-radius:6px;background:#161622;border:1px solid #2e2e44;color:#fff;">
@@ -6626,158 +6950,495 @@ export function initMotionToolsFixed() {
             ">✅ إضافة القناع</button>
           </div>
 
-          <div style="display:flex;flex-direction:column;gap:6px;">
-            ${displaySlots
-              .map((slot: any, visIdx: number) => {
-                const rep = source._vapSlotReplacements[slot.srcId] || {};
-                const isActive = Boolean(rep.active);
-                const isSelected = selectedId === String(slot.srcId);
-                const thumbSrc =
-                  (rep.active && rep.dataUrl) ||
-                  source._vapOrigSilhouettes?.[slot.srcId] ||
-                  A[slot.assetKey] ||
-                  '';
-                const isTxt = Boolean(slot.isTextSlot);
-                const typeBadgeColor = isTxt ? '#38bdf8' : '#c084fc';
-                const fitMode = rep.fitMode || slot.fitType || 'fitXY';
-                const useMask = rep.useMask !== false;
-                const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
-                const geomOpen = Boolean(source._openGeomSlotIds?.[slot.srcId]);
-                const currentShape = slot.shapePreset || (source._customMaskCanvases?.[slot.srcId] ? 'customImage' : isTxt ? 'roundedRect' : 'circle');
-                const zVal = Number(slot.z ?? 0);
-                const isBehindProj = zVal < 0;
-                const canMoveUp = visIdx > 0;
-                const canMoveDown = visIdx < displaySlots.length - 1;
-                const currentFill = String((slot as any).fillColor || 'transparent');
-                const isColored = Boolean(parseHexColorRgb(currentFill));
+          ${
+            showFramesSection
+              ? `
+            <div style="
+              display:flex;
+              flex-direction:column;
+              gap:5px;
+              background:rgba(6, 24, 20, 0.55);
+              border:1px solid rgba(16, 185, 129, 0.28);
+              border-radius:9px;
+              padding:7px;
+            ">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+                <span style="font-size:10.5px;font-weight:800;color:#6ee7b7;display:flex;align-items:center;gap:4px;">
+                  <span>🖼️ إطارات وطبقات الفيديو (غير الأقنعة)</span>
+                  <span style="background:rgba(16,185,129,0.22);color:#a7f3d0;padding:0 5px;border-radius:5px;font-size:9.5px;">${detectedFrames.length}</span>
+                </span>
+              </div>
+              ${
+                detectedFrames.length === 0
+                  ? `<div style="font-size:10px;color:#94a3b8;padding:4px 2px;">اضغط <b>🔍 فحص الإطارات</b> للتعرف تلقائياً على إطار الصورة وإطار الاسم والطبقات المدمجة داخل الفيديو.</div>`
+                  : `<div style="display:flex;flex-direction:column;gap:5px;">
+                      ${detectedFrames
+                        .map((df) => {
+                          const ov: VapEmbeddedFrameOverride = source._embeddedFrameOverrides?.[df.id] || { id: df.id };
+                          const isHidden = Boolean(ov.hidden);
+                          const isReplaced = Boolean(ov.replacementDataUrl || ov.replacementSource);
+                          const isSel = selectedId === String(df.id);
+                          const fBox: [number, number, number, number] = Array.isArray(ov.customFrame)
+                            ? ov.customFrame
+                            : [
+                                Math.round(df.frame[0] + (Number(ov.offsetX) || 0)),
+                                Math.round(df.frame[1] + (Number(ov.offsetY) || 0)),
+                                Math.max(4, Math.round(df.frame[2] * (Number(ov.scale) > 0 ? Number(ov.scale) : 1))),
+                                Math.max(4, Math.round(df.frame[3] * (Number(ov.scale) > 0 ? Number(ov.scale) : 1))),
+                              ];
+                          const thumbUrl = ov.replacementDataUrl || source._embeddedFrameThumbnails?.[df.id] || A[df.assetKey] || '';
+                          const geomOpen = Boolean(source._openGeomFrameIds?.[df.id]);
+                          const kindBadge =
+                            df.kind === 'avatar_frame'
+                              ? 'إطار صورة'
+                              : df.kind === 'banner_frame'
+                                ? 'إطار اسم / شريط'
+                                : df.kind === 'main_scene'
+                                  ? 'المشهد الأساسي'
+                                  : 'طبقة فيديو';
+                          const badgeColor =
+                            df.kind === 'avatar_frame'
+                              ? '#34d399'
+                              : df.kind === 'banner_frame'
+                                ? '#38bdf8'
+                                : df.kind === 'main_scene'
+                                  ? '#a78bfa'
+                                  : '#fbbf24';
 
-                return `
-                  <div data-vap-slot-card="${slot.srcId}" style="
-                    background: ${isSelected ? 'rgba(251, 191, 36, 0.08)' : 'rgba(13, 13, 21, 0.92)'};
-                    border: 1px solid ${isSelected ? 'rgba(251, 191, 36, 0.7)' : isTxt ? 'rgba(56, 189, 248, 0.25)' : 'rgba(192, 132, 252, 0.25)'};
-                    border-radius: 9px;
-                    padding: 6px;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 5px;
-                    cursor: pointer;
-                    min-width: 0;
-                  ">
-                    <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-                      <div data-vap-upload-btn="${slot.srcId}" title="اضغط لرفع/استبدال صورة داخل القناع" style="
-                        width: 32px;
-                        height: 32px;
-                        border-radius: 6px;
-                        overflow: hidden;
-                        flex-shrink: 0;
-                        border: 1px solid ${isActive ? '#34d399' : 'rgba(255,255,255,0.14)'};
-                        background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 8px 8px;
-                        display: grid;
-                        place-items: center;
-                        cursor: pointer;
-                      ">
-                        <img data-vap-thumb="${slot.srcId}" src="${thumbSrc}" alt="${slot.srcTag}" style="max-width:100%;max-height:100%;object-fit:contain;" />
-                      </div>
-                      <div style="flex:1;min-width:0;">
-                        <div style="display:flex;align-items:center;gap:4px;min-width:0;">
-                          <span style="font-size:11px;font-weight:800;color:${isSelected ? '#fde68a' : '#f3f4f6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                            ${slot.srcTag}
-                          </span>
-                          ${isActive ? `<span style="width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;" title="تم استبدال المحتوى وسيُحفظ في التصدير"></span>` : ''}
-                        </div>
-                        <div style="font-size:9px;color:${typeBadgeColor};font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-vap-dims-label="${slot.srcId}">
-                          ${isTxt ? 'اسم' : 'صورة'} · ${Math.round(fRect[2])}×${Math.round(fRect[3])} · (${Math.round(fRect[0])},${Math.round(fRect[1])})
-                        </div>
-                      </div>
-                      <button type="button" data-vap-delete-btn="${slot.srcId}" title="حذف القناع" aria-label="حذف القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.12);color:#fca5a5;font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center;">×</button>
-                    </div>
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:3px;">
-                      <div style="display:flex;align-items:center;gap:2px;">
-                        <button type="button" data-vap-zup-btn="${slot.srcId}" title="تقديم القناع للأمام" aria-label="تقديم القناع ${slot.srcTag}" ${!canMoveUp ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveUp ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveUp ? 'pointer' : 'default'};display:grid;place-items:center;">↑</button>
-                        <button type="button" data-vap-zdown-btn="${slot.srcId}" title="إنزال القناع للخلف" aria-label="إنزال القناع ${slot.srcTag}" ${!canMoveDown ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveDown ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveDown ? 'pointer' : 'default'};display:grid;place-items:center;">↓</button>
-                      </div>
-                      <button type="button" data-vap-behind-btn="${slot.srcId}" title="نقل خلف أو أمام المشروع الرئيسي" style="flex:1;min-width:0;height:20px;padding:0 4px;border-radius:5px;border:1px solid ${isBehindProj ? 'rgba(251,191,36,0.45)' : 'rgba(255,255,255,0.1)'};background:${isBehindProj ? 'rgba(251,191,36,0.16)' : '#1b1b2b'};color:${isBehindProj ? '#fde68a' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${isBehindProj ? '⬇️ خلف' : '⬆️ فوق'}</button>
-                      <button type="button" data-vap-fill-toggle="${slot.srcId}" title="${isColored ? 'تحويل الطبقة إلى شفاف (بدون لون)' : 'لون الطبقة الآن: شفاف — اضغط لتلوينها بمبي'}" style="height:20px;padding:0 5px;border-radius:5px;border:1px solid ${isColored ? currentFill : 'rgba(255,255,255,0.14)'};background:${isColored ? currentFill : 'repeating-conic-gradient(#2d2d40 0 25%, #191926 0 50%) 0 0 / 6px 6px'};color:${isColored ? '#fff' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;text-shadow:${isColored ? '0 1px 2px #000' : 'none'};">${isColored ? 'لون' : 'شفاف'}</button>
-                      <input type="color" data-vap-fill-picker="${slot.srcId}" value="${isColored ? currentFill : '#ec4899'}" title="اختر لون مخصص للطبقة (بمبي أو أي لون)" aria-label="لون الطبقة ${slot.srcTag}" style="width:20px;height:20px;padding:0;border:1px solid rgba(255,255,255,0.18);border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;" />
-                      <button type="button" data-vap-geom-toggle="${slot.srcId}" title="خيارات الشكل والمقاس والاستبدال" aria-label="إعدادات القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid ${geomOpen ? '#8b5cf6' : 'rgba(255,255,255,0.1)'};background:${geomOpen ? 'rgba(139,92,246,0.28)' : '#1b1b2b'};color:#e2e8f0;font-size:11px;cursor:pointer;display:grid;place-items:center;">⚙</button>
-                    </div>
+                          return `
+                            <div data-vap-frame-card="${df.id}" style="
+                              background: ${isSel ? 'rgba(16, 185, 129, 0.14)' : 'rgba(11, 15, 22, 0.94)'};
+                              border: 1px solid ${isSel ? '#fbbf24' : isHidden ? 'rgba(239,68,68,0.4)' : 'rgba(16, 185, 129, 0.32)'};
+                              border-radius: 8px;
+                              padding: 6px;
+                              display: flex;
+                              flex-direction: column;
+                              gap: 5px;
+                              cursor: pointer;
+                              opacity: ${isHidden ? '0.6' : '1'};
+                            ">
+                              <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                                <div data-vap-frame-replace="${df.id}" title="اضغط لاستبدال هذا الإطار بصورة من جهازك" style="
+                                  width: 34px;
+                                  height: 34px;
+                                  border-radius: 6px;
+                                  overflow: hidden;
+                                  flex-shrink: 0;
+                                  border: 1px solid ${isReplaced ? '#34d399' : 'rgba(255,255,255,0.16)'};
+                                  background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 8px 8px;
+                                  display: grid;
+                                  place-items: center;
+                                  cursor: pointer;
+                                ">
+                                  <img data-vap-frame-thumb="${df.id}" src="${thumbUrl}" alt="${df.labelAr}" style="max-width:100%;max-height:100%;object-fit:contain;" />
+                                </div>
+                                <div style="flex:1;min-width:0;">
+                                  <div style="display:flex;align-items:center;gap:4px;min-width:0;">
+                                    <span style="font-size:10.5px;font-weight:800;color:${isSel ? '#fde68a' : '#ecfdf5'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                                      ${df.labelAr}
+                                    </span>
+                                    ${isReplaced ? `<span style="font-size:8.5px;background:rgba(16,185,129,0.22);color:#6ee7b7;padding:0 4px;border-radius:4px;">مستبدل</span>` : ''}
+                                  </div>
+                                  <div style="font-size:9px;color:${badgeColor};font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-vap-frame-dims="${df.id}">
+                                    ${kindBadge} · ${Math.round(fBox[2])}×${Math.round(fBox[3])} · (${Math.round(fBox[0])},${Math.round(fBox[1])})
+                                  </div>
+                                </div>
+                              </div>
 
-                    ${
-                      isTxt
-                        ? `
-                      <div style="display:flex;gap:4px;align-items:center;">
-                        <input
-                          type="text"
-                          data-vap-txt-input="${slot.srcId}"
-                          placeholder="اكتب الاسم (اضغط Enter)..."
-                          value="${rep.text ? String(rep.text).replace(/"/g, '&quot;') : ''}"
-                          style="flex:1;min-width:0;padding:4px 7px;font-size:11px;border-radius:6px;border:1px solid #2e2e42;background:#141420;color:#fff;"
-                        />
-                        <input
-                          type="color"
-                          data-vap-txt-color="${slot.srcId}"
-                          value="${rep.textColor || slot.color || '#ffffff'}"
-                          title="لون النص"
-                          style="width:24px;height:24px;padding:0;border:1px solid #2e2e42;border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;"
-                        />
-                      </div>
-                    `
-                        : ''
-                    }
+                              <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;">
+                                <button type="button" data-vap-frame-replace-btn="${df.id}" title="استبدال هذا الإطار بصورة شفافة PNG" style="flex:1;height:21px;padding:0 5px;border-radius:5px;border:1px solid rgba(16,185,129,0.4);background:rgba(16,185,129,0.16);color:#a7f3d0;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">📁 استبدال</button>
+                                <button type="button" data-vap-frame-dl="${df.id}" title="تنزيل هذا الإطار كصورة PNG شفافة" style="height:21px;padding:0 6px;border-radius:5px;border:1px solid rgba(56,189,248,0.35);background:rgba(14,165,233,0.15);color:#bae6fd;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">⬇ PNG</button>
+                                <button type="button" data-vap-frame-hide="${df.id}" title="${isHidden ? 'إظهار الإطار في الفيديو' : 'إخفاء/مسح هذا الإطار من الفيديو'}" style="height:21px;padding:0 6px;border-radius:5px;border:1px solid ${isHidden ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.12)'};background:${isHidden ? 'rgba(239,68,68,0.2)' : '#1b1b2b'};color:${isHidden ? '#fca5a5' : '#cbd5e1'};font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">${isHidden ? '🚫 مخفي' : '👁️ إخفاء'}</button>
+                                ${
+                                  df.isIsolatedFrame
+                                    ? `<button type="button" data-vap-frame-mkslot="${df.id}" title="إنشاء قناع ديناميكي مطابق داخل هذا الإطار" style="height:21px;padding:0 5px;border-radius:5px;border:1px solid rgba(168,85,247,0.4);background:rgba(139,92,246,0.18);color:#e9d5ff;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">+🎭 قناع</button>`
+                                    : ''
+                                }
+                                <button type="button" data-vap-frame-geom-toggle="${df.id}" title="تحريك وتغيير أبعاد الإطار" style="width:21px;height:21px;border-radius:5px;border:1px solid ${geomOpen ? '#10b981' : 'rgba(255,255,255,0.1)'};background:${geomOpen ? 'rgba(16,185,129,0.25)' : '#1b1b2b'};color:#e2e8f0;font-size:10px;cursor:pointer;display:grid;place-items:center;">⚙</button>
+                              </div>
 
-                    <div data-vap-geom-box="${slot.srcId}" style="
-                      display: ${geomOpen ? 'flex' : 'none'};
+                              <div data-vap-frame-geom-box="${df.id}" style="
+                                display: ${geomOpen ? 'flex' : 'none'};
+                                flex-direction: column;
+                                gap: 4px;
+                                padding: 5px;
+                                border-radius: 6px;
+                                background: rgba(8, 11, 16, 0.92);
+                                border: 1px solid rgba(16, 185, 129, 0.28);
+                              ">
+                                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
+                                  <label style="font-size:9px;color:#9ca3af;">X<input type="number" data-vap-frame-x="${df.id}" value="${Math.round(fBox[0])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                                  <label style="font-size:9px;color:#9ca3af;">Y<input type="number" data-vap-frame-y="${df.id}" value="${Math.round(fBox[1])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                                  <label style="font-size:9px;color:#9ca3af;">W<input type="number" data-vap-frame-w="${df.id}" value="${Math.round(fBox[2])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                                  <label style="font-size:9px;color:#9ca3af;">H<input type="number" data-vap-frame-h="${df.id}" value="${Math.round(fBox[3])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                                </div>
+                                <div style="display:flex;gap:4px;">
+                                  <button type="button" data-vap-frame-geom-save="${df.id}" style="flex:1;padding:3px 7px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid #10b981;background:rgba(16,185,129,0.22);color:#ecfdf5;cursor:pointer;">💾 حفظ المكان والمقاس</button>
+                                  <button type="button" data-vap-frame-reset="${df.id}" style="padding:3px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#fde68a;cursor:pointer;" title="استعادة الإطار الأصلي">↺ استعادة</button>
+                                </div>
+                              </div>
+                            </div>
+                          `;
+                        })
+                        .join('')}
+                    </div>`
+              }
+            </div>
+          `
+              : ''
+          }
+
+          ${
+            showMasksSection
+              ? `
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              ${
+                isVapVideo && activeTab === 'all'
+                  ? `<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 2px 0;">
+                      <span style="font-size:10.5px;font-weight:800;color:#d8b4fe;">🎭 الأقنعة الديناميكية (mFrame) (${slots.length})</span>
+                    </div>`
+                  : ''
+              }
+              ${
+                slots.length === 0
+                  ? `<div style="font-size:10px;color:#94a3b8;padding:2px;">لا توجد أقنعة مضافة حالياً — اضغط <b>+ قناع</b> أو <b>+🎭 قناع</b> من أي إطار أعلاه.</div>`
+                  : ''
+              }
+              ${displaySlots
+                .map((slot: any, visIdx: number) => {
+                  const rep = source._vapSlotReplacements[slot.srcId] || {};
+                  const isActive = Boolean(rep.active);
+                  const isSelected = selectedId === String(slot.srcId);
+                  const thumbSrc =
+                    (rep.active && rep.dataUrl) ||
+                    source._vapOrigSilhouettes?.[slot.srcId] ||
+                    A[slot.assetKey] ||
+                    '';
+                  const isTxt = Boolean(slot.isTextSlot);
+                  const typeBadgeColor = isTxt ? '#38bdf8' : '#c084fc';
+                  const fitMode = rep.fitMode || slot.fitType || 'fitXY';
+                  const useMask = rep.useMask !== false;
+                  const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
+                  const geomOpen = Boolean(source._openGeomSlotIds?.[slot.srcId]);
+                  const currentShape = slot.shapePreset || (source._customMaskCanvases?.[slot.srcId] ? 'customImage' : isTxt ? 'roundedRect' : 'circle');
+                  const zVal = Number(slot.z ?? 0);
+                  const isBehindProj = zVal < 0;
+                  const canMoveUp = visIdx > 0;
+                  const canMoveDown = visIdx < displaySlots.length - 1;
+                  const currentFill = String((slot as any).fillColor || 'transparent');
+                  const isColored = Boolean(parseHexColorRgb(currentFill));
+
+                  return `
+                    <div data-vap-slot-card="${slot.srcId}" style="
+                      background: ${isSelected ? 'rgba(251, 191, 36, 0.08)' : 'rgba(13, 13, 21, 0.92)'};
+                      border: 1px solid ${isSelected ? 'rgba(251, 191, 36, 0.7)' : isTxt ? 'rgba(56, 189, 248, 0.25)' : 'rgba(192, 132, 252, 0.25)'};
+                      border-radius: 9px;
+                      padding: 6px;
+                      display: flex;
                       flex-direction: column;
                       gap: 5px;
-                      padding: 6px;
-                      border-radius: 7px;
-                      background: rgba(9, 9, 16, 0.92);
-                      border: 1px solid rgba(168, 85, 247, 0.28);
+                      cursor: pointer;
+                      min-width: 0;
                     ">
-                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-                        <button type="button" data-vap-upload-btn-inner="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(168,85,247,0.45);background:rgba(139,92,246,0.2);color:#e9d5ff;cursor:pointer;">📁 صورة داخل القناع</button>
-                        <button type="button" data-vap-maskfile-btn="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(56,189,248,0.45);background:rgba(14,165,233,0.16);color:#bae6fd;cursor:pointer;">🎭 شكل القناع PNG</button>
+                      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                        <div data-vap-upload-btn="${slot.srcId}" title="اضغط لرفع/استبدال صورة داخل القناع" style="
+                          width: 32px;
+                          height: 32px;
+                          border-radius: 6px;
+                          overflow: hidden;
+                          flex-shrink: 0;
+                          border: 1px solid ${isActive ? '#34d399' : 'rgba(255,255,255,0.14)'};
+                          background: repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 8px 8px;
+                          display: grid;
+                          place-items: center;
+                          cursor: pointer;
+                        ">
+                          <img data-vap-thumb="${slot.srcId}" src="${thumbSrc}" alt="${slot.srcTag}" style="max-width:100%;max-height:100%;object-fit:contain;" />
+                        </div>
+                        <div style="flex:1;min-width:0;">
+                          <div style="display:flex;align-items:center;gap:4px;min-width:0;">
+                            <span style="font-size:11px;font-weight:800;color:${isSelected ? '#fde68a' : '#f3f4f6'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                              ${slot.srcTag}
+                            </span>
+                            ${isActive ? `<span style="width:6px;height:6px;border-radius:50%;background:#34d399;flex-shrink:0;" title="تم استبدال المحتوى وسيُحفظ في التصدير"></span>` : ''}
+                          </div>
+                          <div style="font-size:9px;color:${typeBadgeColor};font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" data-vap-dims-label="${slot.srcId}">
+                            ${isTxt ? 'اسم' : 'صورة'} · ${Math.round(fRect[2])}×${Math.round(fRect[3])} · (${Math.round(fRect[0])},${Math.round(fRect[1])})
+                          </div>
+                        </div>
+                        <button type="button" data-vap-delete-btn="${slot.srcId}" title="حذف القناع" aria-label="حذف القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.12);color:#fca5a5;font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center;">×</button>
                       </div>
-                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-                        <input type="text" data-vap-geom-tag="${slot.srcId}" value="${String(slot.srcTag).replace(/"/g, '&quot;')}" aria-label="معرف القناع" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;" />
-                        <select data-vap-geom-shape="${slot.srcId}" aria-label="شكل القص" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;">
-                          <option value="circle" ${currentShape === 'circle' ? 'selected' : ''}>⚪ دائرة</option>
-                          <option value="roundedRect" ${currentShape === 'roundedRect' ? 'selected' : ''}>▢ مستطيل دائري</option>
-                          <option value="shield" ${currentShape === 'shield' ? 'selected' : ''}>🛡️ درع</option>
-                          <option value="rect" ${currentShape === 'rect' ? 'selected' : ''}>⬜ مربع</option>
-                          <option value="customImage" ${currentShape === 'customImage' ? 'selected' : ''}>🎭 مخصص</option>
-                        </select>
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:3px;">
+                        <div style="display:flex;align-items:center;gap:2px;">
+                          <button type="button" data-vap-zup-btn="${slot.srcId}" title="تقديم القناع للأمام" aria-label="تقديم القناع ${slot.srcTag}" ${!canMoveUp ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveUp ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveUp ? 'pointer' : 'default'};display:grid;place-items:center;">↑</button>
+                          <button type="button" data-vap-zdown-btn="${slot.srcId}" title="إنزال القناع للخلف" aria-label="إنزال القناع ${slot.srcTag}" ${!canMoveDown ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveDown ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveDown ? 'pointer' : 'default'};display:grid;place-items:center;">↓</button>
+                        </div>
+                        <button type="button" data-vap-behind-btn="${slot.srcId}" title="نقل خلف أو أمام المشروع الرئيسي" style="flex:1;min-width:0;height:20px;padding:0 4px;border-radius:5px;border:1px solid ${isBehindProj ? 'rgba(251,191,36,0.45)' : 'rgba(255,255,255,0.1)'};background:${isBehindProj ? 'rgba(251,191,36,0.16)' : '#1b1b2b'};color:${isBehindProj ? '#fde68a' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${isBehindProj ? '⬇️ خلف' : '⬆️ فوق'}</button>
+                        <button type="button" data-vap-fill-toggle="${slot.srcId}" title="${isColored ? 'تحويل الطبقة إلى شفاف (بدون لون)' : 'لون الطبقة الآن: شفاف — اضغط لتلوينها بمبي'}" style="height:20px;padding:0 5px;border-radius:5px;border:1px solid ${isColored ? currentFill : 'rgba(255,255,255,0.14)'};background:${isColored ? currentFill : 'repeating-conic-gradient(#2d2d40 0 25%, #191926 0 50%) 0 0 / 6px 6px'};color:${isColored ? '#fff' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;text-shadow:${isColored ? '0 1px 2px #000' : 'none'};">${isColored ? 'لون' : 'شفاف'}</button>
+                        <input type="color" data-vap-fill-picker="${slot.srcId}" value="${isColored ? currentFill : '#ec4899'}" title="اختر لون مخصص للطبقة (بمبي أو أي لون)" aria-label="لون الطبقة ${slot.srcTag}" style="width:20px;height:20px;padding:0;border:1px solid rgba(255,255,255,0.18);border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;" />
+                        <button type="button" data-vap-geom-toggle="${slot.srcId}" title="خيارات الشكل والمقاس والاستبدال" aria-label="إعدادات القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid ${geomOpen ? '#8b5cf6' : 'rgba(255,255,255,0.1)'};background:${geomOpen ? 'rgba(139,92,246,0.28)' : '#1b1b2b'};color:#e2e8f0;font-size:11px;cursor:pointer;display:grid;place-items:center;">⚙</button>
                       </div>
-                      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
-                        <label style="font-size:9px;color:#9ca3af;">X<input type="number" data-vap-geom-x="${slot.srcId}" value="${Math.round(fRect[0])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
-                        <label style="font-size:9px;color:#9ca3af;">Y<input type="number" data-vap-geom-y="${slot.srcId}" value="${Math.round(fRect[1])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
-                        <label style="font-size:9px;color:#9ca3af;">W<input type="number" data-vap-geom-w="${slot.srcId}" value="${Math.round(fRect[2])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
-                        <label style="font-size:9px;color:#9ca3af;">H<input type="number" data-vap-geom-h="${slot.srcId}" value="${Math.round(fRect[3])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
-                      </div>
-                      <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;font-size:10px;color:#9ca3af;">
-                        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-                          <input type="checkbox" data-vap-mask-toggle="${slot.srcId}" ${useMask ? 'checked' : ''} />
-                          <span>قص (mFrame)</span>
-                        </label>
-                        <select data-vap-fit-select="${slot.srcId}" style="padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2d2d42;color:#e5e7eb;">
-                          <option value="cover" ${fitMode === 'cover' ? 'selected' : ''}>Cover</option>
-                          <option value="contain" ${fitMode === 'contain' ? 'selected' : ''}>Contain</option>
-                          <option value="fitXY" ${fitMode === 'fitXY' || fitMode === 'stretch' ? 'selected' : ''}>FitXY</option>
-                        </select>
-                      </div>
-                      <div style="display:flex;gap:4px;">
-                        <button type="button" data-vap-geom-save="${slot.srcId}" style="flex:1;padding:4px 8px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid #8b5cf6;background:rgba(139,92,246,0.28);color:#f3e8ff;cursor:pointer;">💾 حفظ</button>
-                        <button type="button" data-vap-edit-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#d1d5db;cursor:pointer;" title="محرر">✎</button>
-                        <button type="button" data-vap-reset-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#fde68a;cursor:pointer;" title="استعادة">↺</button>
+
+                      ${
+                        isTxt
+                          ? `
+                        <div style="display:flex;gap:4px;align-items:center;">
+                          <input
+                            type="text"
+                            data-vap-txt-input="${slot.srcId}"
+                            placeholder="اكتب الاسم (اضغط Enter)..."
+                            value="${rep.text ? String(rep.text).replace(/"/g, '&quot;') : ''}"
+                            style="flex:1;min-width:0;padding:4px 7px;font-size:11px;border-radius:6px;border:1px solid #2e2e42;background:#141420;color:#fff;"
+                          />
+                          <input
+                            type="color"
+                            data-vap-txt-color="${slot.srcId}"
+                            value="${rep.textColor || slot.color || '#ffffff'}"
+                            title="لون النص"
+                            style="width:24px;height:24px;padding:0;border:1px solid #2e2e42;border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;"
+                          />
+                        </div>
+                      `
+                          : ''
+                      }
+
+                      <div data-vap-geom-box="${slot.srcId}" style="
+                        display: ${geomOpen ? 'flex' : 'none'};
+                        flex-direction: column;
+                        gap: 5px;
+                        padding: 6px;
+                        border-radius: 7px;
+                        background: rgba(9, 9, 16, 0.92);
+                        border: 1px solid rgba(168, 85, 247, 0.28);
+                      ">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                          <button type="button" data-vap-upload-btn-inner="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(168,85,247,0.45);background:rgba(139,92,246,0.2);color:#e9d5ff;cursor:pointer;">📁 صورة داخل القناع</button>
+                          <button type="button" data-vap-maskfile-btn="${slot.srcId}" style="padding:4px 6px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid rgba(56,189,248,0.45);background:rgba(14,165,233,0.16);color:#bae6fd;cursor:pointer;">🎭 شكل القناع PNG</button>
+                        </div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                          <input type="text" data-vap-geom-tag="${slot.srcId}" value="${String(slot.srcTag).replace(/"/g, '&quot;')}" aria-label="معرف القناع" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;" />
+                          <select data-vap-geom-shape="${slot.srcId}" aria-label="شكل القص" style="padding:3px 5px;font-size:10px;border-radius:5px;background:#161622;border:1px solid #2e2e44;color:#fff;">
+                            <option value="circle" ${currentShape === 'circle' ? 'selected' : ''}>⚪ دائرة</option>
+                            <option value="roundedRect" ${currentShape === 'roundedRect' ? 'selected' : ''}>▢ مستطيل دائري</option>
+                            <option value="shield" ${currentShape === 'shield' ? 'selected' : ''}>🛡️ درع</option>
+                            <option value="rect" ${currentShape === 'rect' ? 'selected' : ''}>⬜ مربع</option>
+                            <option value="customImage" ${currentShape === 'customImage' ? 'selected' : ''}>🎭 مخصص</option>
+                          </select>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
+                          <label style="font-size:9px;color:#9ca3af;">X<input type="number" data-vap-geom-x="${slot.srcId}" value="${Math.round(fRect[0])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                          <label style="font-size:9px;color:#9ca3af;">Y<input type="number" data-vap-geom-y="${slot.srcId}" value="${Math.round(fRect[1])}" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                          <label style="font-size:9px;color:#9ca3af;">W<input type="number" data-vap-geom-w="${slot.srcId}" value="${Math.round(fRect[2])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                          <label style="font-size:9px;color:#9ca3af;">H<input type="number" data-vap-geom-h="${slot.srcId}" value="${Math.round(fRect[3])}" min="8" style="width:100%;padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2e2e44;color:#fff;" /></label>
+                        </div>
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;font-size:10px;color:#9ca3af;">
+                          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                            <input type="checkbox" data-vap-mask-toggle="${slot.srcId}" ${useMask ? 'checked' : ''} />
+                            <span>قص (mFrame)</span>
+                          </label>
+                          <select data-vap-fit-select="${slot.srcId}" style="padding:2px 4px;font-size:10px;border-radius:4px;background:#161622;border:1px solid #2d2d42;color:#e5e7eb;">
+                            <option value="cover" ${fitMode === 'cover' ? 'selected' : ''}>Cover</option>
+                            <option value="contain" ${fitMode === 'contain' ? 'selected' : ''}>Contain</option>
+                            <option value="fitXY" ${fitMode === 'fitXY' || fitMode === 'stretch' ? 'selected' : ''}>FitXY</option>
+                          </select>
+                        </div>
+                        <div style="display:flex;gap:4px;">
+                          <button type="button" data-vap-geom-save="${slot.srcId}" style="flex:1;padding:4px 8px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid #8b5cf6;background:rgba(139,92,246,0.28);color:#f3e8ff;cursor:pointer;">💾 حفظ</button>
+                          <button type="button" data-vap-edit-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#d1d5db;cursor:pointer;" title="محرر">✎</button>
+                          <button type="button" data-vap-reset-btn="${slot.srcId}" style="padding:4px 7px;font-size:10px;border-radius:5px;border:1px solid #323248;background:#1c1c2b;color:#fde68a;cursor:pointer;" title="استعادة">↺</button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                `;
-              })
-              .join('')}
-          </div>
+                  `;
+                })
+                .join('')}
+            </div>
+          `
+              : ''
+          }
         </div>
       `;
+
+      // Tab switching handlers
+      panel.querySelectorAll('[data-vap-tab-btn]').forEach((btn) => {
+        (btn as HTMLButtonElement).onclick = () => {
+          const nextTab = (btn as HTMLElement).getAttribute('data-vap-tab-btn') as 'all' | 'frames' | 'masks';
+          source._vapPanelTab = nextTab || 'all';
+          setupVapDynamicMasksUI(source, m, clamped);
+        };
+      });
+
+      const rescanBtn = document.getElementById('vapRescanFramesBtn');
+      if (rescanBtn) {
+        rescanBtn.onclick = async () => {
+          await scanVapEmbeddedVideoFrames(source, m, clamped || source.meta, true);
+          setupVapDynamicMasksUI(source, m, clamped);
+          repaintVapStageNow(source);
+        };
+      }
+
+      // Wire Embedded Video Frame cards & controls
+      detectedFrames.forEach((df) => {
+        const card = panel.querySelector(`[data-vap-frame-card="${df.id}"]`) as HTMLElement | null;
+        if (card) {
+          card.onclick = (ev) => {
+            const targetEl = ev.target as HTMLElement;
+            if (targetEl.closest('button, input, select, [data-vap-frame-replace]')) return;
+            (window as any).__selectedVapMaskId = df.id;
+            (window as any).__vapShowMaskGuides = true;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+          };
+        }
+
+        const triggerFrameReplace = () => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = 'image/*';
+          inp.onchange = () => {
+            const file = inp.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async () => {
+              const dataUrl = String(reader.result || '');
+              if (!dataUrl) return;
+              A[df.assetKey] = dataUrl;
+              await applyEdit(dataUrl, df.assetKey);
+              setupVapDynamicMasksUI(source, m, clamped);
+              repaintVapStageNow(source);
+              toast(`✅ تم استبدال "${df.labelAr}" في الفيديو`);
+            };
+            reader.readAsDataURL(file);
+          };
+          inp.click();
+        };
+
+        const repThumb = panel.querySelector(`[data-vap-frame-replace="${df.id}"]`) as HTMLElement | null;
+        if (repThumb) repThumb.onclick = (ev) => { ev.stopPropagation(); triggerFrameReplace(); };
+        const repBtn = panel.querySelector(`[data-vap-frame-replace-btn="${df.id}"]`) as HTMLButtonElement | null;
+        if (repBtn) repBtn.onclick = (ev) => { ev.stopPropagation(); triggerFrameReplace(); };
+
+        const dlBtn = panel.querySelector(`[data-vap-frame-dl="${df.id}"]`) as HTMLButtonElement | null;
+        if (dlBtn) {
+          dlBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            const url =
+              source._embeddedFrameOverrides?.[df.id]?.replacementDataUrl ||
+              source._embeddedFrameThumbnails?.[df.id] ||
+              A[df.assetKey];
+            if (!url) return toast('لا توجد صورة جاهزة لهذا الإطار');
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${df.id}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast(`⬇ تم تنزيل "${df.labelAr}" كصورة PNG شفافة`);
+          };
+        }
+
+        const hideBtn = panel.querySelector(`[data-vap-frame-hide="${df.id}"]`) as HTMLButtonElement | null;
+        if (hideBtn) {
+          hideBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
+            const cur = source._embeddedFrameOverrides[df.id] || { id: df.id };
+            const nextHidden = !cur.hidden;
+            source._embeddedFrameOverrides[df.id] = { ...cur, hidden: nextHidden };
+            source._hasMaskEdits = true;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(nextHidden ? `🚫 تم إخفاء "${df.labelAr}" من الفيديو` : `👁️ تم إظهار "${df.labelAr}" في الفيديو`);
+          };
+        }
+
+        const mkSlotBtn = panel.querySelector(`[data-vap-frame-mkslot="${df.id}"]`) as HTMLButtonElement | null;
+        if (mkSlotBtn) {
+          mkSlotBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            const isBanner = df.kind === 'banner_frame';
+            const srcType: 'img' | 'txt' = isBanner ? 'txt' : 'img';
+            const existingSlots = getEffectiveMaskSlots(source);
+            const existingTags = new Set(existingSlots.map((s) => s.srcTag));
+            const prefix = isBanner ? 'textName' : 'avatar';
+            let idx = 1;
+            while (existingTags.has(`${prefix}${idx}`)) idx++;
+            const srcTag = `${prefix}${idx}`;
+            const nextId = buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...(source._customVapSlots || [])]);
+            const maxZ = existingSlots.length ? Math.max(...existingSlots.map((s) => Number(s.z ?? 0))) : -1;
+
+            const ov = source._embeddedFrameOverrides?.[df.id];
+            const fBox = Array.isArray(ov?.customFrame) ? ov.customFrame : df.frame;
+            // Inset slightly inside the decorative frame so the avatar/name sits neatly inside the frame border
+            const insetRatioX = isBanner ? 0.14 : 0.22;
+            const insetRatioY = isBanner ? 0.20 : 0.18;
+            const mw = Math.max(16, Math.round(fBox[2] * (1 - insetRatioX * 2)));
+            const mh = Math.max(16, Math.round(fBox[3] * (1 - insetRatioY * 2)));
+            const mx = Math.round(fBox[0] + (fBox[2] - mw) / 2);
+            const my = Math.round(fBox[1] + (fBox[3] - mh) / 2);
+
+            const newSlot = makeCustomVapSlot({
+              srcId: nextId,
+              srcType,
+              srcTag,
+              x: mx,
+              y: my,
+              w: mw,
+              h: mh,
+              shapePreset: isBanner ? 'roundedRect' : 'circle',
+              z: maxZ + 1,
+            });
+            source._customVapSlots.push(newSlot);
+            source._hasMaskEdits = true;
+            (window as any).__selectedVapMaskId = newSlot.srcId;
+            (window as any).__vapShowMaskGuides = true;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(`🎭 تم إنشاء قناع "${srcTag}" داخل "${df.labelAr}"`);
+          };
+        }
+
+        const geomToggle = panel.querySelector(`[data-vap-frame-geom-toggle="${df.id}"]`) as HTMLButtonElement | null;
+        if (geomToggle) {
+          geomToggle.onclick = (ev) => {
+            ev.stopPropagation();
+            source._openGeomFrameIds = source._openGeomFrameIds || {};
+            source._openGeomFrameIds[df.id] = !source._openGeomFrameIds[df.id];
+            setupVapDynamicMasksUI(source, m, clamped);
+          };
+        }
+
+        const geomSave = panel.querySelector(`[data-vap-frame-geom-save="${df.id}"]`) as HTMLButtonElement | null;
+        if (geomSave) {
+          geomSave.onclick = (ev) => {
+            ev.stopPropagation();
+            const nx = Number((panel.querySelector(`[data-vap-frame-x="${df.id}"]`) as HTMLInputElement | null)?.value) || 0;
+            const ny = Number((panel.querySelector(`[data-vap-frame-y="${df.id}"]`) as HTMLInputElement | null)?.value) || 0;
+            const nw = Math.max(8, Number((panel.querySelector(`[data-vap-frame-w="${df.id}"]`) as HTMLInputElement | null)?.value) || df.frame[2]);
+            const nh = Math.max(8, Number((panel.querySelector(`[data-vap-frame-h="${df.id}"]`) as HTMLInputElement | null)?.value) || df.frame[3]);
+            (window as any).__updateVapEmbeddedFrameBox(df.id, [nx, ny, nw, nh]);
+            source._openGeomFrameIds = source._openGeomFrameIds || {};
+            source._openGeomFrameIds[df.id] = false;
+            setupVapDynamicMasksUI(source, m, clamped);
+            toast(`✅ تم تحديث مكان ومقاس "${df.labelAr}"`);
+          };
+        }
+
+        const resetFrameBtn = panel.querySelector(`[data-vap-frame-reset="${df.id}"]`) as HTMLButtonElement | null;
+        if (resetFrameBtn) {
+          resetFrameBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            if (source._embeddedFrameOverrides) delete source._embeddedFrameOverrides[df.id];
+            if (window.EDIT) delete window.EDIT[df.assetKey];
+            if (source._embeddedFrameThumbnails?.[df.id]) {
+              A[df.assetKey] = source._embeddedFrameThumbnails[df.id];
+            }
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            toast(`↺ تمت استعادة "${df.labelAr}" إلى وضعه الأصلي`);
+          };
+        }
+      });
 
       const toggleAddBtn = document.getElementById('vapToggleAddMaskBtn');
       if (toggleAddBtn) {
@@ -7201,6 +7862,7 @@ export function initMotionToolsFixed() {
       source.set = (i) => seekVideo(m, (i + 0.5) / source.fps);
       ensureAlphaPreviewCanvas(source, m);
       setupVapDynamicMasksUI(source, m, clamped);
+      void scanVapEmbeddedVideoFrames(source, m, clamped, false);
       const infoObj: Record<string, any> = {
         Format: clamped.kind,
         'Alpha Layout': side === 'r' ? 'Alpha on right (Auto)' : 'Alpha on left (Auto)',
@@ -7818,7 +8480,23 @@ export function initMotionToolsFixed() {
             Object.values(S._vapSlotReplacements).some((r: any) => r && r.active && !r.hidden && r.source)
         ),
         hasColoredFills = allActiveSlots.some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))),
-        bakeReplaced = Boolean(S?._bakeReplacedSlots !== false && (hasActiveReplacements || hasColoredFills)),
+        hasEmbeddedFrameEdits = Boolean(
+          S?._embeddedFrameOverrides &&
+            Object.values(S._embeddedFrameOverrides).some(
+              (ov: any) =>
+                ov &&
+                (ov.hidden ||
+                  ov.replacementSource ||
+                  ov.replacementDataUrl ||
+                  Array.isArray(ov.customFrame) ||
+                  Math.abs(Number(ov.offsetX) || 0) > 0.5 ||
+                  Math.abs(Number(ov.offsetY) || 0) > 0.5 ||
+                  (Number(ov.scale) > 0 && Math.abs(Number(ov.scale) - 1) > 0.01))
+            )
+        ),
+        bakeReplaced = Boolean(
+          (S?._bakeReplacedSlots !== false && (hasActiveReplacements || hasColoredFills)) || hasEmbeddedFrameEdits
+        ),
         exportedSlots = allActiveSlots,
         plan = planVapMaskAtlasLayout({
           format: Y ? 'yyeva' : 'vap',
@@ -7848,7 +8526,7 @@ export function initMotionToolsFixed() {
         rx = rgba.getContext('2d', { willReadFrequently: true }),
         alpha = mk(W, H),
         ax = alpha.getContext('2d'),
-        hasVapMaskEdits = hasActiveReplacements || hasColoredFills,
+        hasVapMaskEdits = hasActiveReplacements || hasColoredFills || hasEmbeddedFrameEdits,
         hasWatermarkLayers = !!(
           Array.isArray((window as any).__WATERMARK_LAYERS) &&
           (window as any).__WATERMARK_LAYERS.length > 0
@@ -9863,24 +10541,47 @@ export function initMotionToolsFixed() {
           return { stageX, stageY, baseW, baseH, rect };
         };
 
-        // 1. Mouse Wheel Scale (for VAP mask if hovered & selected, else Composer active target)
+        const getHitTestableEmbeddedFramesAsSlots = (source: any) => {
+          const dfs: VapDetectedEmbeddedFrame[] = source?._detectedEmbeddedFrames || [];
+          const ovs: Record<string, VapEmbeddedFrameOverride> = source?._embeddedFrameOverrides || {};
+          return dfs
+            .filter((df) => df.isIsolatedFrame && !ovs[df.id]?.hidden)
+            .map((df, i) => {
+              const ov = ovs[df.id];
+              const box = Array.isArray(ov?.customFrame) ? ov.customFrame : df.frame;
+              return {
+                srcId: df.id,
+                srcTag: df.labelAr,
+                srcType: 'img' as const,
+                w: box[2],
+                h: box[3],
+                defaultFrame: box,
+                z: -10 - i,
+                isEmbeddedVideoFrame: true,
+              };
+            });
+        };
+
+        // 1. Mouse Wheel Scale (for VAP mask or embedded frame if hovered & selected, else Composer active target)
         viewStageEl.addEventListener(
           'wheel',
           (e: WheelEvent) => {
             const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
             const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
             const slots = S ? getEffectiveMaskSlots(S) : [];
+            const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
+            const combinedSlots = [...frameSlots, ...slots];
             const guidesOn = Boolean((window as any).__vapShowMaskGuides);
             const { stageX, stageY, baseW, baseH } = clientToStageXY(e.clientX, e.clientY);
 
-            if (slots.length > 0 && guidesOn) {
-              const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+            if (combinedSlots.length > 0 && guidesOn) {
+              const hit = hitTestMaskSlotsOnStage(combinedSlots as any, stageX, stageY, {
                 selectedSrcId: (window as any).__selectedVapMaskId || null,
                 handleRadius: Math.max(18, Math.round(baseW * 0.045)),
               });
               if (hit) {
                 e.preventDefault();
-                const targetSlot = slots.find((s) => String(s.srcId) === String(hit.srcId));
+                const targetSlot: any = combinedSlots.find((s) => String(s.srcId) === String(hit.srcId));
                 if (targetSlot) {
                   const f = targetSlot.defaultFrame || [0, 0, targetSlot.w, targetSlot.h];
                   const factor = e.deltaY < 0 ? 1.06 : 0.94;
@@ -9889,7 +10590,11 @@ export function initMotionToolsFixed() {
                   const nx = Math.max(0, Math.min(baseW - nw, Math.round(f[0] + (f[2] - nw) / 2)));
                   const ny = Math.max(0, Math.min(baseH - nh, Math.round(f[1] + (f[3] - nh) / 2)));
                   (window as any).__selectedVapMaskId = targetSlot.srcId;
-                  (window as any).__updateVapMaskFrame(targetSlot.srcId, [nx, ny, nw, nh]);
+                  if (targetSlot.isEmbeddedVideoFrame) {
+                    (window as any).__updateVapEmbeddedFrameBox(targetSlot.srcId, [nx, ny, nw, nh]);
+                  } else {
+                    (window as any).__updateVapMaskFrame(targetSlot.srcId, [nx, ny, nw, nh]);
+                  }
                   return;
                 }
               }
@@ -9940,21 +10645,23 @@ export function initMotionToolsFixed() {
           { passive: false }
         );
 
-        // 2. Direct Pointer Down (hits VAP mask first when guides/selection active, otherwise Composer active target)
+        // 2. Direct Pointer Down (hits VAP mask or embedded frame first when guides/selection active, otherwise Composer active target)
         viewStageEl.addEventListener('pointerdown', (e: PointerEvent) => {
           if (e.button !== 0) return;
 
           const slots = S ? getEffectiveMaskSlots(S) : [];
+          const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
+          const combinedSlots = [...frameSlots, ...slots];
           const guidesOn = Boolean((window as any).__vapShowMaskGuides);
           const selectedMaskId = (window as any).__selectedVapMaskId || null;
-          if (slots.length > 0 && (guidesOn || selectedMaskId)) {
+          if (combinedSlots.length > 0 && (guidesOn || selectedMaskId)) {
             const { stageX, stageY, baseW } = clientToStageXY(e.clientX, e.clientY);
-            const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+            const hit = hitTestMaskSlotsOnStage(combinedSlots as any, stageX, stageY, {
               selectedSrcId: selectedMaskId,
               handleRadius: Math.max(18, Math.round(baseW * 0.045)),
             });
             if (hit) {
-              const slot = slots.find((s) => String(s.srcId) === String(hit.srcId));
+              const slot: any = combinedSlots.find((s) => String(s.srcId) === String(hit.srcId));
               if (slot) {
                 const startFrame = [...(slot.defaultFrame || [0, 0, slot.w, slot.h])] as [number, number, number, number];
                 (window as any).__selectedVapMaskId = slot.srcId;
@@ -10006,7 +10713,7 @@ export function initMotionToolsFixed() {
           } catch (_) {}
         });
 
-        // 3. Pointer Move (mask drag/resize, hover cursor feedback, or Composer move/scale)
+        // 3. Pointer Move (mask or embedded frame drag/resize, hover cursor feedback, or Composer move/scale)
         viewStageEl.addEventListener('pointermove', (e: PointerEvent) => {
           if (maskDrag && S) {
             const dxScreen = e.clientX - maskDrag.startClientX;
@@ -10031,6 +10738,11 @@ export function initMotionToolsFixed() {
               e.shiftKey
             );
 
+            if (String(maskDrag.srcId).startsWith('vap_frame_')) {
+              (window as any).__updateVapEmbeddedFrameBox(maskDrag.srcId, nextFrame);
+              return;
+            }
+
             S._slotGeometryOverrides = S._slotGeometryOverrides || {};
             S._slotGeometryOverrides[maskDrag.srcId] = {
               ...(S._slotGeometryOverrides[maskDrag.srcId] || {}),
@@ -10052,12 +10764,14 @@ export function initMotionToolsFixed() {
           }
 
           if (!dragActive) {
-            // Update hover cursor over VAP masks
+            // Update hover cursor over VAP masks or embedded video frames
             const slots = S ? getEffectiveMaskSlots(S) : [];
+            const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
+            const combinedSlots = [...frameSlots, ...slots];
             const guidesOn = Boolean((window as any).__vapShowMaskGuides);
-            if (slots.length > 0 && guidesOn) {
+            if (combinedSlots.length > 0 && guidesOn) {
               const { stageX, stageY, baseW } = clientToStageXY(e.clientX, e.clientY);
-              const hit = hitTestMaskSlotsOnStage(slots, stageX, stageY, {
+              const hit = hitTestMaskSlotsOnStage(combinedSlots as any, stageX, stageY, {
                 selectedSrcId: (window as any).__selectedVapMaskId || null,
                 handleRadius: Math.max(18, Math.round(baseW * 0.045)),
               });
