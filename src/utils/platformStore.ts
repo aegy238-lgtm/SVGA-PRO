@@ -245,103 +245,226 @@ export const ALL_SUPPORTED_FORMATS: FormatDefinition[] = [
 
 export type ProFeatureScope = 'access' | 'export';
 
+export type NavbarFeatureMode = 'hidden' | 'free' | 'free_attempts' | 'pro_only';
+
 export interface ProFeatureRule {
   isPro: boolean;                 // Whether this tool/feature is locked behind Pro
   scope: ProFeatureScope;         // 'access' = lock navigating into feature; 'export' = lock export/download button only
   allowFreeAttempts: boolean;     // Whether free/unsubscribed users get trial attempts
   freeAttemptsCount: number;      // Number of free trial attempts granted (e.g. 1, 2, 3, 5, 10)
+  visibleToUsers?: boolean;       // Whether this top navbar button/feature is visible to non-admin users (default: true)
 }
 
 export interface ProToolDefinition {
   key: string;
+  viewId?: string;
   labelAr: string;
   labelEn: string;
+  navLabelAr?: string;
+  navLabelEn?: string;
   icon: string;
   descAr: string;
   descEn: string;
   defaultScope: ProFeatureScope;
   defaultIsPro: boolean;
   defaultFreeAttempts: number;
+  defaultVisibleToUsers?: boolean;
 }
+
+export const VIEW_TO_FEATURE_KEY_MAP: Record<string, string> = {
+  home: 'home',
+  convert: 'convert_studio',
+  editor: 'svga_editor',
+  gifts: 'gifts_studio',
+  'gift-image': 'gift_image',
+  'gold-designer': 'gold_designer',
+  'gift-finder': 'gift_finder',
+};
+
+export const FEATURE_KEY_TO_VIEW_MAP: Record<string, string> = {
+  home: 'home',
+  convert_studio: 'convert',
+  svga_editor: 'editor',
+  gifts_studio: 'gifts',
+  gift_image: 'gift-image',
+  gold_designer: 'gold-designer',
+  gift_finder: 'gift-finder',
+};
 
 export const PRO_TOOLS_DEFINITIONS: ProToolDefinition[] = [
   {
+    key: 'home',
+    viewId: 'home',
+    labelAr: 'الرئيسية (واجهة الرفع السريع)',
+    labelEn: 'Home Page (Quick Upload)',
+    navLabelAr: 'الرئيسية',
+    navLabelEn: 'Home',
+    icon: '🏠',
+    descAr: 'زر وواجهة الصفحة الرئيسية الترحيبية لرفع الملفات السريع في بداية الموقع.',
+    descEn: 'Top navbar Home tab and landing quick-upload screen.',
+    defaultScope: 'access',
+    defaultIsPro: false,
+    defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
+  },
+  {
+    key: 'convert_studio',
+    viewId: 'convert',
+    labelAr: 'معالجة وتحويل الهدايا',
+    labelEn: 'Motion Processing & Conversion',
+    navLabelAr: 'معالجة وتحويل الهدايا',
+    navLabelEn: 'Motion Processing',
+    icon: '⚡',
+    descAr: 'الأداة الرئيسية لمعالجة وتحويل صيغ الهدايا (SVGA, VAP, YYEVA, MP4) وتعديل الأقنعة والطبقات.',
+    descEn: 'Main gift animation processor, converter, and VAP/layer composer.',
+    defaultScope: 'export',
+    defaultIsPro: false,
+    defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
+  },
+  {
+    key: 'svga_editor',
+    viewId: 'editor',
+    labelAr: 'محرر SVGA المتقدم',
+    labelEn: 'Advanced SVGA Editor',
+    navLabelAr: 'محرر SVGA المتقدم',
+    navLabelEn: 'SVGA Editor',
+    icon: '🎬',
+    descAr: 'تفكيك وتعديل طبقات ملفات SVGA والكي فريم وتصدير مشاريع After Effects.',
+    descEn: 'Decompose and edit SVGA layers, timeline keyframes, and After Effects export.',
+    defaultScope: 'export',
+    defaultIsPro: false,
+    defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
+  },
+  {
     key: 'gifts_studio',
-    labelAr: 'استوديو وعرض ملفات الهدايا',
+    viewId: 'gifts',
+    labelAr: 'عرض ملفات الهدايا (استوديو الهدايا)',
     labelEn: 'Gift Files Studio & Preview',
+    navLabelAr: 'عرض ملفات الهدايا',
+    navLabelEn: 'Gift Files Studio',
     icon: '🎁',
-    descAr: 'عرض ومعاينة ملفات الهدايا والرسوم المتحركة (SVGA, VAP, YYEVA, PAG) وتصديرها.',
+    descAr: 'عرض ومعاينة ملفات الهدايا والرسوم المتحركة (SVGA, VAP, YYEVA, PAG) وتصديرها دفعة واحدة.',
     descEn: 'Preview, play, inspect, and export multi-format gift animations.',
     defaultScope: 'export',
     defaultIsPro: true,
     defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
   },
   {
     key: 'gift_image',
-    labelAr: 'أداة إنشاء صور الهدايا',
+    viewId: 'gift-image',
+    labelAr: 'إنشاء صورة الهدية',
     labelEn: 'Gift Image Creator',
+    navLabelAr: 'إنشاء صورة الهدية',
+    navLabelEn: 'Gift Image Creator',
     icon: '🖼️',
     descAr: 'توليد وقص وتصدير صور الهدايا والبنرات الدائرية والشعارات المفرغة فائقة الدقة.',
     descEn: 'Generate, crop, fit, and export high-clarity framed gift images.',
     defaultScope: 'access',
     defaultIsPro: true,
     defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
   },
   {
     key: 'gold_designer',
+    viewId: 'gold-designer',
     labelAr: 'مصمم الأسماء ثلاثية الأبعاد 3D',
     labelEn: '3D Gold Name Designer',
+    navLabelAr: 'مصمم الأسماء 3D',
+    navLabelEn: '3D Name Designer',
     icon: '👑',
     descAr: 'توليد وتصميم الأسماء ثلاثية الأبعاد ببروز معدني وانعكاسات احترافية واستخلاص الألوان والأنماط.',
     descEn: 'Generate luxurious 3D metallic typography with custom colors and image style extraction.',
     defaultScope: 'export',
     defaultIsPro: true,
     defaultFreeAttempts: 2,
+    defaultVisibleToUsers: true,
   },
   {
-    key: 'ae2_editor',
-    labelAr: 'أفتر إفكت 2',
-    labelEn: 'After Effects 2 Suite',
-    icon: '✨',
-    descAr: 'محرر ومحرك Motion Processing المتقدم 2 مع دمج الطبقات وتعديل الكي فريم التلقائي.',
-    descEn: 'Advanced After Effects 2 motion timeline, layer grouping & keyframe editor.',
+    key: 'gift_finder',
+    viewId: 'gift-finder',
+    labelAr: 'باحث الهدايا AI',
+    labelEn: 'AI Gift Finder Studio',
+    navLabelAr: 'باحث الهدايا AI',
+    navLabelEn: 'AI Gift Finder',
+    icon: '🔍',
+    descAr: 'البحث الذكي عن ملفات الهدايا الأصلية من خلال رفع فيديو أو صورة ومطابقتها بنسبة 100% وتنزيلها.',
+    descEn: 'Visual search across gift libraries by video or image with 100% match detection and download.',
     defaultScope: 'export',
-    defaultIsPro: true,
+    defaultIsPro: false,
     defaultFreeAttempts: 3,
+    defaultVisibleToUsers: true,
   },
 ];
 
 export const DEFAULT_PRO_FEATURE_RULES: Record<string, ProFeatureRule> = {
+  home: {
+    isPro: false,
+    scope: 'access',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+    visibleToUsers: true,
+  },
+  convert_studio: {
+    isPro: false,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+    visibleToUsers: true,
+  },
+  svga_editor: {
+    isPro: false,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+    visibleToUsers: true,
+  },
   ae2_editor: {
     isPro: true,
     scope: 'export',
     allowFreeAttempts: true,
     freeAttemptsCount: 3,
+    visibleToUsers: true,
   },
   gifts_studio: {
     isPro: true,
     scope: 'export',
     allowFreeAttempts: true,
     freeAttemptsCount: 3,
+    visibleToUsers: true,
   },
   gift_image: {
     isPro: true,
     scope: 'access',
     allowFreeAttempts: true,
     freeAttemptsCount: 3,
+    visibleToUsers: true,
   },
   gold_designer: {
     isPro: true,
     scope: 'export',
     allowFreeAttempts: true,
     freeAttemptsCount: 2,
+    visibleToUsers: true,
+  },
+  gift_finder: {
+    isPro: false,
+    scope: 'export',
+    allowFreeAttempts: true,
+    freeAttemptsCount: 3,
+    visibleToUsers: true,
   },
 };
 
 export function normalizeProFeatureRules(
   rules?: Record<string, Partial<ProFeatureRule>> | null
 ): Record<string, ProFeatureRule> {
-  const result: Record<string, ProFeatureRule> = { ...DEFAULT_PRO_FEATURE_RULES };
+  const result: Record<string, ProFeatureRule> = {};
+  Object.keys(DEFAULT_PRO_FEATURE_RULES).forEach((k) => {
+    result[k] = { ...DEFAULT_PRO_FEATURE_RULES[k] };
+  });
   if (rules && typeof rules === 'object') {
     Object.keys(rules).forEach((key) => {
       const candidate = rules[key];
@@ -351,6 +474,7 @@ export function normalizeProFeatureRules(
           scope: 'export' as ProFeatureScope,
           allowFreeAttempts: true,
           freeAttemptsCount: 3,
+          visibleToUsers: true,
         };
         result[key] = {
           isPro: typeof candidate.isPro === 'boolean' ? candidate.isPro : def.isPro,
@@ -363,11 +487,115 @@ export function normalizeProFeatureRules(
             typeof candidate.freeAttemptsCount === 'number' && candidate.freeAttemptsCount >= 0
               ? Math.max(0, Math.min(100, Math.round(candidate.freeAttemptsCount)))
               : def.freeAttemptsCount,
+          visibleToUsers:
+            typeof candidate.visibleToUsers === 'boolean'
+              ? candidate.visibleToUsers
+              : def.visibleToUsers !== false,
         };
       }
     });
   }
   return result;
+}
+
+/**
+ * Pure function: Resolves the 4-state mode of a navbar feature rule:
+ * - 'hidden': Hidden from regular users (visible only to Admin)
+ * - 'free': Visible to users and 100% free
+ * - 'free_attempts': Visible to users with N free trial attempts before requiring Pro
+ * - 'pro_only': Visible to users and requires active Pro subscription immediately
+ */
+export function resolveNavbarFeatureMode(rule?: Partial<ProFeatureRule> | null): NavbarFeatureMode {
+  if (!rule) return 'free';
+  if (rule.visibleToUsers === false) return 'hidden';
+  if (!rule.isPro) return 'free';
+  if (rule.allowFreeAttempts && (rule.freeAttemptsCount ?? 0) > 0) return 'free_attempts';
+  return 'pro_only';
+}
+
+/**
+ * Pure function: Applies one of the 4 navbar feature modes cleanly to an existing rule.
+ */
+export function applyNavbarFeatureModePatch(
+  currentRule: ProFeatureRule,
+  mode: NavbarFeatureMode,
+  customAttemptsCount?: number
+): ProFeatureRule {
+  if (mode === 'hidden') {
+    return {
+      ...currentRule,
+      visibleToUsers: false,
+    };
+  }
+  if (mode === 'free') {
+    return {
+      ...currentRule,
+      visibleToUsers: true,
+      isPro: false,
+    };
+  }
+  if (mode === 'free_attempts') {
+    const count =
+      typeof customAttemptsCount === 'number' && customAttemptsCount >= 1
+        ? Math.max(1, Math.min(100, Math.round(customAttemptsCount)))
+        : currentRule.freeAttemptsCount > 0
+          ? currentRule.freeAttemptsCount
+          : 3;
+    return {
+      ...currentRule,
+      visibleToUsers: true,
+      isPro: true,
+      allowFreeAttempts: true,
+      freeAttemptsCount: count,
+    };
+  }
+  // mode === 'pro_only'
+  return {
+    ...currentRule,
+    visibleToUsers: true,
+    isPro: true,
+    allowFreeAttempts: false,
+  };
+}
+
+/**
+ * Pure function: Makes ONLY a single chosen feature visible to regular users and hides all other navbar features.
+ * Admin still sees all features on their Admin account.
+ */
+export function applyShowOnlySingleFeatureForUsers(
+  rules: Record<string, Partial<ProFeatureRule>> | null | undefined,
+  soleVisibleFeatureKey: string
+): Record<string, ProFeatureRule> {
+  const normalized = normalizeProFeatureRules(rules);
+  const resolvedTargetKey = VIEW_TO_FEATURE_KEY_MAP[soleVisibleFeatureKey] || soleVisibleFeatureKey;
+  const next: Record<string, ProFeatureRule> = { ...normalized };
+  PRO_TOOLS_DEFINITIONS.forEach((tool) => {
+    const cur = next[tool.key] || DEFAULT_PRO_FEATURE_RULES[tool.key];
+    next[tool.key] = {
+      ...cur,
+      visibleToUsers: tool.key === resolvedTargetKey,
+    };
+  });
+  return next;
+}
+
+/**
+ * Pure function: Shows or hides all navbar features for regular users at once.
+ */
+export function applySetAllFeaturesVisibilityForUsers(
+  rules: Record<string, Partial<ProFeatureRule>> | null | undefined,
+  visible: boolean
+): Record<string, ProFeatureRule> {
+  const normalized = normalizeProFeatureRules(rules);
+  const next: Record<string, ProFeatureRule> = { ...normalized };
+  PRO_TOOLS_DEFINITIONS.forEach((tool) => {
+    const cur = next[tool.key] || DEFAULT_PRO_FEATURE_RULES[tool.key];
+    next[tool.key] = {
+      ...cur,
+      visibleToUsers: Boolean(visible),
+    };
+  });
+  return next;
 }
 
 export interface PlatformSettings {
@@ -2196,5 +2424,72 @@ export function resetFeatureFreeAttempts(
   }
   return undefined;
 }
+
+/**
+ * Pure function: Checks if a navbar feature (by featureKey or viewId) is hidden from regular users.
+ */
+export function isNavbarFeatureHiddenFromRegularUsers(
+  featureKeyOrViewId: string,
+  settings?: Partial<PlatformSettings> | null
+): boolean {
+  const key = VIEW_TO_FEATURE_KEY_MAP[featureKeyOrViewId] || featureKeyOrViewId;
+  const rules = normalizeProFeatureRules(settings?.proFeatureRules);
+  const rule = rules[key];
+  if (!rule) return false;
+  return rule.visibleToUsers === false;
+}
+
+/**
+ * Pure function: Checks whether a given navbar feature (by featureKey or viewId) should be visible
+ * to the current user in the top navbar.
+ * - Admin accounts (when adminPreviewRole === 'actual') ALWAYS see all navbar features!
+ * - Regular users (and Admin when previewing as 'free_user' or 'pro_user') only see features where visibleToUsers !== false.
+ */
+export function isNavbarFeatureVisibleToUser(
+  featureKeyOrViewId: string,
+  user: UserAccount | null | undefined,
+  settings?: Partial<PlatformSettings> | null,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual'
+): boolean {
+  if (adminPreviewRole === 'actual' && canAccessAdminDashboard(user)) {
+    return true;
+  }
+  return !isNavbarFeatureHiddenFromRegularUsers(featureKeyOrViewId, settings);
+}
+
+/**
+ * Pure function: Returns the first visible navbar view ID ('convert', 'gifts', 'gift-image', 'gold-designer', 'gift-finder', 'editor', 'home')
+ * for the current user so that if the active view is hidden from regular users, the app automatically switches to an open feature.
+ */
+export function getFirstVisibleNavbarView(
+  user: UserAccount | null | undefined,
+  settings?: Partial<PlatformSettings> | null,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual',
+  preferredView?: string
+): string {
+  const orderedViews = ['home', 'convert', 'editor', 'gifts', 'gift-image', 'gold-designer', 'gift-finder'];
+  if (
+    preferredView &&
+    orderedViews.includes(preferredView) &&
+    isNavbarFeatureVisibleToUser(preferredView, user, settings, adminPreviewRole)
+  ) {
+    return preferredView;
+  }
+  // If multiple views are visible and no preferredView was valid, prefer 'convert' if it is visible, otherwise the first visible in navbar order
+  const visibleViews = orderedViews.filter((v) =>
+    isNavbarFeatureVisibleToUser(v, user, settings, adminPreviewRole)
+  );
+  if (visibleViews.length === 1) {
+    return visibleViews[0];
+  }
+  if (visibleViews.includes('convert')) {
+    return 'convert';
+  }
+  if (visibleViews.length > 0) {
+    return visibleViews[0];
+  }
+  return 'convert';
+}
+
 
 

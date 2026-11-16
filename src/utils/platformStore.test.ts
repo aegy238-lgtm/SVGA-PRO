@@ -32,6 +32,15 @@ import {
   getFeatureFreeAttemptsStatus,
   consumeFeatureFreeAttempt,
   resetFeatureFreeAttempts,
+  PRO_TOOLS_DEFINITIONS,
+  DEFAULT_PRO_FEATURE_RULES,
+  resolveNavbarFeatureMode,
+  applyNavbarFeatureModePatch,
+  applyShowOnlySingleFeatureForUsers,
+  applySetAllFeaturesVisibilityForUsers,
+  isNavbarFeatureVisibleToUser,
+  isNavbarFeatureHiddenFromRegularUsers,
+  getFirstVisibleNavbarView,
   type UserAccount,
 } from './platformStore.ts';
 
@@ -549,4 +558,95 @@ test('Pro feature rules and free trial attempts track consumption and grant unli
   assert.equal(statusAfterReset.remaining, 3);
   assert.equal(statusAfterReset.hasAccess, true);
 });
+
+test('Navbar feature visibility & 4 access modes: hide/show single feature for users while keeping all visible for Admin', () => {
+  const freeUser = INITIAL_USERS.find((u) => !u.isPro && u.role === 'user')!;
+  const proUser = INITIAL_USERS.find((u) => u.isPro && u.role === 'user')!;
+  const adminUser = INITIAL_SUPER_ADMIN_ACCOUNT;
+
+  // Verify all 7 navbar tools are defined
+  assert.equal(PRO_TOOLS_DEFINITIONS.length, 7);
+  const keys = PRO_TOOLS_DEFINITIONS.map((t) => t.key);
+  assert.deepEqual(keys, [
+    'home',
+    'convert_studio',
+    'svga_editor',
+    'gifts_studio',
+    'gift_image',
+    'gold_designer',
+    'gift_finder',
+  ]);
+
+  // 1. Test 4-state mode transitions on a rule (hidden / free / free_attempts / pro_only)
+  const baseRule = { ...DEFAULT_PRO_FEATURE_RULES.gift_finder };
+  assert.equal(resolveNavbarFeatureMode(baseRule), 'free');
+
+  const hiddenRule = applyNavbarFeatureModePatch(baseRule, 'hidden');
+  assert.equal(resolveNavbarFeatureMode(hiddenRule), 'hidden');
+  assert.equal(hiddenRule.visibleToUsers, false);
+
+  const attemptsRule = applyNavbarFeatureModePatch(hiddenRule, 'free_attempts', 5);
+  assert.equal(resolveNavbarFeatureMode(attemptsRule), 'free_attempts');
+  assert.equal(attemptsRule.visibleToUsers, true);
+  assert.equal(attemptsRule.isPro, true);
+  assert.equal(attemptsRule.allowFreeAttempts, true);
+  assert.equal(attemptsRule.freeAttemptsCount, 5);
+
+  const proOnlyRule = applyNavbarFeatureModePatch(attemptsRule, 'pro_only');
+  assert.equal(resolveNavbarFeatureMode(proOnlyRule), 'pro_only');
+  assert.equal(proOnlyRule.visibleToUsers, true);
+  assert.equal(proOnlyRule.isPro, true);
+  assert.equal(proOnlyRule.allowFreeAttempts, false);
+
+  const freeAgainRule = applyNavbarFeatureModePatch(proOnlyRule, 'free');
+  assert.equal(resolveNavbarFeatureMode(freeAgainRule), 'free');
+  assert.equal(freeAgainRule.visibleToUsers, true);
+  assert.equal(freeAgainRule.isPro, false);
+
+  // 2. Test "Show Only Single Feature to Users" (e.g. only 'gift_finder' or 'gifts_studio' is visible to users)
+  const onlyGiftFinderRules = applyShowOnlySingleFeatureForUsers(DEFAULT_PRO_FEATURE_RULES, 'gift_finder');
+  const settingsOnlyFinder = {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    proFeatureRules: onlyGiftFinderRules,
+  };
+
+  // Regular free user, pro user, and guest ONLY see 'gift-finder'
+  assert.equal(isNavbarFeatureVisibleToUser('gift-finder', freeUser, settingsOnlyFinder, 'actual'), true);
+  assert.equal(isNavbarFeatureVisibleToUser('home', freeUser, settingsOnlyFinder, 'actual'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('convert', freeUser, settingsOnlyFinder, 'actual'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('editor', freeUser, settingsOnlyFinder, 'actual'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('gifts', proUser, settingsOnlyFinder, 'actual'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('gift-image', null, settingsOnlyFinder, 'actual'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('gold-designer', freeUser, settingsOnlyFinder, 'actual'), false);
+
+  // Admin in 'actual' mode STILL SEES ALL 7 FEATURES!
+  for (const viewId of ['home', 'convert', 'editor', 'gifts', 'gift-image', 'gold-designer', 'gift-finder']) {
+    assert.equal(
+      isNavbarFeatureVisibleToUser(viewId, adminUser, settingsOnlyFinder, 'actual'),
+      true,
+      `Admin must always see ${viewId}`
+    );
+  }
+  // When Admin previews as 'free_user' or 'pro_user', hidden features are hidden just like for regular users
+  assert.equal(isNavbarFeatureVisibleToUser('convert', adminUser, settingsOnlyFinder, 'free_user'), false);
+  assert.equal(isNavbarFeatureVisibleToUser('gift-finder', adminUser, settingsOnlyFinder, 'free_user'), true);
+
+  // getFirstVisibleNavbarView automatically routes regular users to 'gift-finder' when 'convert' is hidden
+  assert.equal(getFirstVisibleNavbarView(freeUser, settingsOnlyFinder, 'actual', 'convert'), 'gift-finder');
+  assert.equal(getFirstVisibleNavbarView(null, settingsOnlyFinder, 'actual', 'home'), 'gift-finder');
+  // While Admin in 'actual' mode keeps their preferred view ('convert')
+  assert.equal(getFirstVisibleNavbarView(adminUser, settingsOnlyFinder, 'actual', 'convert'), 'convert');
+
+  // 3. Test "Show All Features to Users"
+  const allVisibleRules = applySetAllFeaturesVisibilityForUsers(onlyGiftFinderRules, true);
+  const settingsAllVisible = {
+    ...DEFAULT_PLATFORM_SETTINGS,
+    proFeatureRules: allVisibleRules,
+  };
+  for (const viewId of ['home', 'convert', 'editor', 'gifts', 'gift-image', 'gold-designer', 'gift-finder']) {
+    assert.equal(isNavbarFeatureVisibleToUser(viewId, freeUser, settingsAllVisible, 'actual'), true);
+    assert.equal(isNavbarFeatureHiddenFromRegularUsers(viewId, settingsAllVisible), false);
+  }
+});
+
 

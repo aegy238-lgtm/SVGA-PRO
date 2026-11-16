@@ -94,6 +94,10 @@ import {
   consumeFeatureFreeAttempt,
   evaluatePlatformAccessBlock,
   getClientNetworkId,
+  VIEW_TO_FEATURE_KEY_MAP,
+  isNavbarFeatureVisibleToUser,
+  isNavbarFeatureHiddenFromRegularUsers,
+  getFirstVisibleNavbarView,
 } from './utils/platformStore';
 import { getTranslation } from './utils/i18n';
 import {
@@ -770,6 +774,36 @@ export default function App() {
     (window as any).__checkConversionAccess = (targetFmt: string, sourceFileName?: string) => {
       const st = stateRef.current;
       const currentUser = st.users.find((u) => u.id === st.currentUserId) || null;
+      const currentOnView = document.querySelector('.view.on')?.id || '';
+      const featureKey =
+        targetFmt === 'svga_editor' || currentOnView === 'editor'
+          ? 'svga_editor'
+          : 'convert_studio';
+      const featureRule = st.settings.proFeatureRules?.[featureKey];
+
+      if (featureRule && featureRule.isPro) {
+        const status = getFeatureFreeAttemptsStatus(
+          featureKey,
+          currentUser,
+          st.settings,
+          st.adminPreviewRole
+        );
+        if (status.effectiveIsPro) {
+          return true;
+        }
+        if (status.rule.allowFreeAttempts && status.remainingAttempts > 0) {
+          (window as any).__consumeFeatureAttempt?.(featureKey);
+          return true;
+        }
+        setBlockedFormatKey(featureKey);
+        setProModalOpen(true);
+        return false;
+      }
+
+      if (targetFmt === 'svga_editor' && featureRule && !featureRule.isPro) {
+        return true;
+      }
+
       const res = checkConversionPermission(
         currentUser,
         st.settings,
@@ -788,10 +822,20 @@ export default function App() {
     (window as any).__checkNavViewAccess = (viewKey: string) => {
       const st = stateRef.current;
       const curr = st.users.find((u) => u.id === st.currentUserId) || null;
-      let targetKey: string | null = null;
-      if (viewKey === 'gifts') targetKey = 'gifts_studio';
-      else if (viewKey === 'gift-image') targetKey = 'gift_image';
+      if (!isNavbarFeatureVisibleToUser(viewKey, curr, st.settings, st.adminPreviewRole)) {
+        const firstVisible = getFirstVisibleNavbarView(
+          curr,
+          st.settings,
+          st.adminPreviewRole,
+          'home'
+        );
+        if (firstVisible && typeof (window as any).__showNavView === 'function') {
+          (window as any).__showNavView(firstVisible);
+        }
+        return false;
+      }
 
+      const targetKey = VIEW_TO_FEATURE_KEY_MAP[viewKey] || null;
       if (targetKey) {
         const status = getFeatureFreeAttemptsStatus(
           targetKey,
@@ -804,6 +848,14 @@ export default function App() {
             setBlockedFormatKey(targetKey);
             setProModalOpen(true);
             return false;
+          }
+          if (
+            !status.effectiveIsPro &&
+            status.rule.allowFreeAttempts &&
+            status.remainingAttempts > 0 &&
+            viewKey === 'home'
+          ) {
+            (window as any).__consumeFeatureAttempt?.(targetKey);
           }
         }
       }
@@ -1256,6 +1308,24 @@ export default function App() {
         ? true
         : !!(currentUser && (hasAdminAccess || currentUser.isPro));
 
+  const homeAttemptStatus = getFeatureFreeAttemptsStatus(
+    'home',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
+  const convertStudioAttemptStatus = getFeatureFreeAttemptsStatus(
+    'convert_studio',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
+  const svgaEditorAttemptStatus = getFeatureFreeAttemptsStatus(
+    'svga_editor',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
   const giftStudioAttemptStatus = getFeatureFreeAttemptsStatus(
     'gifts_studio',
     currentUser,
@@ -1274,6 +1344,37 @@ export default function App() {
     settings,
     adminPreviewRole
   );
+  const giftFinderAttemptStatus = getFeatureFreeAttemptsStatus(
+    'gift_finder',
+    currentUser,
+    settings,
+    adminPreviewRole
+  );
+
+  // Automatically redirect regular users away from hidden views to the first open feature
+  useEffect(() => {
+    if (!isNavbarFeatureVisibleToUser(activeView, currentUser, settings, adminPreviewRole)) {
+      const fallbackView = getFirstVisibleNavbarView(
+        currentUser,
+        settings,
+        adminPreviewRole,
+        'home'
+      );
+      if (fallbackView && fallbackView !== activeView) {
+        if (typeof (window as any).__showNavView === 'function') {
+          (window as any).__showNavView(fallbackView);
+        } else {
+          document.querySelectorAll('.view').forEach((el) => {
+            el.classList.toggle('on', el.id === fallbackView);
+          });
+          document.querySelectorAll('nav a[data-v]').forEach((a) => {
+            a.classList.toggle('on', (a as HTMLElement).dataset.v === fallbackView);
+          });
+          setActiveView(fallbackView);
+        }
+      }
+    }
+  }, [activeView, currentUser, settings, adminPreviewRole]);
 
   // Sync Pro Feature Attempt status to Gift Studio iframe
   useEffect(() => {
@@ -1292,6 +1393,33 @@ export default function App() {
       } catch (e) {}
     }
   }, [giftStudioAttemptStatus, effectiveIsPro]);
+
+  const renderAdminHiddenBadge = (viewId: string) => {
+    if (!(hasAdminAccess && adminPreviewRole === 'actual')) return null;
+    if (!isNavbarFeatureHiddenFromRegularUsers(viewId, settings)) return null;
+    return (
+      <span
+        style={{
+          fontSize: '8.5px',
+          fontWeight: 800,
+          padding: '0px 4px',
+          borderRadius: '99px',
+          background: 'rgba(239, 68, 68, 0.24)',
+          border: '1px solid rgba(239, 68, 68, 0.6)',
+          color: '#fca5a5',
+          whiteSpace: 'nowrap',
+          lineHeight: '13px',
+        }}
+        title={
+          isAr
+            ? 'مخفي عن المستخدمين (يظهر لحساب المدير فقط)'
+            : 'Hidden from users (visible to Admin only)'
+        }
+      >
+        🚫
+      </span>
+    );
+  };
 
   const renderNavProBadge = (status: ReturnType<typeof getFeatureFreeAttemptsStatus>) => {
     if (!status.rule.isPro) return null;
@@ -1404,115 +1532,196 @@ export default function App() {
         </div>
 
         <div className="links">
-          <a
-            data-v="home"
-            id="homeNavTab"
-            style={{
-              padding: '3px 7px',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '3px',
-              fontWeight: 700,
-            }}
-          >
-            <span>🏠</span>
-            <span>{isAr ? 'الرئيسية' : 'Home'}</span>
-          </a>
-          <a data-v="convert" className="on" style={{ padding: '3px 6px' }}>
-            {t.navMotionProcessing}
-          </a>
-          <a
-            data-v="editor"
-            style={{
-              padding: '3px 6px',
-              borderRadius: '6px',
-            }}
-          >
-            {t.navSvgaEditor}
-          </a>
-          <a
-            data-v="gifts"
-            id="giftsStudioNavBtn"
-            style={{
-              padding: '3px 7px',
-              borderRadius: '7px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              background: '#14141c',
-              border: '1px solid #1e1e28',
-              fontWeight: 600,
-              transition: 'border-color 0.15s ease, color 0.15s ease',
-            }}
-          >
-            <span>{t.navGiftsStudio}</span>
-            {renderNavProBadge(giftStudioAttemptStatus)}
-          </a>
-          <a
-            data-v="gift-image"
-            id="giftImageCreatorNavBtn"
-            style={{
-              padding: '3px 7px',
-              borderRadius: '7px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              background: '#14141c',
-              border: '1px solid #1e1e28',
-              fontWeight: 600,
-              transition: 'border-color 0.15s ease, color 0.15s ease',
-            }}
-          >
-            <span>{t.navGiftImageCreator}</span>
-            {renderNavProBadge(giftImageAttemptStatus)}
-          </a>
-          <a
-            data-v="gold-designer"
-            id="goldDesignerNavBtn"
-            style={{
-              padding: '3px 7px',
-              borderRadius: '7px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              background: '#14141c',
-              border: '1px solid #1e1e28',
-              fontWeight: 600,
-              transition: 'border-color 0.15s ease, color 0.15s ease',
-            }}
-          >
-            <span dir={isAr ? 'rtl' : 'ltr'}>
-              {isAr ? (
-                <>
-                  مصمم الأسماء <bdi>3D</bdi>
-                </>
-              ) : (
-                '3D Name Designer'
-              )}
-            </span>
-            {renderNavProBadge(goldDesignerAttemptStatus)}
-          </a>
-          <a
-            data-v="gift-finder"
-            id="aiGiftFinderNavBtn"
-            style={{
-              padding: '3px 7px',
-              borderRadius: '7px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              background: '#14141c',
-              border: '1px solid #1e1e28',
-              fontWeight: 700,
-              cursor: 'pointer',
-              transition: 'border-color 0.15s ease, color 0.15s ease',
-            }}
-          >
-            <span>🔍</span>
-            <span>{isAr ? 'باحث الهدايا AI' : 'AI Gift Finder'}</span>
-          </a>
+          {(() => {
+            const isHomeVisible = isNavbarFeatureVisibleToUser(
+              'home',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isConvertVisible = isNavbarFeatureVisibleToUser(
+              'convert',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isEditorVisible = isNavbarFeatureVisibleToUser(
+              'editor',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isGiftsVisible = isNavbarFeatureVisibleToUser(
+              'gifts',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isGiftImageVisible = isNavbarFeatureVisibleToUser(
+              'gift-image',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isGoldDesignerVisible = isNavbarFeatureVisibleToUser(
+              'gold-designer',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+            const isGiftFinderVisible = isNavbarFeatureVisibleToUser(
+              'gift-finder',
+              currentUser,
+              settings,
+              adminPreviewRole
+            );
+
+            return (
+              <>
+                <a
+                  data-v="home"
+                  id="homeNavTab"
+                  hidden={!isHomeVisible}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    display: isHomeVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontWeight: 700,
+                  }}
+                >
+                  <span>🏠</span>
+                  <span>{isAr ? 'الرئيسية' : 'Home'}</span>
+                  {renderNavProBadge(homeAttemptStatus)}
+                  {renderAdminHiddenBadge('home')}
+                </a>
+                <a
+                  data-v="convert"
+                  id="convertNavTab"
+                  className="on"
+                  hidden={!isConvertVisible}
+                  style={{
+                    padding: '3px 6px',
+                    display: isConvertVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <span>{t.navMotionProcessing}</span>
+                  {renderNavProBadge(convertStudioAttemptStatus)}
+                  {renderAdminHiddenBadge('convert')}
+                </a>
+                <a
+                  data-v="editor"
+                  id="editorNavTab"
+                  hidden={!isEditorVisible}
+                  style={{
+                    padding: '3px 6px',
+                    borderRadius: '6px',
+                    display: isEditorVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <span>{t.navSvgaEditor}</span>
+                  {renderNavProBadge(svgaEditorAttemptStatus)}
+                  {renderAdminHiddenBadge('editor')}
+                </a>
+                <a
+                  data-v="gifts"
+                  id="giftsStudioNavBtn"
+                  hidden={!isGiftsVisible}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '7px',
+                    display: isGiftsVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#14141c',
+                    border: '1px solid #1e1e28',
+                    fontWeight: 600,
+                    transition: 'border-color 0.15s ease, color 0.15s ease',
+                  }}
+                >
+                  <span>{t.navGiftsStudio}</span>
+                  {renderNavProBadge(giftStudioAttemptStatus)}
+                  {renderAdminHiddenBadge('gifts')}
+                </a>
+                <a
+                  data-v="gift-image"
+                  id="giftImageCreatorNavBtn"
+                  hidden={!isGiftImageVisible}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '7px',
+                    display: isGiftImageVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#14141c',
+                    border: '1px solid #1e1e28',
+                    fontWeight: 600,
+                    transition: 'border-color 0.15s ease, color 0.15s ease',
+                  }}
+                >
+                  <span>{t.navGiftImageCreator}</span>
+                  {renderNavProBadge(giftImageAttemptStatus)}
+                  {renderAdminHiddenBadge('gift-image')}
+                </a>
+                <a
+                  data-v="gold-designer"
+                  id="goldDesignerNavBtn"
+                  hidden={!isGoldDesignerVisible}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '7px',
+                    display: isGoldDesignerVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#14141c',
+                    border: '1px solid #1e1e28',
+                    fontWeight: 600,
+                    transition: 'border-color 0.15s ease, color 0.15s ease',
+                  }}
+                >
+                  <span dir={isAr ? 'rtl' : 'ltr'}>
+                    {isAr ? (
+                      <>
+                        مصمم الأسماء <bdi>3D</bdi>
+                      </>
+                    ) : (
+                      '3D Name Designer'
+                    )}
+                  </span>
+                  {renderNavProBadge(goldDesignerAttemptStatus)}
+                  {renderAdminHiddenBadge('gold-designer')}
+                </a>
+                <a
+                  data-v="gift-finder"
+                  id="aiGiftFinderNavBtn"
+                  hidden={!isGiftFinderVisible}
+                  style={{
+                    padding: '3px 7px',
+                    borderRadius: '7px',
+                    display: isGiftFinderVisible ? 'inline-flex' : 'none',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#14141c',
+                    border: '1px solid #1e1e28',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    transition: 'border-color 0.15s ease, color 0.15s ease',
+                  }}
+                >
+                  <span>🔍</span>
+                  <span>{isAr ? 'باحث الهدايا AI' : 'AI Gift Finder'}</span>
+                  {renderNavProBadge(giftFinderAttemptStatus)}
+                  {renderAdminHiddenBadge('gift-finder')}
+                </a>
+              </>
+            );
+          })()}
           {Boolean(platformState.settings.giftCertificateEnabled) && (
             <button
               type="button"
@@ -2413,15 +2622,23 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
-                <button
-                  className="pill"
-                  style={{ padding: '3px 8px', width: '100%' }}
-                  onClick={switchToEditor}
-                >
-                  {t.openSvgaEditor}
-                </button>
-              </div>
+              {isNavbarFeatureVisibleToUser('editor', currentUser, settings, adminPreviewRole) && (
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+                  <button
+                    className="pill"
+                    style={{ padding: '3px 8px', width: '100%' }}
+                    onClick={() => {
+                      if (typeof (window as any).__checkNavViewAccess === 'function') {
+                        const allowed = (window as any).__checkNavViewAccess('editor');
+                        if (!allowed) return;
+                      }
+                      switchToEditor();
+                    }}
+                  >
+                    {t.openSvgaEditor}
+                  </button>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
                 <input
                   className="search"

@@ -614,7 +614,22 @@ export const AiGiftFinderStudio: React.FC<AiGiftFinderStudioProps> = ({ isAr }) 
     return await LocalDesktopAgentClient.fetchLocalFile(token, item.path, item.name);
   };
 
+  const checkAndConsumeGiftFinderExport = (): boolean => {
+    if (typeof (window as any).__checkFeatureProAccess === 'function') {
+      const access = (window as any).__checkFeatureProAccess('gift_finder', 'export');
+      if (access && !access.allowed) {
+        (window as any).__openProModal?.('gift_finder');
+        return false;
+      }
+      if (access && access.usesFreeAttempt) {
+        (window as any).__consumeFeatureAttempt?.('gift_finder');
+      }
+    }
+    return true;
+  };
+
   const handleLoadIntoConverter = async (item: EnrichedSearchResult) => {
+    if (!checkAndConsumeGiftFinderExport()) return;
     try {
       const file = await getResultFile(item);
       if (file && typeof (window as any).MotionTools?.load === 'function') {
@@ -626,6 +641,7 @@ export const AiGiftFinderStudio: React.FC<AiGiftFinderStudioProps> = ({ isAr }) 
   };
 
   const handleLoadIntoSvgaEditor = async (item: EnrichedSearchResult) => {
+    if (!checkAndConsumeGiftFinderExport()) return;
     try {
       const file = await getResultFile(item);
       if (file && typeof (window as any).__openInSvgaEditor === 'function') {
@@ -637,6 +653,7 @@ export const AiGiftFinderStudio: React.FC<AiGiftFinderStudioProps> = ({ isAr }) 
   };
 
   const handleOpenInExplorer = async (item: LocalGiftSearchResult) => {
+    if (!checkAndConsumeGiftFinderExport()) return;
     try {
       await LocalDesktopAgentClient.openLocationInExplorer(token, item.path);
       setActionMsg(
@@ -649,6 +666,7 @@ export const AiGiftFinderStudio: React.FC<AiGiftFinderStudioProps> = ({ isAr }) 
   };
 
   const handleDownloadCopy = async (item: EnrichedSearchResult) => {
+    if (!checkAndConsumeGiftFinderExport()) return;
     const file = await getResultFile(item);
     if (!file) return;
     const url = URL.createObjectURL(file);

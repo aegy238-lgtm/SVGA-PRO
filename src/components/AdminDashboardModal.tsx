@@ -35,7 +35,12 @@ import {
   PRO_TOOLS_DEFINITIONS,
   ProFeatureRule,
   ProFeatureScope,
+  NavbarFeatureMode,
   normalizeProFeatureRules,
+  resolveNavbarFeatureMode,
+  applyNavbarFeatureModePatch,
+  applyShowOnlySingleFeatureForUsers,
+  applySetAllFeaturesVisibilityForUsers,
   resetFeatureFreeAttempts,
   applyUserBanAction,
   canBanUserAccount,
@@ -946,26 +951,122 @@ export default function AdminDashboardModal({
 
   const handleUpdateProFeatureRule = (featureKey: string, patch: Partial<ProFeatureRule>) => {
     if (!hasAdminPermission(currentUser, 'manage_pro')) return;
-    const currentRule = normalizedFeatureRules[featureKey] || {
+    const curSettings = latestSettingsRef.current;
+    const curRules = normalizeProFeatureRules(curSettings.proFeatureRules);
+    const currentRule = curRules[featureKey] || {
       isPro: true,
       scope: 'export',
       allowFreeAttempts: true,
       freeAttemptsCount: 3,
+      visibleToUsers: true,
     };
     const nextRules = {
-      ...normalizedFeatureRules,
+      ...curRules,
       [featureKey]: {
         ...currentRule,
         ...patch,
       },
     };
-    onUpdateSettings({
-      ...settings,
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
       proFeatureRules: nextRules,
-    });
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    void syncSettingsToFirestore(nextSettings);
     showSavedFeedback(
-      'تم تحديث إعدادات ميزة برو والمحاولات المجانية ✓',
-      'Pro feature & free attempts settings updated ✓'
+      'تم تحديث إعدادات الميزة ومزامنتها فوراً مع جميع المستخدمين ✓',
+      'Feature visibility & access settings updated and synced ✓'
+    );
+  };
+
+  const handleSetNavbarFeatureMode = (
+    featureKey: string,
+    mode: NavbarFeatureMode,
+    customAttemptsCount?: number
+  ) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
+    const curSettings = latestSettingsRef.current;
+    const curRules = normalizeProFeatureRules(curSettings.proFeatureRules);
+    const currentRule = curRules[featureKey] || {
+      isPro: false,
+      scope: 'export',
+      allowFreeAttempts: true,
+      freeAttemptsCount: 3,
+      visibleToUsers: true,
+    };
+    const patched = applyNavbarFeatureModePatch(currentRule, mode, customAttemptsCount);
+    const nextRules = {
+      ...curRules,
+      [featureKey]: patched,
+    };
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
+      proFeatureRules: nextRules,
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    void syncSettingsToFirestore(nextSettings);
+
+    const toolDef = PRO_TOOLS_DEFINITIONS.find((t) => t.key === featureKey);
+    const nameAr = toolDef?.navLabelAr || toolDef?.labelAr || featureKey;
+    const modeLabelAr =
+      mode === 'hidden'
+        ? `🚫 تم إخفاء "${nameAr}" عن المستخدمين (تظهر للمدير فقط) ✓`
+        : mode === 'free'
+          ? `🟢 تم جعل "${nameAr}" ظاهرة ومجانية بالكامل للمستخدمين ✓`
+          : mode === 'free_attempts'
+            ? `🎁 تم تفعيل "${nameAr}" بعدد (${patched.freeAttemptsCount}) محاولات مجانية للمستخدمين ✓`
+            : `👑 تم جعل "${nameAr}" ضمن اشتراك باقة برو فقط للمستخدمين ✓`;
+
+    showSavedFeedback(modeLabelAr, `Updated "${featureKey}" mode to ${mode} ✓`);
+  };
+
+  const handleShowOnlySingleFeatureToUsers = (soleFeatureKey: string) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
+    const curSettings = latestSettingsRef.current;
+    const nextRules = applyShowOnlySingleFeatureForUsers(
+      curSettings.proFeatureRules,
+      soleFeatureKey
+    );
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
+      proFeatureRules: nextRules,
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    void syncSettingsToFirestore(nextSettings);
+
+    const toolDef = PRO_TOOLS_DEFINITIONS.find((t) => t.key === soleFeatureKey);
+    const nameAr = toolDef?.navLabelAr || toolDef?.labelAr || soleFeatureKey;
+    showSavedFeedback(
+      `🎯 تم إخفاء جميع الأزرار وإظهار ميزة "${nameAr}" فقط للمستخدمين (بينما تظهر كل المزايا للمدير) ✓`,
+      `🎯 Showing ONLY "${soleFeatureKey}" to users (all features remain visible to Admin) ✓`
+    );
+  };
+
+  const handleSetAllNavbarFeaturesVisibility = (visible: boolean) => {
+    if (!hasAdminPermission(currentUser, 'manage_pro')) return;
+    const curSettings = latestSettingsRef.current;
+    const nextRules = applySetAllFeaturesVisibilityForUsers(
+      curSettings.proFeatureRules,
+      visible
+    );
+    const nextSettings: PlatformSettings = {
+      ...curSettings,
+      proFeatureRules: nextRules,
+    };
+    latestSettingsRef.current = nextSettings;
+    onUpdateSettings(nextSettings);
+    void syncSettingsToFirestore(nextSettings);
+
+    showSavedFeedback(
+      visible
+        ? '🟢 تم إظهار جميع أزرار ومزايا الموقع للمستخدمين بنجاح ✓'
+        : '🚫 تم إخفاء جميع الأزرار العلوية عن المستخدمين (تظهر للمدير فقط) ✓',
+      visible
+        ? '🟢 All navbar features are now visible to users ✓'
+        : '🚫 All navbar features hidden from regular users (visible to Admin only) ✓'
     );
   };
 
@@ -1486,6 +1587,39 @@ export default function AdminDashboardModal({
                 <>🔒 {isAr ? 'إغلاق الموقع' : 'Close Site'}</>
               )}
             </button>
+
+            {/* Quick Shortcut to Navbar Features Visibility & Access Control */}
+            {hasAdminPermission(currentUser, 'manage_pro') && (
+              <button
+                type="button"
+                id="quickJumpNavbarFeaturesBtn"
+                onClick={() => {
+                  setActiveTab('pro');
+                  setTimeout(() => {
+                    document
+                      .getElementById('adminProToolsSection')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 60);
+                }}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(168, 85, 247, 0.7)',
+                  background: 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%)',
+                  color: '#fff',
+                  fontWeight: 800,
+                  fontSize: '12.5px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 4px 14px rgba(124, 58, 237, 0.35)',
+                }}
+              >
+                <span>🎛️</span>
+                <span>{isAr ? 'التحكم في أزرار ومزايا الموقع' : 'Navbar Features Control'}</span>
+              </button>
+            )}
 
             {/* Toggle Gift Authentication Certificate Open / Closed Button */}
             <button
@@ -4219,6 +4353,675 @@ export default function AdminDashboardModal({
           {/* TAB 2: PRO PACKAGE PRICING & FORMATS */}
           {activeTab === 'pro' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              {/* SECTION 1 (TOP PRIORITY): NAVBAR FEATURES VISIBILITY & ACCESS CONTROL */}
+              <div
+                id="adminProToolsSection"
+                style={{
+                  background: 'linear-gradient(180deg, #131224 0%, #0d0d17 100%)',
+                  border: '1px solid rgba(168, 85, 247, 0.55)',
+                  borderRadius: '16px',
+                  padding: '20px',
+                  boxShadow: '0 10px 30px rgba(168, 85, 247, 0.14)',
+                }}
+              >
+                {(() => {
+                  const visibleCount = PRO_TOOLS_DEFINITIONS.filter(
+                    (t) => normalizedFeatureRules[t.key]?.visibleToUsers !== false
+                  ).length;
+                  const soleVisibleTool =
+                    visibleCount === 1
+                      ? PRO_TOOLS_DEFINITIONS.find(
+                          (t) => normalizedFeatureRules[t.key]?.visibleToUsers !== false
+                        )
+                      : null;
+
+                  return (
+                    <>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'flex-start',
+                          flexWrap: 'wrap',
+                          gap: '12px',
+                          marginBottom: '16px',
+                        }}
+                      >
+                        <div>
+                          <h3
+                            style={{
+                              margin: 0,
+                              fontSize: '17px',
+                              fontWeight: 900,
+                              color: '#e9d5ff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <span>🎛️</span>
+                            <span>
+                              {isAr
+                                ? 'التحكم في أزرار ومزايا الموقع العلوية (إظهار / إخفاء / مجاني / محاولات / باقة برو)'
+                                : 'Top Navbar Features Control (Show / Hide / Free / Free Attempts / Pro Only)'}
+                            </span>
+                          </h3>
+                          <p style={{ margin: '6px 0 0', fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.55 }}>
+                            {isAr
+                              ? 'تحكم في كل زر من الأزرار العلوية للموقع: يمكنك إخفاء جميع الأزرار وإظهار ميزة واحدة فقط للمستخدمين، وتحديد ما إذا كانت الميزة (مجانية بالكامل) أو (بعدد محاولات مجانية) أو (ضمن اشتراك الباقة). ملاحظة: جميع المزايا تظل ظاهرة ومفتوحة دائماً على حساب المدير العام!'
+                              : 'Control every top navbar button: hide features from regular users or leave only a single feature visible, and set each feature to Free, Free Trial Attempts, or Pro Package Only. Note: All features always remain visible and unlocked on the Admin account!'}
+                          </p>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <span
+                            id="navbarFeaturesVisibleSummaryBadge"
+                            style={{
+                              padding: '6px 12px',
+                              borderRadius: '99px',
+                              background:
+                                visibleCount === 1
+                                  ? 'rgba(245, 158, 11, 0.2)'
+                                  : visibleCount > 0
+                                    ? 'rgba(16, 185, 129, 0.16)'
+                                    : 'rgba(239, 68, 68, 0.2)',
+                              border:
+                                visibleCount === 1
+                                  ? '1px solid #f59e0b'
+                                  : visibleCount > 0
+                                    ? '1px solid #10b981'
+                                    : '1px solid #ef4444',
+                              color:
+                                visibleCount === 1
+                                  ? '#fde047'
+                                  : visibleCount > 0
+                                    ? '#6ee7b7'
+                                    : '#fca5a5',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                            }}
+                          >
+                            {soleVisibleTool
+                              ? isAr
+                                ? `🎯 ظاهر للمستخدمين ميزة واحدة فقط: (${soleVisibleTool.navLabelAr || soleVisibleTool.labelAr})`
+                                : `🎯 Only 1 feature visible to users: (${soleVisibleTool.navLabelEn || soleVisibleTool.labelEn})`
+                              : isAr
+                                ? `👁️ ظاهر للمستخدمين: ${visibleCount} من ${PRO_TOOLS_DEFINITIONS.length} مزايا`
+                                : `👁️ Visible to users: ${visibleCount} / ${PRO_TOOLS_DEFINITIONS.length}`}
+                          </span>
+
+                          <button
+                            type="button"
+                            id="showAllNavbarFeaturesBtn"
+                            onClick={() => handleSetAllNavbarFeaturesVisibility(true)}
+                            style={{
+                              padding: '6px 14px',
+                              borderRadius: '9px',
+                              border: '1px solid #10b981',
+                              background: 'rgba(16, 185, 129, 0.2)',
+                              color: '#6ee7b7',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            🟢 {isAr ? 'إظهار كل المزايا للمستخدمين' : 'Show All to Users'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Quick 1-Click Bar: Show ONLY 1 Feature to Users & Hide All Others */}
+                      <div
+                        style={{
+                          background: 'rgba(15, 23, 42, 0.85)',
+                          border: '1px solid rgba(139, 92, 246, 0.35)',
+                          borderRadius: '12px',
+                          padding: '12px 14px',
+                          marginBottom: '16px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '10px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: '8px',
+                          }}
+                        >
+                          <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#fde047' }}>
+                            🎯{' '}
+                            {isAr
+                              ? 'اختصار سريع — اضغط على أي ميزة لإظهارها بمفردها فقط للمستخدمين وإخفاء باقي الأزرار:'
+                              : 'Quick Isolate — Click any feature to make ONLY that feature visible to users (hiding all others):'}
+                          </span>
+                          <span style={{ fontSize: '11px', color: '#a5b4fc', fontWeight: 700 }}>
+                            👑 {isAr ? 'حساب المدير يرى جميع المزايا دائماً' : 'Admin always sees all features'}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                          {PRO_TOOLS_DEFINITIONS.map((tool) => {
+                            const isSoleVisible =
+                              soleVisibleTool && soleVisibleTool.key === tool.key;
+                            return (
+                              <button
+                                key={tool.key}
+                                type="button"
+                                id={`isolateFeatureQuickBtn_${tool.key}`}
+                                onClick={() => handleShowOnlySingleFeatureToUsers(tool.key)}
+                                style={{
+                                  padding: '6px 12px',
+                                  borderRadius: '99px',
+                                  border: isSoleVisible
+                                    ? '2px solid #f59e0b'
+                                    : '1px solid rgba(148, 163, 184, 0.3)',
+                                  background: isSoleVisible
+                                    ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.3), rgba(124, 58, 237, 0.3))'
+                                    : '#161625',
+                                  color: isSoleVisible ? '#fde047' : '#e2e8f0',
+                                  fontSize: '12px',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  transition: 'all 0.15s ease',
+                                }}
+                              >
+                                <span>{tool.icon}</span>
+                                <span>
+                                  {isAr
+                                    ? `فقط: ${tool.navLabelAr || tool.labelAr}`
+                                    : `Only: ${tool.navLabelEn || tool.labelEn}`}
+                                </span>
+                                {isSoleVisible && <span>✓</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {PRO_TOOLS_DEFINITIONS.map((tool) => {
+                    const rule = normalizedFeatureRules[tool.key] || {
+                      isPro: tool.defaultIsPro,
+                      scope: tool.defaultScope,
+                      allowFreeAttempts: true,
+                      freeAttemptsCount: tool.defaultFreeAttempts,
+                      visibleToUsers: tool.defaultVisibleToUsers !== false,
+                    };
+                    const currentMode = resolveNavbarFeatureMode(rule);
+                    const isHidden = currentMode === 'hidden';
+
+                    return (
+                      <div
+                        key={tool.key}
+                        id={`proToolCard_${tool.key}`}
+                        style={{
+                          background: isHidden
+                            ? 'rgba(15, 15, 24, 0.65)'
+                            : rule.isPro
+                              ? '#10101c'
+                              : 'rgba(16, 28, 24, 0.45)',
+                          border: isHidden
+                            ? '1px dashed rgba(239, 68, 68, 0.45)'
+                            : currentMode === 'free'
+                              ? '1px solid rgba(16, 185, 129, 0.45)'
+                              : currentMode === 'free_attempts'
+                                ? '1px solid rgba(245, 158, 11, 0.5)'
+                                : '1px solid rgba(168, 85, 247, 0.5)',
+                          borderRadius: '14px',
+                          padding: '16px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span
+                              style={{
+                                fontSize: '24px',
+                                width: '42px',
+                                height: '42px',
+                                borderRadius: '10px',
+                                background: '#181828',
+                                border: '1px solid #2d2d44',
+                                display: 'grid',
+                                placeItems: 'center',
+                              }}
+                            >
+                              {tool.icon}
+                            </span>
+                            <div>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px',
+                                  flexWrap: 'wrap',
+                                }}
+                              >
+                                <span style={{ fontWeight: 900, fontSize: '14.5px', color: '#fff' }}>
+                                  {isAr ? tool.labelAr : tool.labelEn}
+                                </span>
+                                <span
+                                  style={{
+                                    padding: '2px 9px',
+                                    borderRadius: '99px',
+                                    fontSize: '11px',
+                                    fontWeight: 800,
+                                    background:
+                                      currentMode === 'hidden'
+                                        ? 'rgba(239, 68, 68, 0.2)'
+                                        : currentMode === 'free'
+                                          ? 'rgba(16, 185, 129, 0.2)'
+                                          : currentMode === 'free_attempts'
+                                            ? 'rgba(245, 158, 11, 0.2)'
+                                            : 'rgba(168, 85, 247, 0.22)',
+                                    border:
+                                      currentMode === 'hidden'
+                                        ? '1px solid #ef4444'
+                                        : currentMode === 'free'
+                                          ? '1px solid #10b981'
+                                          : currentMode === 'free_attempts'
+                                            ? '1px solid #f59e0b'
+                                            : '1px solid #a855f7',
+                                    color:
+                                      currentMode === 'hidden'
+                                        ? '#fca5a5'
+                                        : currentMode === 'free'
+                                          ? '#6ee7b7'
+                                          : currentMode === 'free_attempts'
+                                            ? '#fde047'
+                                            : '#e9d5ff',
+                                  }}
+                                >
+                                  {currentMode === 'hidden'
+                                    ? isAr
+                                      ? '🚫 مخفية عن المستخدمين (تظهر للمدير فقط)'
+                                      : '🚫 Hidden from Users (Admin Only)'
+                                    : currentMode === 'free'
+                                      ? isAr
+                                        ? '🟢 ظاهرة ومجانية للجميع'
+                                        : '🟢 Visible & Free for All'
+                                      : currentMode === 'free_attempts'
+                                        ? isAr
+                                          ? `🎁 ظاهرة (${rule.freeAttemptsCount} محاولات مجانية ثم باقة)`
+                                          : `🎁 Visible (${rule.freeAttemptsCount} Free Attempts then Pro)`
+                                        : isAr
+                                          ? '👑 ظاهرة (ضمن اشتراك الباقة فقط)'
+                                          : '👑 Visible (Pro Package Only)'}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '11.5px', color: '#94a3b8', marginTop: '3px' }}>
+                                {isAr ? tool.descAr : tool.descEn}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              id={`showOnlyThisFeatureBtn_${tool.key}`}
+                              onClick={() => handleShowOnlySingleFeatureToUsers(tool.key)}
+                              title={
+                                isAr
+                                  ? 'إخفاء جميع الأزرار الأخرى عن المستخدمين وإبقاء هذه الميزة فقط ظاهرة لهم'
+                                  : 'Hide all other buttons from users and keep ONLY this feature visible'
+                              }
+                              style={{
+                                padding: '5px 11px',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(245, 158, 11, 0.45)',
+                                background: 'rgba(245, 158, 11, 0.14)',
+                                color: '#fde047',
+                                fontSize: '11px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              🎯 {isAr ? 'إظهار هذه فقط للمستخدم' : 'Show Only This'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 4 Direct Mode Buttons: Hidden / Free / Free Attempts / Pro Only */}
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))',
+                            gap: '8px',
+                            background: '#0b0b14',
+                            padding: '8px',
+                            borderRadius: '10px',
+                            border: '1px solid #1e1e30',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            id={`featureModeHidden_${tool.key}`}
+                            onClick={() => handleSetNavbarFeatureMode(tool.key, 'hidden')}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border:
+                                currentMode === 'hidden'
+                                  ? '2px solid #ef4444'
+                                  : '1px solid #26263a',
+                              background:
+                                currentMode === 'hidden'
+                                  ? 'rgba(239, 68, 68, 0.22)'
+                                  : '#141422',
+                              color: currentMode === 'hidden' ? '#fecaca' : '#94a3b8',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>🚫</span>
+                            <span>{isAr ? 'إخفاء عن المستخدمين' : 'Hide from Users'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            id={`featureModeFree_${tool.key}`}
+                            onClick={() => handleSetNavbarFeatureMode(tool.key, 'free')}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border:
+                                currentMode === 'free'
+                                  ? '2px solid #10b981'
+                                  : '1px solid #26263a',
+                              background:
+                                currentMode === 'free'
+                                  ? 'rgba(16, 185, 129, 0.22)'
+                                  : '#141422',
+                              color: currentMode === 'free' ? '#6ee7b7' : '#94a3b8',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>🟢</span>
+                            <span>{isAr ? 'مجانية بالكامل' : '100% Free'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            id={`featureModeAttempts_${tool.key}`}
+                            onClick={() =>
+                              handleSetNavbarFeatureMode(
+                                tool.key,
+                                'free_attempts',
+                                rule.freeAttemptsCount > 0 ? rule.freeAttemptsCount : 3
+                              )
+                            }
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border:
+                                currentMode === 'free_attempts'
+                                  ? '2px solid #f59e0b'
+                                  : '1px solid #26263a',
+                              background:
+                                currentMode === 'free_attempts'
+                                  ? 'rgba(245, 158, 11, 0.22)'
+                                  : '#141422',
+                              color: currentMode === 'free_attempts' ? '#fde047' : '#94a3b8',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>🎁</span>
+                            <span>
+                              {isAr ? 'عدد محاولات مجانية' : 'Free Trial Attempts'}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            id={`featureModeProOnly_${tool.key}`}
+                            onClick={() => handleSetNavbarFeatureMode(tool.key, 'pro_only')}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              border:
+                                currentMode === 'pro_only'
+                                  ? '2px solid #a855f7'
+                                  : '1px solid #26263a',
+                              background:
+                                currentMode === 'pro_only'
+                                  ? 'rgba(168, 85, 247, 0.25)'
+                                  : '#141422',
+                              color: currentMode === 'pro_only' ? '#e9d5ff' : '#94a3b8',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span>👑</span>
+                            <span>
+                              {isAr ? 'ضمن اشتراك الباقة فقط' : 'Pro Package Only'}
+                            </span>
+                          </button>
+                        </div>
+
+                        {!isHidden && rule.isPro && (
+                          <div
+                            style={{
+                              borderTop: '1px solid #1f1f32',
+                              paddingTop: '12px',
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                              gap: '14px',
+                            }}
+                          >
+                            {/* Scope Selector: Access vs Export */}
+                            <div>
+                              <label
+                                style={{
+                                  display: 'block',
+                                  fontSize: '11px',
+                                  color: '#c4b5fd',
+                                  fontWeight: 700,
+                                  marginBottom: '6px',
+                                }}
+                              >
+                                {isAr
+                                  ? '🔒 متى يُطلب الاشتراك أو تُحتسب المحاولة:'
+                                  : '🔒 When to Require Pro / Consume Attempt:'}
+                              </label>
+                              <select
+                                value={rule.scope}
+                                onChange={(e) =>
+                                  handleUpdateProFeatureRule(tool.key, {
+                                    scope: e.target.value as ProFeatureScope,
+                                  })
+                                }
+                                style={{
+                                  width: '100%',
+                                  padding: '7px 10px',
+                                  borderRadius: '8px',
+                                  background: '#161625',
+                                  border: '1px solid #3d3d5c',
+                                  color: '#fff',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <option value="export">
+                                  {isAr
+                                    ? '⬇ عند التصدير / التحميل فقط (الدخول والمعاينة متاحة)'
+                                    : '⬇ On Export / Download Only (Preview allowed)'}
+                                </option>
+                                <option value="access">
+                                  {isAr
+                                    ? '🔒 عند الضغط على الزر لفتح الميزة مباشرة'
+                                    : '🔒 Immediately on Clicking the Navbar Button'}
+                                </option>
+                              </select>
+                            </div>
+
+                            {/* Free Attempts Configuration */}
+                            {rule.allowFreeAttempts && (
+                              <div>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    marginBottom: '6px',
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: '11px',
+                                      color: '#fde047',
+                                      fontWeight: 800,
+                                    }}
+                                  >
+                                    🎁{' '}
+                                    {isAr
+                                      ? 'تحديد عدد المحاولات المجانية لكل مستخدم:'
+                                      : 'Number of Free Attempts per User:'}
+                                  </span>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleResetFeatureAttemptsForTesting(tool.key)
+                                    }
+                                    style={{
+                                      padding: '2px 8px',
+                                      borderRadius: '6px',
+                                      border: '1px solid #475569',
+                                      background: '#1a1a2a',
+                                      color: '#cbd5e1',
+                                      fontSize: '10px',
+                                      cursor: 'pointer',
+                                    }}
+                                    title={
+                                      isAr
+                                        ? 'إعادة تصفير محاولات جهازك للتجربة'
+                                        : 'Reset trial attempts on this device for testing'
+                                    }
+                                  >
+                                    🔄 {isAr ? 'تصفير المحاولات للتجربة' : 'Reset Attempts'}
+                                  </button>
+                                </div>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <input
+                                    id={`freeAttemptsInput_${tool.key}`}
+                                    type="number"
+                                    min="1"
+                                    max="100"
+                                    value={rule.freeAttemptsCount}
+                                    onChange={(e) =>
+                                      handleUpdateProFeatureRule(tool.key, {
+                                        freeAttemptsCount: Math.max(
+                                          1,
+                                          Number(e.target.value) || 1
+                                        ),
+                                      })
+                                    }
+                                    style={{
+                                      width: '70px',
+                                      padding: '6px 8px',
+                                      borderRadius: '8px',
+                                      background: '#161625',
+                                      border: '1px solid #f59e0b',
+                                      color: '#fde047',
+                                      fontSize: '13px',
+                                      fontWeight: 800,
+                                      textAlign: 'center',
+                                    }}
+                                  />
+                                  <span style={{ fontSize: '11px', color: '#9494aa' }}>
+                                    {isAr ? 'محاولات مجانية' : 'free attempts'}
+                                  </span>
+
+                                  {/* Quick chips */}
+                                  <div style={{ display: 'flex', gap: '4px', marginInlineStart: 'auto' }}>
+                                    {[1, 2, 3, 5, 10].map((num) => (
+                                      <button
+                                        key={num}
+                                        type="button"
+                                        onClick={() =>
+                                          handleUpdateProFeatureRule(tool.key, {
+                                            freeAttemptsCount: num,
+                                          })
+                                        }
+                                        style={{
+                                          padding: '3px 7px',
+                                          borderRadius: '5px',
+                                          border:
+                                            rule.freeAttemptsCount === num
+                                              ? '1px solid #f59e0b'
+                                              : '1px solid #2e2e42',
+                                          background:
+                                            rule.freeAttemptsCount === num
+                                              ? 'rgba(245, 158, 11, 0.25)'
+                                              : '#161624',
+                                          color:
+                                            rule.freeAttemptsCount === num
+                                              ? '#fde047'
+                                              : '#cbd5e1',
+                                          fontSize: '10px',
+                                          fontWeight: 700,
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        {num}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Multi-Tier Subscription Plans Configuration (أسبوع / شهر / 3 شهور / سنة) */}
               <div
                 style={{
@@ -4514,392 +5317,6 @@ export default function AdminDashboardModal({
                       showSavedFeedback('تم تحديث الوصف', 'Description updated');
                     }}
                   />
-                </div>
-              </div>
-
-              {/* SECTION: PRO TOOLS & FREE TRIAL ATTEMPTS CONFIGURATION */}
-              <div
-                id="adminProToolsSection"
-                style={{
-                  background: 'linear-gradient(180deg, #131224 0%, #0d0d17 100%)',
-                  border: '1px solid rgba(168, 85, 247, 0.45)',
-                  borderRadius: '14px',
-                  padding: '18px',
-                  boxShadow: '0 8px 24px rgba(168, 85, 247, 0.1)',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    flexWrap: 'wrap',
-                    gap: '12px',
-                    marginBottom: '16px',
-                  }}
-                >
-                  <div>
-                    <h3
-                      style={{
-                        margin: 0,
-                        fontSize: '16px',
-                        fontWeight: 800,
-                        color: '#c084fc',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                      }}
-                    >
-                      <span>💎</span>
-                      <span>
-                        {isAr
-                          ? 'تخصيص وظائف وميزات برو ومحاولات التجربة المجانية'
-                          : 'Configure Pro Tools & Free Trial Attempts'}
-                      </span>
-                    </h3>
-                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#a0a0b8' }}>
-                      {isAr
-                        ? 'حدد الوظائف المشمولة في باقة برو (مثل: استوديو الهدايا، أداة إنشاء الصور)، واختر نطاق القفل (الدخول للوظيفة بالكامل أم زر التصدير والتحميل فقط)، مع إمكانية منح المستخدمين غير المشتركين عدد محدد من المحاولات المجانية وتظهر شارتها على الأزرار.'
-                        : 'Select tools included in Pro, choose lock scope (feature access vs export only), and grant non-subscribers a configurable number of free trial attempts with live UI badges.'}
-                    </p>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {PRO_TOOLS_DEFINITIONS.map((tool) => {
-                    const rule = normalizedFeatureRules[tool.key] || {
-                      isPro: tool.defaultIsPro,
-                      scope: tool.defaultScope,
-                      allowFreeAttempts: true,
-                      freeAttemptsCount: tool.defaultFreeAttempts,
-                    };
-
-                    return (
-                      <div
-                        key={tool.key}
-                        id={`proToolCard_${tool.key}`}
-                        style={{
-                          background: rule.isPro ? '#10101c' : 'rgba(16, 16, 28, 0.5)',
-                          border: rule.isPro
-                            ? '1px solid rgba(168, 85, 247, 0.4)'
-                            : '1px solid #26263a',
-                          borderRadius: '12px',
-                          padding: '16px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '12px',
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'flex-start',
-                            flexWrap: 'wrap',
-                            gap: '12px',
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <span style={{ fontSize: '24px' }}>{tool.icon}</span>
-                            <div>
-                              <div style={{ fontWeight: 800, fontSize: '14px', color: '#fff' }}>
-                                {isAr ? tool.labelAr : tool.labelEn}
-                              </div>
-                              <div style={{ fontSize: '11px', color: '#9494aa', marginTop: '2px' }}>
-                                {isAr ? tool.descAr : tool.descEn}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Pro Toggle */}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleUpdateProFeatureRule(tool.key, { isPro: !rule.isPro })
-                            }
-                            style={{
-                              padding: '5px 14px',
-                              borderRadius: '99px',
-                              border: rule.isPro
-                                ? '1px solid #a855f7'
-                                : '1px solid #10b981',
-                              background: rule.isPro
-                                ? 'rgba(168, 85, 247, 0.22)'
-                                : 'rgba(16, 185, 129, 0.18)',
-                              color: rule.isPro ? '#e9d5ff' : '#6ee7b7',
-                              fontSize: '12px',
-                              fontWeight: 800,
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '6px',
-                            }}
-                          >
-                            <span>{rule.isPro ? '👑' : '✅'}</span>
-                            <span>
-                              {rule.isPro
-                                ? isAr
-                                  ? 'ضمن باقة برو (مقيدة)'
-                                  : 'Pro Membership Only'
-                                : isAr
-                                  ? 'مجانية للجميع'
-                                  : 'Free For Everyone'}
-                            </span>
-                          </button>
-                        </div>
-
-                        {rule.isPro && (
-                          <div
-                            style={{
-                              borderTop: '1px solid #1f1f32',
-                              paddingTop: '12px',
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-                              gap: '14px',
-                            }}
-                          >
-                            {/* Scope Selector: Access vs Export */}
-                            <div>
-                              <label
-                                style={{
-                                  display: 'block',
-                                  fontSize: '11px',
-                                  color: '#c4b5fd',
-                                  fontWeight: 700,
-                                  marginBottom: '6px',
-                                }}
-                              >
-                                {isAr
-                                  ? '🔒 تحديد موضع قفل برو (الميزة أم زر التصدير):'
-                                  : '🔒 Lock Scope (Feature Access vs Export Button):'}
-                              </label>
-                              <select
-                                value={rule.scope}
-                                onChange={(e) =>
-                                  handleUpdateProFeatureRule(tool.key, {
-                                    scope: e.target.value as ProFeatureScope,
-                                  })
-                                }
-                                style={{
-                                  width: '100%',
-                                  padding: '7px 10px',
-                                  borderRadius: '8px',
-                                  background: '#161625',
-                                  border: '1px solid #3d3d5c',
-                                  color: '#fff',
-                                  fontSize: '12px',
-                                  fontWeight: 600,
-                                }}
-                              >
-                                <option value="export">
-                                  {isAr
-                                    ? '⬇ قفل زر التصدير والتحميل فقط (المعاينة والتجربة متاحة)'
-                                    : '⬇ Lock Export & Download Button Only (Free Preview)'}
-                                </option>
-                                <option value="access">
-                                  {isAr
-                                    ? '🔒 قفل الدخول واستخدام الوظيفة بالكامل'
-                                    : '🔒 Lock Entire Feature Access'}
-                                </option>
-                              </select>
-                            </div>
-
-                            {/* Free Attempts Configuration */}
-                            <div>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center',
-                                  marginBottom: '6px',
-                                }}
-                              >
-                                <label
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    fontSize: '11px',
-                                    color: '#fde047',
-                                    fontWeight: 700,
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={rule.allowFreeAttempts}
-                                    onChange={(e) =>
-                                      handleUpdateProFeatureRule(tool.key, {
-                                        allowFreeAttempts: e.target.checked,
-                                      })
-                                    }
-                                    style={{
-                                      width: '14px',
-                                      height: '14px',
-                                      accentColor: '#f59e0b',
-                                    }}
-                                  />
-                                  <span>
-                                    {isAr
-                                      ? '🎁 إتاحة محاولات تجربة مجانية لغير المشتركين'
-                                      : '🎁 Allow Free Trial Attempts'}
-                                  </span>
-                                </label>
-
-                                {rule.allowFreeAttempts && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleResetFeatureAttemptsForTesting(tool.key)
-                                    }
-                                    style={{
-                                      padding: '2px 8px',
-                                      borderRadius: '6px',
-                                      border: '1px solid #475569',
-                                      background: '#1a1a2a',
-                                      color: '#cbd5e1',
-                                      fontSize: '10px',
-                                      cursor: 'pointer',
-                                    }}
-                                    title={
-                                      isAr
-                                        ? 'إعادة تصفير محاولات جهازك للتجربة'
-                                        : 'Reset trial attempts on this device for testing'
-                                    }
-                                  >
-                                    🔄 {isAr ? 'تصفير للتجربة' : 'Reset'}
-                                  </button>
-                                )}
-                              </div>
-
-                              {rule.allowFreeAttempts ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    max="50"
-                                    value={rule.freeAttemptsCount}
-                                    onChange={(e) =>
-                                      handleUpdateProFeatureRule(tool.key, {
-                                        freeAttemptsCount: Math.max(
-                                          1,
-                                          Number(e.target.value) || 1
-                                        ),
-                                      })
-                                    }
-                                    style={{
-                                      width: '70px',
-                                      padding: '6px 8px',
-                                      borderRadius: '8px',
-                                      background: '#161625',
-                                      border: '1px solid #f59e0b',
-                                      color: '#fde047',
-                                      fontSize: '13px',
-                                      fontWeight: 800,
-                                      textAlign: 'center',
-                                    }}
-                                  />
-                                  <span style={{ fontSize: '11px', color: '#9494aa' }}>
-                                    {isAr ? 'محاولات مجانية' : 'free attempts'}
-                                  </span>
-
-                                  {/* Quick chips */}
-                                  <div style={{ display: 'flex', gap: '4px', marginInlineStart: 'auto' }}>
-                                    {[1, 2, 3, 5, 10].map((num) => (
-                                      <button
-                                        key={num}
-                                        type="button"
-                                        onClick={() =>
-                                          handleUpdateProFeatureRule(tool.key, {
-                                            freeAttemptsCount: num,
-                                          })
-                                        }
-                                        style={{
-                                          padding: '3px 7px',
-                                          borderRadius: '5px',
-                                          border:
-                                            rule.freeAttemptsCount === num
-                                              ? '1px solid #f59e0b'
-                                              : '1px solid #2e2e42',
-                                          background:
-                                            rule.freeAttemptsCount === num
-                                              ? 'rgba(245, 158, 11, 0.25)'
-                                              : '#161624',
-                                          color:
-                                            rule.freeAttemptsCount === num
-                                              ? '#fde047'
-                                              : '#cbd5e1',
-                                          fontSize: '10px',
-                                          fontWeight: 700,
-                                          cursor: 'pointer',
-                                        }}
-                                      >
-                                        {num}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div style={{ fontSize: '11px', color: '#ef4444' }}>
-                                  {isAr
-                                    ? '🚫 لا توجد محاولات مجانية (مطلوب اشتراك فوري)'
-                                    : '🚫 No free attempts (Immediate subscription required)'}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Live Badge Preview */}
-                            <div
-                              style={{
-                                gridColumn: '1 / -1',
-                                background: '#0b0b14',
-                                border: '1px dashed #2d2d46',
-                                borderRadius: '8px',
-                                padding: '8px 12px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                flexWrap: 'wrap',
-                                gap: '8px',
-                              }}
-                            >
-                              <span style={{ fontSize: '11px', color: '#9494aa' }}>
-                                {isAr ? 'معاينة شكل الشارة في الموقع:' : 'Live Button Badge Preview:'}
-                              </span>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <span
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    padding: '3px 8px',
-                                    borderRadius: '99px',
-                                    fontSize: '11px',
-                                    fontWeight: 800,
-                                    background: rule.allowFreeAttempts
-                                      ? 'linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(16, 185, 129, 0.22))'
-                                      : 'rgba(245, 158, 11, 0.2)',
-                                    border: rule.allowFreeAttempts
-                                      ? '1px solid #10b981'
-                                      : '1px solid #f59e0b',
-                                    color: rule.allowFreeAttempts ? '#6ee7b7' : '#fde047',
-                                  }}
-                                >
-                                  <span>👑 PRO</span>
-                                  {rule.allowFreeAttempts && (
-                                    <span>
-                                      · {rule.freeAttemptsCount}{' '}
-                                      {isAr ? 'محاولات مجانية' : 'Free Trials'}
-                                    </span>
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
                 </div>
               </div>
 
