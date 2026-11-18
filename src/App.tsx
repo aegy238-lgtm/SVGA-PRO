@@ -1194,6 +1194,15 @@ export default function App() {
     (window as any).__reapplyStageEdgeFeather = () => {
       applyEdgeFeatherToStageView(edgeFeatherRef.current);
     };
+    const syncWmCount = () => {
+      const layers = (window as any).__WATERMARK_LAYERS || [];
+      setActiveWatermarkCount(Array.isArray(layers) ? layers.length : 0);
+    };
+    syncWmCount();
+    window.addEventListener('watermarklayerschange', syncWmCount);
+    return () => {
+      window.removeEventListener('watermarklayerschange', syncWmCount);
+    };
   }, []);
 
   const handleOpenWatermarkModal = () => {

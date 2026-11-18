@@ -24,12 +24,13 @@ export default function EdgeFeatherModal({
   onClose,
   onApply,
 }: EdgeFeatherModalProps) {
-  // Margin & Feather state
-  const [topMargin, setTopMargin] = useState<number>(config.topMargin);
-  const [bottomMargin, setBottomMargin] = useState<number>(config.bottomMargin);
-  const [leftMargin, setLeftMargin] = useState<number>(config.leftMargin);
-  const [rightMargin, setRightMargin] = useState<number>(config.rightMargin);
-  const [featherRadius, setFeatherRadius] = useState<number>(config.featherRadius);
+  // Margin & Feather state (disabled by default until user explicitly uses/enables it)
+  const [featherEnabled, setFeatherEnabled] = useState<boolean>(Boolean(config.enabled));
+  const [topMargin, setTopMargin] = useState<number>(config.enabled ? config.topMargin : 0);
+  const [bottomMargin, setBottomMargin] = useState<number>(config.enabled ? config.bottomMargin : 0);
+  const [leftMargin, setLeftMargin] = useState<number>(config.enabled ? config.leftMargin : 0);
+  const [rightMargin, setRightMargin] = useState<number>(config.enabled ? config.rightMargin : 0);
+  const [featherRadius, setFeatherRadius] = useState<number>(config.enabled ? config.featherRadius : 0);
   const [draggingSide, setDraggingSide] = useState<DragSide>(null);
   const [isBaking, setIsBaking] = useState<boolean>(false);
 
@@ -148,24 +149,21 @@ export default function EdgeFeatherModal({
       });
     }
 
-    // Margins and feather radius
+    // Margins and feather radius — NEVER auto-activate when config.enabled is false
     if (config.enabled) {
+      setFeatherEnabled(true);
       setTopMargin(config.topMargin);
       setBottomMargin(config.bottomMargin);
       setLeftMargin(config.leftMargin);
       setRightMargin(config.rightMargin);
       setFeatherRadius(config.featherRadius);
     } else {
-      const hasCustom =
-        config.topMargin > 0 ||
-        config.bottomMargin > 0 ||
-        config.leftMargin > 0 ||
-        config.rightMargin > 0;
-      setTopMargin(hasCustom ? config.topMargin : 21);
-      setBottomMargin(hasCustom ? config.bottomMargin : 0);
-      setLeftMargin(hasCustom ? config.leftMargin : 0);
-      setRightMargin(hasCustom ? config.rightMargin : 0);
-      setFeatherRadius(config.featherRadius > 0 ? config.featherRadius : 200);
+      setFeatherEnabled(false);
+      setTopMargin(0);
+      setBottomMargin(0);
+      setLeftMargin(0);
+      setRightMargin(0);
+      setFeatherRadius(0);
     }
   }, [open, config]);
 
@@ -285,18 +283,36 @@ export default function EdgeFeatherModal({
       const rect = box.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
 
+      let nextTop = topMargin;
+      let nextBottom = bottomMargin;
+      let nextLeft = leftMargin;
+      let nextRight = rightMargin;
+
       if (draggingSide === 'top') {
         const pct = Math.round(((e.clientY - rect.top) / rect.height) * 100);
-        setTopMargin(clampEdgeFeatherMargin(pct));
+        nextTop = clampEdgeFeatherMargin(pct);
+        setTopMargin(nextTop);
       } else if (draggingSide === 'bottom') {
         const pct = Math.round(((rect.bottom - e.clientY) / rect.height) * 100);
-        setBottomMargin(clampEdgeFeatherMargin(pct));
+        nextBottom = clampEdgeFeatherMargin(pct);
+        setBottomMargin(nextBottom);
       } else if (draggingSide === 'left') {
         const pct = Math.round(((e.clientX - rect.left) / rect.width) * 100);
-        setLeftMargin(clampEdgeFeatherMargin(pct));
+        nextLeft = clampEdgeFeatherMargin(pct);
+        setLeftMargin(nextLeft);
       } else if (draggingSide === 'right') {
         const pct = Math.round(((rect.right - e.clientX) / rect.width) * 100);
-        setRightMargin(clampEdgeFeatherMargin(pct));
+        nextRight = clampEdgeFeatherMargin(pct);
+        setRightMargin(nextRight);
+      }
+
+      const anyPositive = nextTop > 0 || nextBottom > 0 || nextLeft > 0 || nextRight > 0;
+      if (anyPositive) {
+        setFeatherEnabled(true);
+        setFeatherRadius((prev) => (prev > 0 ? prev : 50));
+      } else {
+        setFeatherRadius(0);
+        setFeatherEnabled(false);
       }
     };
 
@@ -310,7 +326,7 @@ export default function EdgeFeatherModal({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [draggingSide]);
+  }, [draggingSide, topMargin, bottomMargin, leftMargin, rightMargin]);
 
   // Pointer drag handling for Timeline Start/End thumbs
   useEffect(() => {
@@ -393,8 +409,12 @@ export default function EdgeFeatherModal({
     let rafId = 0;
     const loopStartTime = performance.now();
 
+    const isFeatherActive =
+      featherEnabled &&
+      (topMargin > 0 || bottomMargin > 0 || leftMargin > 0 || rightMargin > 0 || featherRadius > 0);
+
     const draftCfg: EdgeFeatherConfig = {
-      enabled: true,
+      enabled: isFeatherActive,
       topMargin,
       bottomMargin,
       leftMargin,
@@ -533,6 +553,7 @@ export default function EdgeFeatherModal({
     return () => cancelAnimationFrame(rafId);
   }, [
     open,
+    featherEnabled,
     topMargin,
     bottomMargin,
     leftMargin,
@@ -574,7 +595,53 @@ export default function EdgeFeatherModal({
     }
   };
 
+  const updateMarginValue = (side: 'top' | 'bottom' | 'left' | 'right', rawVal: number) => {
+    const clamped = clampMargin(rawVal);
+    const nextTop = side === 'top' ? clamped : topMargin;
+    const nextBottom = side === 'bottom' ? clamped : bottomMargin;
+    const nextLeft = side === 'left' ? clamped : leftMargin;
+    const nextRight = side === 'right' ? clamped : rightMargin;
+
+    if (side === 'top') setTopMargin(clamped);
+    if (side === 'bottom') setBottomMargin(clamped);
+    if (side === 'left') setLeftMargin(clamped);
+    if (side === 'right') setRightMargin(clamped);
+
+    const anyPositive = nextTop > 0 || nextBottom > 0 || nextLeft > 0 || nextRight > 0;
+    if (anyPositive) {
+      setFeatherEnabled(true);
+      setFeatherRadius((prev) => (prev > 0 ? prev : 50));
+    } else {
+      setFeatherRadius(0);
+      setFeatherEnabled(false);
+    }
+  };
+
+  const updateFeatherRadiusValue = (rawVal: number) => {
+    const clamped = clampRadius(rawVal);
+    setFeatherRadius(clamped);
+    const anyMargin = topMargin > 0 || bottomMargin > 0 || leftMargin > 0 || rightMargin > 0;
+    if (clamped > 0 || anyMargin) {
+      setFeatherEnabled(true);
+    } else {
+      setFeatherEnabled(false);
+    }
+  };
+
+  const isFeatherCurrentlyActive =
+    featherEnabled &&
+    (topMargin > 0 || bottomMargin > 0 || leftMargin > 0 || rightMargin > 0 || featherRadius > 0);
+
   const handleBakeTransparency = async () => {
+    if (!isFeatherCurrentlyActive) {
+      triggerToast(
+        isAr
+          ? '⚠️ يرجى تحديد هوامش الشفافية أو تفعيل تنعيم الحواف أولاً قبل التثبيت.'
+          : '⚠️ Please enable or set edge feather margins first before baking.'
+      );
+      return;
+    }
+
     const nextCfg: EdgeFeatherConfig = {
       enabled: true,
       topMargin,
@@ -621,12 +688,12 @@ export default function EdgeFeatherModal({
 
   const handleApplyClick = async () => {
     const nextCfg: EdgeFeatherConfig = {
-      enabled: true,
-      topMargin,
-      bottomMargin,
-      leftMargin,
-      rightMargin,
-      featherRadius,
+      enabled: isFeatherCurrentlyActive,
+      topMargin: isFeatherCurrentlyActive ? topMargin : 0,
+      bottomMargin: isFeatherCurrentlyActive ? bottomMargin : 0,
+      leftMargin: isFeatherCurrentlyActive ? leftMargin : 0,
+      rightMargin: isFeatherCurrentlyActive ? rightMargin : 0,
+      featherRadius: isFeatherCurrentlyActive ? featherRadius : 0,
       trimEnabled,
       trimStartTime: Number(trimStartTime.toFixed(2)),
       trimEndTime: Number(trimEndTime.toFixed(2)),
@@ -637,10 +704,10 @@ export default function EdgeFeatherModal({
       fps,
     };
 
-    // If active SVGA movie has decomposed image layers, also automatically bake into primary image layers
-    // so moving upwards/downwards in Project Composer permanently keeps the transparency on the design!
+    // Only auto-bake into SVGA layers if the user actually enabled/used Edge Feather!
     const sv = (window as any).SV;
     if (
+      isFeatherCurrentlyActive &&
       sv &&
       sv.m &&
       sv.m.im &&
@@ -1810,29 +1877,111 @@ export default function EdgeFeatherModal({
             </div>
 
             {/* 2. EDGE MARGINS & FEATHER RADIUS SECTION */}
-            <div>
+            <div
+              id="efEdgeParametersSection"
+              style={{
+                background: 'linear-gradient(180deg, #181822 0%, #15151e 100%)',
+                border: isFeatherCurrentlyActive
+                  ? '1px solid rgba(124, 92, 255, 0.45)'
+                  : '1px solid #282835',
+                borderRadius: '10px',
+                padding: '16px 18px',
+                boxShadow: isFeatherCurrentlyActive ? '0 4px 20px rgba(124, 92, 255, 0.08)' : 'none',
+                transition: 'border-color 0.2s ease',
+              }}
+            >
               <div
                 style={{
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  color: '#e4e4e7',
-                  marginBottom: '14px',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  justifyContent: 'space-between',
+                  marginBottom: '14px',
                 }}
               >
-                <span>📐</span>
-                <span>{isAr ? 'هوامش ونصف قطر التدرج (Edge Parameters)' : 'Edge Parameters & Margins'}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '15px' }}>📐</span>
+                  <div>
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: '14px',
+                        fontWeight: 700,
+                        color: isFeatherCurrentlyActive ? '#c4b5fd' : '#e4e4e7',
+                      }}
+                    >
+                      {isAr ? 'هوامش ونصف قطر التدرج (Edge Parameters)' : 'Edge Parameters & Margins'}
+                    </h3>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      {isAr
+                        ? 'لا يتفعل نظام الشفافية إلا عند تفعيله أو تحريك الهوامش يدوياً'
+                        : 'Transparency activates only when toggled on or when margins are adjusted'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Toggle Switch for Edge Feather */}
+                <button
+                  type="button"
+                  id="efFeatherToggleBtn"
+                  role="switch"
+                  aria-checked={isFeatherCurrentlyActive}
+                  onClick={() => {
+                    if (isFeatherCurrentlyActive) {
+                      setFeatherEnabled(false);
+                      setTopMargin(0);
+                      setBottomMargin(0);
+                      setLeftMargin(0);
+                      setRightMargin(0);
+                      setFeatherRadius(0);
+                    } else {
+                      setFeatherEnabled(true);
+                      if (
+                        topMargin === 0 &&
+                        bottomMargin === 0 &&
+                        leftMargin === 0 &&
+                        rightMargin === 0 &&
+                        featherRadius === 0
+                      ) {
+                        setFeatherRadius(50);
+                      }
+                    }
+                  }}
+                  style={{
+                    width: '44px',
+                    height: '24px',
+                    borderRadius: '99px',
+                    background: isFeatherCurrentlyActive ? '#7c5cff' : '#272733',
+                    border: isFeatherCurrentlyActive ? '1px solid #a78bfa' : '1px solid #3b3b4a',
+                    position: 'relative',
+                    cursor: 'pointer',
+                    padding: 0,
+                    transition: 'all 0.2s ease',
+                  }}
+                  title={isAr ? 'تفعيل / إيقاف نظام شفافية الحواف' : 'Toggle Edge Feather Transparency'}
+                >
+                  <div
+                    style={{
+                      width: '18px',
+                      height: '18px',
+                      borderRadius: '50%',
+                      background: '#ffffff',
+                      position: 'absolute',
+                      top: '2px',
+                      left: isFeatherCurrentlyActive ? '22px' : '2px',
+                      transition: 'left 0.2s ease',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                    }}
+                  />
+                </button>
               </div>
 
               {/* 4 Margin Inputs */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {[
-                  { label: isAr ? 'الهامش العلوي (Top Margin)' : 'Top Margin', val: topMargin, set: setTopMargin, id: 'efTopMargin' },
-                  { label: isAr ? 'الهامش السفلي (Bottom Margin)' : 'Bottom Margin', val: bottomMargin, set: setBottomMargin, id: 'efBottomMargin' },
-                  { label: isAr ? 'الهامش الأيسر (Left Margin)' : 'Left Margin', val: leftMargin, set: setLeftMargin, id: 'efLeftMargin' },
-                  { label: isAr ? 'الهامش الأيمن (Right Margin)' : 'Right Margin', val: rightMargin, set: setRightMargin, id: 'efRightMargin' },
+                  { label: isAr ? 'الهامش العلوي (Top Margin)' : 'Top Margin', val: topMargin, side: 'top' as const, id: 'efTopMargin' },
+                  { label: isAr ? 'الهامش السفلي (Bottom Margin)' : 'Bottom Margin', val: bottomMargin, side: 'bottom' as const, id: 'efBottomMargin' },
+                  { label: isAr ? 'الهامش الأيسر (Left Margin)' : 'Left Margin', val: leftMargin, side: 'left' as const, id: 'efLeftMargin' },
+                  { label: isAr ? 'الهامش الأيمن (Right Margin)' : 'Right Margin', val: rightMargin, side: 'right' as const, id: 'efRightMargin' },
                 ].map((item) => (
                   <div
                     key={item.id}
@@ -1859,7 +2008,7 @@ export default function EdgeFeatherModal({
                         min={0}
                         max={MAX_EDGE_FEATHER_MARGIN_PCT}
                         value={item.val}
-                        onChange={(e) => item.set(clampMargin(Number(e.target.value)))}
+                        onChange={(e) => updateMarginValue(item.side, Number(e.target.value))}
                         style={{
                           width: '66px',
                           height: '32px',
@@ -1913,7 +2062,7 @@ export default function EdgeFeatherModal({
                     min={0}
                     max={200}
                     value={featherRadius}
-                    onChange={(e) => setFeatherRadius(clampRadius(Number(e.target.value)))}
+                    onChange={(e) => updateFeatherRadiusValue(Number(e.target.value))}
                     style={{
                       width: '66px',
                       height: '32px',
@@ -1932,13 +2081,13 @@ export default function EdgeFeatherModal({
               </div>
 
               {/* Purple Range Slider */}
-              <div style={{ padding: '2px 0 10px' }}>
+              <div style={{ padding: '2px 0 4px' }}>
                 <input
                   type="range"
                   min={0}
                   max={200}
                   value={featherRadius}
-                  onChange={(e) => setFeatherRadius(clampRadius(Number(e.target.value)))}
+                  onChange={(e) => updateFeatherRadiusValue(Number(e.target.value))}
                   style={{
                     width: '100%',
                     height: '6px',

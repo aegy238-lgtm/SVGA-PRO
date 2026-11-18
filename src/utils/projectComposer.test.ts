@@ -625,7 +625,53 @@ test('directional left/right sway, wind breeze, glide passes, and new profession
   }
 });
 
+test('composeDecomposedSvgaMovie embeds watermarkSprites as top-level sprites with matching images and transforms', () => {
+  const baseMovie = {
+    w: 300,
+    h: 300,
+    fps: 20,
+    n: 5,
+    im: { img_0: new Uint8Array([1, 2, 3]) },
+    sp: [
+      {
+        key: 'img_0',
+        fr: Array.from({ length: 5 }, () => ({ a: 1, x: 0, y: 0, w: 300, h: 300, t: [1, 0, 0, 1, 0, 0] })),
+      },
+    ],
+  };
+  const state: ProjectComposerState = {
+    primaryTransform: { ...DEFAULT_LAYER_TRANSFORM },
+    activeTargetId: 'primary',
+    directDragEnabled: true,
+    overlays: [],
+  };
+  const wmBytes = new Uint8Array([137, 80, 78, 71]);
+  const composed = composeDecomposedSvgaMovie(baseMovie, state, {
+    targetW: 300,
+    targetH: 300,
+    targetFps: 20,
+    watermarkSprites: [
+      {
+        imageKey: 'watermark_1',
+        x: 150,
+        y: 250,
+        width: 120,
+        height: 40,
+        scale: 100,
+        rotation: 0,
+        opacity: 80,
+        animWidth: 300,
+        animHeight: 300,
+        pngBytes: wmBytes,
+      },
+    ],
+  });
 
-
-
-
+  assert.ok(composed.im['watermark_1'], 'watermark image bytes must be present in composed movie images');
+  assert.equal(composed.sp.length, 2, 'must have primary sprite + watermark sprite');
+  const wmSprite = composed.sp[1];
+  assert.equal(wmSprite.key, 'watermark_1');
+  assert.equal(wmSprite.fr.length, 5);
+  assert.equal(wmSprite.fr[0].a, 0.8);
+  assert.deepEqual(wmSprite.fr[0].t, [1, 0, 0, 1, 90, 230]);
+});

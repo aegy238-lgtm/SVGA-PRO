@@ -736,6 +736,19 @@ export interface ComposeDecomposedSvgaOptions {
     motionTransform?: ProjectLayerTransform;
     pngBytes: Uint8Array;
   }>;
+  watermarkSprites?: Array<{
+    imageKey: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    scale: number;
+    rotation: number;
+    opacity: number;
+    animWidth?: number;
+    animHeight?: number;
+    pngBytes: Uint8Array;
+  }>;
 }
 
 /**
@@ -1114,8 +1127,52 @@ export function composeDecomposedSvgaMovie(
     else abovePrimaryMaskSprites.push(entry);
   }
 
+  // 5. Process active watermark layers as top-level SVGA sprites
+  const watermarkFinalSprites: any[] = [];
+  for (const wm of options.watermarkSprites || []) {
+    if (!wm || !wm.imageKey || !wm.pngBytes || wm.pngBytes.length === 0) continue;
+    composedImages[wm.imageKey] = wm.pngBytes;
+    const wmBaseW = Math.max(1, wm.animWidth || baseW);
+    const wmBaseH = Math.max(1, wm.animHeight || baseH);
+    const sx = targetW / wmBaseW;
+    const sy = targetH / wmBaseH;
+    const w = Math.max(1, Math.round(wm.width * sx));
+    const h = Math.max(1, Math.round(wm.height * sy));
+    const cx = wm.x * sx;
+    const cy = wm.y * sy;
+    const s = Math.max(0.01, (Number(wm.scale) || 100) / 100);
+    const rad = ((Number(wm.rotation) || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const a = Number((s * cos).toFixed(6));
+    const b = Number((s * sin).toFixed(6));
+    const c = Number((-s * sin).toFixed(6));
+    const d = Number((s * cos).toFixed(6));
+    const hw = w / 2;
+    const hh = h / 2;
+    const tx = Number((cx - a * hw - c * hh).toFixed(4));
+    const ty = Number((cy - b * hw - d * hh).toFixed(4));
+    const alpha = Number(Math.max(0, Math.min(1, (Number(wm.opacity ?? 100) || 0) / 100)).toFixed(4));
+    const mat: AffineMatrix = [a, b, c, d, tx, ty];
+    const wmFrames: any[] = [];
+    for (let fi = 0; fi < totalFrames; fi++) {
+      wmFrames.push({
+        a: alpha,
+        x: 0,
+        y: 0,
+        w,
+        h,
+        t: mat,
+      });
+    }
+    watermarkFinalSprites.push({
+      key: wm.imageKey,
+      fr: wmFrames,
+    });
+  }
+
   // Combine in exact visual order:
-  // Below-All Masks -> Underlay Added Layers -> Behind-Gift Masks -> Primary Sprites -> Above-Gift (Behind-Frame) Masks -> Overlay Added Layers -> Above-All Masks
+  // Below-All Masks -> Underlay Added Layers -> Behind-Gift Masks -> Primary Sprites -> Above-Gift (Behind-Frame) Masks -> Overlay Added Layers -> Above-All Masks -> Watermarks
   const finalSprites = [
     ...belowOverlaysMaskSprites,
     ...underlaySprites,
@@ -1124,6 +1181,7 @@ export function composeDecomposedSvgaMovie(
     ...abovePrimaryMaskSprites,
     ...overlaySprites,
     ...aboveOverlaysMaskSprites,
+    ...watermarkFinalSprites,
   ];
 
   return {

@@ -31,7 +31,7 @@ export const INITIAL_EDGE_FEATHER: EdgeFeatherConfig = {
   bottomMargin: 0,
   leftMargin: 0,
   rightMargin: 0,
-  featherRadius: 50,
+  featherRadius: 0,
   trimEnabled: false,
   trimStartTime: 0,
   trimEndTime: 0,

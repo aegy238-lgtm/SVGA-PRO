@@ -162,6 +162,14 @@ export function initMotionToolsFixed() {
     (window as any).__analyzePngBinary = analyzePngBinary;
     (window as any).__compressPngBufferLikeReference = compressPngBufferLikeReference;
     (window as any).__compressSvga2Binary = compressSvga2Binary;
+    (window as any).compressSvga2Binary = async (
+      svgaBytes: Uint8Array,
+      qualityPercent: number = 100
+    ): Promise<Blob> => {
+      const { mode } = getSvgaCompressionConfig();
+      const res = compressSvga2Binary(svgaBytes, qualityPercent, mode);
+      return new Blob([res.bytes], { type: 'application/octet-stream' });
+    };
   }
 
   const getSvgaCompressionConfig = (): { qualityPercent: number; mode: SvgaCompressionMode } => {
@@ -2349,6 +2357,58 @@ export function initMotionToolsFixed() {
 
   (window as any).__syncStageWatermarks = syncStageWatermarks;
 
+  const WATERMARK_STORAGE_KEY = 'saved_watermark_layers_v1';
+  const persistWatermarkLayersToStorage = () => {
+    try {
+      const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+      const serializable = layers.map((ly) => ({
+        imageKey: ly.imageKey,
+        text: ly.text,
+        dataUrl: ly.dataUrl,
+        width: ly.width,
+        height: ly.height,
+        x: ly.x,
+        y: ly.y,
+        scale: ly.scale,
+        rotation: ly.rotation,
+        opacity: ly.opacity,
+        animWidth: ly.animWidth,
+        animHeight: ly.animHeight,
+      }));
+      if (serializable.length > 0) {
+        localStorage.setItem(WATERMARK_STORAGE_KEY, JSON.stringify(serializable));
+      } else {
+        localStorage.removeItem(WATERMARK_STORAGE_KEY);
+      }
+    } catch (_) {}
+  };
+
+  if (!(window as any).__WATERMARK_LAYERS) {
+    try {
+      const rawSaved = localStorage.getItem(WATERMARK_STORAGE_KEY);
+      if (rawSaved) {
+        const parsed = JSON.parse(rawSaved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          (window as any).__WATERMARK_LAYERS = parsed;
+          Promise.all(
+            parsed.map(async (ly: any) => {
+              if (!ly?.dataUrl) return;
+              const im = await imgOf(ly.dataUrl);
+              const bmp = im ? await createImageBitmap(im).catch(() => null) : null;
+              ly._img = im;
+              ly._bmp = bmp;
+            })
+          ).then(() => {
+            syncStageWatermarks();
+            try {
+              window.dispatchEvent(new CustomEvent('watermarklayerschange'));
+            } catch (_) {}
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
   (window as any).__applyWatermarkLayer = async (layer: AppliedWatermarkLayer) => {
     if (!layer || !layer.imageKey || !layer.dataUrl) return;
     const key = layer.imageKey;
@@ -2366,6 +2426,7 @@ export function initMotionToolsFixed() {
       existingList.push(enrichedLayer);
     }
     (window as any).__WATERMARK_LAYERS = existingList;
+    persistWatermarkLayersToStorage();
 
     if (window.SV && bmp) {
       window.SV.bm[key] = bmp;
@@ -2401,6 +2462,8 @@ export function initMotionToolsFixed() {
       scale: ly.scale,
       rotation: ly.rotation,
       opacity: ly.opacity,
+      animWidth: ly.animWidth,
+      animHeight: ly.animHeight,
     }));
   };
 
@@ -2412,6 +2475,7 @@ export function initMotionToolsFixed() {
     if (window.EDIT) delete window.EDIT[target.imageKey];
     if (window.SV?.bm) delete window.SV.bm[target.imageKey];
     (window as any).__WATERMARK_LAYERS = layers.filter((ly) => ly.imageKey !== imageKey);
+    persistWatermarkLayersToStorage();
     syncStageWatermarks();
     const qVal = ($('#q') as HTMLInputElement)?.value || '';
     renderAssetCards(qVal);
@@ -2429,6 +2493,7 @@ export function initMotionToolsFixed() {
       if (window.SV?.bm) delete window.SV.bm[ly.imageKey];
     }
     (window as any).__WATERMARK_LAYERS = [];
+    persistWatermarkLayersToStorage();
     syncStageWatermarks();
     const qVal = ($('#q') as HTMLInputElement)?.value || '';
     renderAssetCards(qVal);
@@ -5294,6 +5359,47 @@ export function initMotionToolsFixed() {
         }
       }
 
+      // 4c. Collect active watermark layers so decomposed SVGA export embeds them as top layers
+      const watermarkSprites: Array<{
+        imageKey: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        scale: number;
+        rotation: number;
+        opacity: number;
+        animWidth?: number;
+        animHeight?: number;
+        pngBytes: Uint8Array;
+      }> = [];
+      const wmLayers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+      for (const wm of wmLayers) {
+        if (!wm || !wm.imageKey) continue;
+        const url = A[wm.imageKey] || (window.EDIT && window.EDIT[wm.imageKey]) || wm.dataUrl;
+        if (!url) continue;
+        try {
+          const resp = await fetch(url);
+          const ab = await resp.arrayBuffer();
+          const pngBytes = new Uint8Array(ab);
+          if (pngBytes.length > 0) {
+            watermarkSprites.push({
+              imageKey: wm.imageKey,
+              x: wm.x,
+              y: wm.y,
+              width: wm.width,
+              height: wm.height,
+              scale: wm.scale,
+              rotation: wm.rotation,
+              opacity: wm.opacity,
+              animWidth: wm.animWidth || baseMovie.w || targetW,
+              animHeight: wm.animHeight || baseMovie.h || targetH,
+              pngBytes,
+            });
+          }
+        } catch (_) {}
+      }
+
       // 5. Compose full unflattened movie (Zero canvas rasterization of primary layers!)
       const compositeMovie = composeDecomposedSvgaMovie(
         { ...baseMovie, audiosRaw: finalAudiosRaw },
@@ -5308,6 +5414,7 @@ export function initMotionToolsFixed() {
           overlayMovies,
           overlayRenderedFrames,
           maskSprites,
+          watermarkSprites,
         }
       );
 
@@ -5321,10 +5428,11 @@ export function initMotionToolsFixed() {
       if (qualityPercent < 100) {
         try {
           const compReady = await window.cmpReady();
-          if (compReady && typeof window.compressSvga2Binary === 'function') {
-            const compressed = await window.compressSvga2Binary(deflated, qualityPercent);
-            if (compressed && compressed.size > 0) {
-              return compressed;
+          if (compReady) {
+            const { mode } = getSvgaCompressionConfig();
+            const compressed = compressSvga2Binary(deflated, qualityPercent, mode);
+            if (compressed && compressed.bytes && compressed.bytes.length > 0) {
+              return new Blob([compressed.bytes], { type: 'application/octet-stream' });
             }
           }
         } catch (e) {
@@ -10803,6 +10911,10 @@ export function initMotionToolsFixed() {
         const featherOn = !!featherCfg?.enabled;
         const chromaOn = !!(window as any).__chromaKey?.enabled;
         const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
+        const hasWatermarkLayersForExport = Boolean(
+          Array.isArray((window as any).__WATERMARK_LAYERS) &&
+            (window as any).__WATERMARK_LAYERS.length > 0
+        );
         const hasActiveMaskEdits = Boolean(
           source &&
             ((source._vapSlotReplacements &&
@@ -10812,7 +10924,12 @@ export function initMotionToolsFixed() {
               source._customVapSlots?.length > 0 ||
               source._hasMaskEdits)
         );
-        if (F === 'orig' && (featherOn || chromaOn || hasComposerEdits || hasActiveMaskEdits) && !source.meta && cur) {
+        if (
+          F === 'orig' &&
+          (featherOn || chromaOn || hasComposerEdits || hasActiveMaskEdits || hasWatermarkLayersForExport) &&
+          !source.meta &&
+          cur
+        ) {
           const ext = cur.name.split('.').pop()?.toLowerCase() || 'svga';
           const extMap: Record<string, string> = {
             svga: 'svga',
@@ -11295,6 +11412,7 @@ export function initMotionToolsFixed() {
           },
           settings: settings(),
           images: { ...(window.EDIT || {}) },
+          watermarks: (window as any).__getWatermarkLayersSnapshot?.() || [],
           vapMasks: vapMasksState,
           audio: {
             vol: window.AU.vol,
@@ -11339,6 +11457,13 @@ export function initMotionToolsFixed() {
         A[key] = url;
         await applyEdit(url, key);
         for (const e of $$('#assets .th')) if (e.dataset.k === key) e.querySelector('img').src = url;
+      }
+      if (Array.isArray(p.watermarks) && typeof (window as any).__applyWatermarkLayer === 'function') {
+        for (const wm of p.watermarks) {
+          if (wm && wm.imageKey && wm.dataUrl) {
+            await (window as any).__applyWatermarkLayer(wm);
+          }
+        }
       }
 
       // Restore VAP / YYEVA / Custom dynamic masks, silhouettes, coordinates & replacements

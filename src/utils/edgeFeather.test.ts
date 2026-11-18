@@ -1,12 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  INITIAL_EDGE_FEATHER,
   MAX_EDGE_FEATHER_MARGIN_PCT,
   clampEdgeFeatherMargin,
   compute1DFeatherProfile,
   applyFeatherToRgbaPixels,
   type EdgeFeatherConfig,
 } from './edgeFeather';
+
+test('INITIAL_EDGE_FEATHER is completely disabled with 0 margins and 0 featherRadius by default', () => {
+  assert.equal(INITIAL_EDGE_FEATHER.enabled, false);
+  assert.equal(INITIAL_EDGE_FEATHER.topMargin, 0);
+  assert.equal(INITIAL_EDGE_FEATHER.bottomMargin, 0);
+  assert.equal(INITIAL_EDGE_FEATHER.leftMargin, 0);
+  assert.equal(INITIAL_EDGE_FEATHER.rightMargin, 0);
+  assert.equal(INITIAL_EDGE_FEATHER.featherRadius, 0);
+});
 
 test('compute1DFeatherProfile feathers top/start margin while keeping center opaque', () => {
   const prof = compute1DFeatherProfile(100, 20, 0, 100, false);
