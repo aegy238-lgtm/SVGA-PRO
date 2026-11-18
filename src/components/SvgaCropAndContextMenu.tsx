@@ -10,6 +10,7 @@ import {
   Trash2,
   CopyPlus,
   FlipHorizontal2,
+  FlipVertical2,
   Clapperboard,
   Eraser,
   X,
@@ -49,6 +50,7 @@ interface SvgaCropAndContextMenuProps {
   onDeleteLayer: (targetId: string) => void;
   onDuplicateLayer?: (targetId: string, mirrorMode: 'none' | 'canvas' | 'local') => void;
   onFlipLayerHorizontally?: (targetId: string, mirrorMode: 'canvas' | 'local') => void;
+  onFlipLayerVertically?: (targetId: string, mirrorMode: 'canvas' | 'local') => void;
   onOpenCopyMotionModal?: (addedLayerId: string) => void;
 }
 
@@ -72,6 +74,7 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
   onDeleteLayer,
   onDuplicateLayer,
   onFlipLayerHorizontally,
+  onFlipLayerVertically,
   onOpenCopyMotionModal,
 }) => {
   const hasValidCrop = cropRect && cropRect.w >= 4 && cropRect.h >= 4;
@@ -351,6 +354,58 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
             <span>إضافة نقطة تحريك هنا (Keyframe)</span>
           </button>
 
+          {onFlipLayerHorizontally && (
+            <button
+              type="button"
+              onClick={() => {
+                onFlipLayerHorizontally(contextMenu.targetId, 'canvas');
+                onCloseContextMenu();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '7px 10px',
+                borderRadius: '6px',
+                border: 0,
+                background: 'rgba(56, 189, 248, 0.08)',
+                color: '#7dd3fc',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <FlipHorizontal2 size={13} color="#38bdf8" />
+              <span>قلب من الشمال لليمين ↔️</span>
+            </button>
+          )}
+
+          {onFlipLayerVertically && (
+            <button
+              type="button"
+              onClick={() => {
+                onFlipLayerVertically(contextMenu.targetId, 'canvas');
+                onCloseContextMenu();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '7px 10px',
+                borderRadius: '6px',
+                border: 0,
+                background: 'rgba(167, 139, 250, 0.08)',
+                color: '#ddd6fe',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <FlipVertical2 size={13} color="#a78bfa" />
+              <span>قلب من الأعلى للأسفل ↕️</span>
+            </button>
+          )}
+
           {contextMenu.targetId !== 'DOCUMENT' && (
             <>
               <div style={{ height: '1px', background: '#1f1f2e', margin: '3px 0' }} />
@@ -430,31 +485,6 @@ export const SvgaCropAndContextMenu: React.FC<SvgaCropAndContextMenuProps> = ({
                     <span>نسخ الطبقة وعكسها من الشمال لليمين</span>
                   </button>
                 </>
-              )}
-
-              {onFlipLayerHorizontally && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onFlipLayerHorizontally(contextMenu.targetId, 'canvas');
-                    onCloseContextMenu();
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '7px 10px',
-                    borderRadius: '6px',
-                    border: 0,
-                    background: 'transparent',
-                    color: '#fcd34d',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                  }}
-                >
-                  <FlipHorizontal2 size={13} color="#f59e0b" />
-                  <span>عكس الطبقة الحالية من الشمال لليمين</span>
-                </button>
               )}
 
               <div style={{ height: '1px', background: '#1f1f2e', margin: '3px 0' }} />

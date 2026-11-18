@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
+  AnimationPreset,
   ProjectComposerState,
   ProjectLayerTransform,
   SecondaryOverlayLayer,
@@ -10,6 +11,7 @@ import {
   clampTransformValues,
   nudgeLayerTransform,
   isDefaultLayerTransform,
+  hasAnimatedMotion,
   moveOverlayLayerUp,
   moveOverlayLayerDown,
   moveOverlayLayerToTop,
@@ -17,6 +19,18 @@ import {
   getUnifiedVisualLayerStack,
   UnifiedStackItem,
 } from '../utils/projectComposer';
+import {
+  MaskDepthBand,
+  VapMaskShapePreset,
+  resolveMaskDepthBand,
+  parseHexColorRgb,
+} from '../utils/vapDynamicMaskPacking';
+import {
+  UnifiedLayersExplorer,
+  UnifiedSelectionRef,
+  PrimaryProjectSnapshot,
+  WatermarkLayerSnapshot,
+} from './UnifiedLayersExplorer';
 
 interface ProjectComposerPanelProps {
   open: boolean;
@@ -29,6 +43,10 @@ interface ProjectComposerPanelProps {
   baseWidth: number;
   baseHeight: number;
   isUploadingOverlay?: boolean;
+  onOpenEdgeFeather?: () => void;
+  onOpenChromaKey?: () => void;
+  onOpenWatermark?: () => void;
+  onOpenBatchOps?: () => void;
 }
 
 const STEP_OPTIONS = [1, 5, 15, 30, 50];
@@ -44,10 +62,31 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
   baseWidth,
   baseHeight,
   isUploadingOverlay = false,
+  onOpenEdgeFeather,
+  onOpenChromaKey,
+  onOpenWatermark,
+  onOpenBatchOps,
 }) => {
   const isAr = language === 'ar';
   const [stepPx, setStepPx] = useState<number>(15);
-  const [activeTab, setActiveTab] = useState<'primary' | 'secondary' | 'stack'>('primary');
+  const [activeTab, setActiveTab] = useState<'all' | 'primary' | 'secondary' | 'masks' | 'stack' | 'motion'>('all');
+  const [motionTargetId, setMotionTargetId] = useState<string>('primary');
+  const [selectedUnified, setSelectedUnified] = useState<UnifiedSelectionRef>({
+    kind: 'primary',
+    id: 'primary',
+  });
+  const [primaryInfo, setPrimaryInfo] = useState<PrimaryProjectSnapshot>({
+    hasSource: false,
+    name: '',
+    format: '',
+    width: baseWidth || 400,
+    height: baseHeight || 400,
+    fps: 24,
+    frames: 30,
+    thumb: '',
+  });
+  const [watermarks, setWatermarks] = useState<WatermarkLayerSnapshot[]>([]);
+  const [motionAssets, setMotionAssets] = useState<Record<string, string>>({});
   const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
@@ -60,6 +99,14 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
 
   // Sync activeTab with activeTargetId when user switches targets externally
   useEffect(() => {
+    if (
+      activeTab === 'all' ||
+      activeTab === 'masks' ||
+      activeTab === 'stack' ||
+      activeTab === 'motion'
+    ) {
+      return;
+    }
     if (composerState.activeTargetId === 'primary') {
       setActiveTab('primary');
     } else if (composerState.overlays.some((o) => o.id === composerState.activeTargetId)) {
@@ -67,11 +114,75 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
     }
   }, [composerState.activeTargetId, composerState.overlays.length]);
 
+  useEffect(() => {
+    if (!open) return;
+    const pending = (window as any).__pendingComposerTab;
+    if (pending === 'masks' || pending === 'all') {
+      (window as any).__pendingComposerTab = null;
+      setActiveTab(pending);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    const onOpenMasksTab = () => {
+      (window as any).__pendingComposerTab = null;
+      setActiveTab('masks');
+    };
+    const onOpenAllLayersTab = () => {
+      (window as any).__pendingComposerTab = null;
+      setActiveTab('all');
+    };
+    const onOpenMotionForMask = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      const srcId = detail?.srcId || (window as any).__selectedVapMaskId;
+      setActiveTab('motion');
+      if (srcId) {
+        setMotionTargetId(`mask:${String(srcId)}`);
+        setSelectedUnified({ kind: 'mask', id: String(srcId) });
+      }
+      const snap = (window as any).__getVapMasksSnapshot?.();
+      if (snap) {
+        setVapMasksSnap({
+          slots: Array.isArray(snap.slots) ? snap.slots : [],
+          detectedDummies: Array.isArray(snap.detectedDummies) ? snap.detectedDummies : [],
+          silhouettes: snap.silhouettes || {},
+          replacements: snap.replacements || {},
+          bakeReplacedSlots: snap.bakeReplacedSlots !== false,
+          selectedSrcId: snap.selectedSrcId || null,
+          guidesEnabled: Boolean(snap.guidesEnabled),
+          hasSource: Boolean(snap.hasSource),
+        });
+      }
+    };
+    window.addEventListener('opencomposermaskstab', onOpenMasksTab);
+    window.addEventListener('opencomposeralllayerstab', onOpenAllLayersTab);
+    window.addEventListener('opencomposermotionformask', onOpenMotionForMask);
+    return () => {
+      window.removeEventListener('opencomposermaskstab', onOpenMasksTab);
+      window.removeEventListener('opencomposeralllayerstab', onOpenAllLayersTab);
+      window.removeEventListener('opencomposermotionformask', onOpenMotionForMask);
+    };
+  }, []);
+
   const [vapMasksSnap, setVapMasksSnap] = useState<{
     slots: any[];
+    detectedDummies: any[];
+    silhouettes: Record<string, string>;
+    replacements: Record<string, any>;
+    bakeReplacedSlots: boolean;
     selectedSrcId: string | null;
     guidesEnabled: boolean;
-  }>({ slots: [], selectedSrcId: null, guidesEnabled: false });
+    hasSource: boolean;
+  }>({
+    slots: [],
+    detectedDummies: [],
+    silhouettes: {},
+    replacements: {},
+    bakeReplacedSlots: true,
+    selectedSrcId: null,
+    guidesEnabled: false,
+    hasSource: false,
+  });
 
   useEffect(() => {
     const syncSnap = () => {
@@ -80,14 +191,48 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
         const res = snapFn();
         setVapMasksSnap({
           slots: Array.isArray(res?.slots) ? res.slots : [],
+          detectedDummies: Array.isArray(res?.detectedDummies) ? res.detectedDummies : [],
+          silhouettes: res?.silhouettes || {},
+          replacements: res?.replacements || {},
+          bakeReplacedSlots: res?.bakeReplacedSlots !== false,
           selectedSrcId: res?.selectedSrcId || null,
           guidesEnabled: Boolean(res?.guidesEnabled),
+          hasSource: Boolean(res?.hasSource),
         });
       }
     };
     syncSnap();
     window.addEventListener('vapmaskschange', syncSnap);
     return () => window.removeEventListener('vapmaskschange', syncSnap);
+  }, [open, composerState.overlays.length]);
+
+  useEffect(() => {
+    const syncUnifiedData = () => {
+      const pInfo = (window as any).__getPrimaryProjectInfo?.();
+      const pThumb = (window as any).__getPrimaryLayerPreviewThumb?.() || '';
+      if (pInfo) {
+        setPrimaryInfo({ ...pInfo, thumb: pThumb });
+      }
+      const wmList = (window as any).__getWatermarkLayersSnapshot?.();
+      if (Array.isArray(wmList)) {
+        setWatermarks(wmList);
+      }
+      const latestAssets = (window as any).__getMotionAssets?.();
+      if (latestAssets && typeof latestAssets === 'object') {
+        setMotionAssets({ ...latestAssets });
+      }
+    };
+    syncUnifiedData();
+    window.addEventListener('primaryprojectchange', syncUnifiedData);
+    window.addEventListener('watermarklayerschange', syncUnifiedData);
+    window.addEventListener('motionassetschange', syncUnifiedData);
+    window.addEventListener('vapmaskschange', syncUnifiedData);
+    return () => {
+      window.removeEventListener('primaryprojectchange', syncUnifiedData);
+      window.removeEventListener('watermarklayerschange', syncUnifiedData);
+      window.removeEventListener('motionassetschange', syncUnifiedData);
+      window.removeEventListener('vapmaskschange', syncUnifiedData);
+    };
   }, [open, composerState.overlays.length]);
 
   useEffect(() => {
@@ -113,15 +258,78 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
 
   if (!open) return null;
 
+  const explicitOverlay =
+    composerState.overlays.find((o) => o.id === composerState.activeTargetId) || null;
   const selectedOverlay: SecondaryOverlayLayer | null =
-    composerState.overlays.find((o) => o.id === composerState.activeTargetId) ||
-    composerState.overlays[0] ||
-    null;
+    explicitOverlay ||
+    (composerState.activeTargetId === 'primary' && activeTab !== 'secondary'
+      ? null
+      : composerState.overlays[0] || null);
 
-  const isEditingPrimary = activeTab === 'primary' || !selectedOverlay;
+  const isEditingPrimary =
+    activeTab === 'primary' ||
+    (activeTab === 'motion' && composerState.activeTargetId === 'primary') ||
+    !selectedOverlay;
   const activeTransform: ProjectLayerTransform = isEditingPrimary
     ? composerState.primaryTransform
     : selectedOverlay.transform;
+
+  // Motion tab supports targeting Primary, any added Overlay/Frame, OR any dynamic Mask slot
+  const motionMaskSrcId =
+    activeTab === 'motion' && motionTargetId.startsWith('mask:') ? motionTargetId.slice(5) : null;
+  const motionMaskSlot = motionMaskSrcId
+    ? vapMasksSnap.slots.find((s: any) => String(s.srcId) === motionMaskSrcId) || null
+    : null;
+  const motionOverlayLayer =
+    activeTab === 'motion' && !motionMaskSlot
+      ? composerState.overlays.find((o) => o.id === motionTargetId) || null
+      : null;
+  const motionIsMask = activeTab === 'motion' && Boolean(motionMaskSlot);
+  const motionIsOverlay = activeTab === 'motion' && Boolean(motionOverlayLayer);
+  const motionTransform: ProjectLayerTransform = motionIsMask
+    ? { ...DEFAULT_LAYER_TRANSFORM, ...(motionMaskSlot.motionTransform || {}) }
+    : motionIsOverlay && motionOverlayLayer
+    ? motionOverlayLayer.transform
+    : activeTab === 'motion'
+    ? composerState.primaryTransform
+    : activeTransform;
+
+  const updateMotionTransform = (patch: Partial<ProjectLayerTransform>) => {
+    if (motionIsMask && motionMaskSlot) {
+      const nextMaskT = clampTransformValues(
+        { ...motionTransform, ...patch },
+        safeW,
+        safeH
+      );
+      (window as any).__setVapMaskMotionTransform?.(motionMaskSlot.srcId, nextMaskT);
+      return;
+    }
+    if (motionIsOverlay && motionOverlayLayer) {
+      const nextOvT = clampTransformValues(
+        { ...motionTransform, ...patch },
+        safeW,
+        safeH
+      );
+      onChangeState({
+        ...composerState,
+        activeTargetId: motionOverlayLayer.id,
+        overlays: composerState.overlays.map((o) =>
+          o.id === motionOverlayLayer.id ? { ...o, transform: nextOvT } : o
+        ),
+      });
+      return;
+    }
+    const nextPrimT = clampTransformValues(
+      { ...motionTransform, ...patch },
+      safeW,
+      safeH
+    );
+    onChangeState({
+      ...composerState,
+      activeTargetId: 'primary',
+      primaryTransform: nextPrimT,
+    });
+  };
 
   const updateActiveTransform = (patch: Partial<ProjectLayerTransform>) => {
     const nextTransform = clampTransformValues(
@@ -176,7 +384,88 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
     });
   };
 
-  const handleSwitchTab = (tab: 'primary' | 'secondary' | 'stack') => {
+  const handleSelectUnifiedItem = (item: UnifiedSelectionRef) => {
+    setSelectedUnified(item);
+    if (item.kind === 'primary') {
+      setMotionTargetId('primary');
+      onChangeState({ ...composerState, activeTargetId: 'primary' });
+    } else if (item.kind === 'overlay') {
+      setMotionTargetId(item.id);
+      onChangeState({ ...composerState, activeTargetId: item.id });
+    } else if (item.kind === 'mask') {
+      setMotionTargetId(`mask:${item.id}`);
+      (window as any).__selectVapMaskSlot?.(item.id);
+    }
+  };
+
+  const handleJumpToTransform = async (item: UnifiedSelectionRef) => {
+    if (item.kind === 'primary') {
+      setMotionTargetId('primary');
+      onChangeState({ ...composerState, activeTargetId: 'primary' });
+      setActiveTab('primary');
+    } else if (item.kind === 'overlay') {
+      setMotionTargetId(item.id);
+      onChangeState({ ...composerState, activeTargetId: item.id });
+      setActiveTab('secondary');
+    } else if (item.kind === 'mask') {
+      (window as any).__selectVapMaskSlot?.(item.id);
+      setActiveTab('masks');
+    } else if (item.kind === 'asset') {
+      const created = await (window as any).__promoteAssetToComposerLayer?.(item.id, true);
+      if (created?.id) {
+        setSelectedUnified({ kind: 'overlay', id: created.id });
+        setMotionTargetId(created.id);
+        setActiveTab('secondary');
+      }
+    } else if (item.kind === 'watermark') {
+      const created = await (window as any).__promoteWatermarkToComposerLayer?.(item.id, true);
+      if (created?.id) {
+        setSelectedUnified({ kind: 'overlay', id: created.id });
+        setMotionTargetId(created.id);
+        setActiveTab('secondary');
+      }
+    }
+  };
+
+  const handleJumpToMotion = async (item: UnifiedSelectionRef) => {
+    if (item.kind === 'primary') {
+      onChangeState({ ...composerState, activeTargetId: 'primary' });
+      setMotionTargetId('primary');
+      setActiveTab('motion');
+    } else if (item.kind === 'overlay') {
+      onChangeState({ ...composerState, activeTargetId: item.id });
+      setMotionTargetId(item.id);
+      setActiveTab('motion');
+    } else if (item.kind === 'mask') {
+      (window as any).__selectVapMaskSlot?.(item.id);
+      setMotionTargetId(`mask:${item.id}`);
+      setActiveTab('motion');
+    } else if (item.kind === 'asset') {
+      const created = await (window as any).__promoteAssetToComposerLayer?.(item.id, true);
+      if (created?.id) {
+        setSelectedUnified({ kind: 'overlay', id: created.id });
+        setMotionTargetId(created.id);
+        setActiveTab('motion');
+      }
+    } else if (item.kind === 'watermark') {
+      const created = await (window as any).__promoteWatermarkToComposerLayer?.(item.id, true);
+      if (created?.id) {
+        setSelectedUnified({ kind: 'overlay', id: created.id });
+        setMotionTargetId(created.id);
+        setActiveTab('motion');
+      }
+    }
+  };
+
+  const handleJumpToMask = (srcId?: string) => {
+    if (srcId) {
+      (window as any).__selectVapMaskSlot?.(srcId);
+    }
+    setActiveTab('masks');
+  };
+
+  const handleSwitchTab = (tab: 'all' | 'primary' | 'secondary' | 'masks' | 'stack' | 'motion') => {
+    const prevTab = activeTab;
     setActiveTab(tab);
     if (tab === 'primary') {
       onChangeState({
@@ -192,6 +481,37 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           ...composerState,
           activeTargetId: targetOv.id,
         });
+      }
+    } else if (tab === 'masks' || tab === 'motion' || tab === 'all') {
+      const snap = (window as any).__getVapMasksSnapshot?.();
+      if (snap) {
+        setVapMasksSnap({
+          slots: Array.isArray(snap.slots) ? snap.slots : [],
+          detectedDummies: Array.isArray(snap.detectedDummies) ? snap.detectedDummies : [],
+          silhouettes: snap.silhouettes || {},
+          replacements: snap.replacements || {},
+          bakeReplacedSlots: snap.bakeReplacedSlots !== false,
+          selectedSrcId: snap.selectedSrcId || null,
+          guidesEnabled: Boolean(snap.guidesEnabled),
+          hasSource: Boolean(snap.hasSource),
+        });
+      }
+      if (tab === 'motion') {
+        if (selectedUnified.kind === 'mask' && selectedUnified.id) {
+          setMotionTargetId(`mask:${selectedUnified.id}`);
+        } else if (selectedUnified.kind === 'overlay' && composerState.overlays.some((o) => o.id === selectedUnified.id)) {
+          setMotionTargetId(selectedUnified.id);
+        } else if (prevTab === 'masks' && snap?.selectedSrcId) {
+          setMotionTargetId(`mask:${String(snap.selectedSrcId)}`);
+        } else if (prevTab === 'secondary' && composerState.activeTargetId !== 'primary') {
+          setMotionTargetId(composerState.activeTargetId);
+        } else if (motionTargetId.startsWith('mask:')) {
+          const curMaskId = motionTargetId.slice(5);
+          const stillExists = Array.isArray(snap?.slots) && snap.slots.some((s: any) => String(s.srcId) === curMaskId);
+          if (!stillExists) setMotionTargetId('primary');
+        } else if (motionTargetId !== 'primary' && !composerState.overlays.some((o) => o.id === motionTargetId)) {
+          setMotionTargetId('primary');
+        }
       }
     }
   };
@@ -209,7 +529,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
     if (!f) return;
     const repId = replaceTargetIdRef.current;
     replaceTargetIdRef.current = undefined;
-    setActiveTab('secondary');
+    if (activeTab !== 'all') setActiveTab('secondary');
     await onUploadSecondaryFile(f, repId);
   };
 
@@ -228,7 +548,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
       style={{
         position: 'fixed',
         ...defaultStyle,
-        width: '372px',
+        width: '448px',
         maxWidth: 'calc(100vw - 24px)',
         maxHeight: 'calc(100vh - 82px)',
         background: 'linear-gradient(180deg, #151726 0%, #0f111c 100%)',
@@ -342,7 +662,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
+          gridTemplateColumns: 'repeat(3, 1fr)',
           gap: '5px',
           padding: '10px 10px 6px',
           background: '#111320',
@@ -350,12 +670,60 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
       >
         <button
           type="button"
+          id="composerTabAllLayers"
+          onClick={() => handleSwitchTab('all')}
+          style={{
+            padding: '7px 4px',
+            borderRadius: '9px',
+            fontSize: '10.5px',
+            fontWeight: 800,
+            cursor: 'pointer',
+            border:
+              activeTab === 'all'
+                ? '1px solid #38bdf8'
+                : '1px solid rgba(255, 255, 255, 0.08)',
+            background:
+              activeTab === 'all'
+                ? 'linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(124, 92, 255, 0.24))'
+                : '#171929',
+            color: activeTab === 'all' ? '#ffffff' : '#bae6fd',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ flexShrink: 0 }}
+          >
+            <polygon points="12 2 2 7 12 12 22 7 12 2" />
+            <polyline points="2 12 12 17 22 12" />
+            <polyline points="2 17 12 22 22 17" />
+          </svg>
+          <span>
+            {isAr
+              ? `كل العناصر (${(primaryInfo.hasSource ? 1 : 0) + composerState.overlays.length + vapMasksSnap.slots.length + watermarks.length + Object.keys(motionAssets).filter((k) => !watermarks.some((w) => w.imageKey === k) && !vapMasksSnap.slots.some((s: any) => s.assetKey === k)).length})`
+              : `All Layers`}
+          </span>
+        </button>
+
+        <button
+          type="button"
           id="composerTabPrimary"
           onClick={() => handleSwitchTab('primary')}
           style={{
-            padding: '7px 6px',
+            padding: '7px 4px',
             borderRadius: '9px',
-            fontSize: '11px',
+            fontSize: '10.5px',
             fontWeight: 700,
             cursor: 'pointer',
             border:
@@ -370,12 +738,12 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '4px',
+            gap: '3px',
             whiteSpace: 'nowrap',
           }}
         >
           <span>🎯</span>
-          <span>{isAr ? 'المشروع الأساسي' : 'Main Project'}</span>
+          <span>{isAr ? 'الأساسي' : 'Main'}</span>
           {!isDefaultLayerTransform(composerState.primaryTransform) && (
             <span
               style={{
@@ -393,9 +761,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           id="composerTabSecondary"
           onClick={() => handleSwitchTab('secondary')}
           style={{
-            padding: '7px 6px',
+            padding: '7px 4px',
             borderRadius: '9px',
-            fontSize: '11px',
+            fontSize: '10.5px',
             fontWeight: 700,
             cursor: 'pointer',
             border:
@@ -410,7 +778,7 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '4px',
+            gap: '3px',
             whiteSpace: 'nowrap',
           }}
         >
@@ -418,7 +786,71 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           <span>
             {isAr
               ? `الطبقات (${composerState.overlays.length})`
-              : `Extra (${composerState.overlays.length})`}
+              : `Layers (${composerState.overlays.length})`}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          id="composerTabMotion"
+          onClick={() => handleSwitchTab('motion')}
+          style={{
+            padding: '7px 4px',
+            borderRadius: '9px',
+            fontSize: '10.5px',
+            fontWeight: 700,
+            cursor: 'pointer',
+            border:
+              activeTab === 'motion'
+                ? '1px solid #38bdf8'
+                : '1px solid rgba(255, 255, 255, 0.08)',
+            background:
+              activeTab === 'motion'
+                ? 'linear-gradient(135deg, rgba(56, 189, 248, 0.28), rgba(14, 165, 233, 0.2))'
+                : '#171929',
+            color: activeTab === 'motion' ? '#ffffff' : '#94a3b8',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '3px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span>⚡</span>
+          <span>{isAr ? 'التحريك' : 'Motion'}</span>
+        </button>
+
+        <button
+          type="button"
+          id="composerTabMasks"
+          onClick={() => handleSwitchTab('masks')}
+          style={{
+            padding: '7px 4px',
+            borderRadius: '9px',
+            fontSize: '10.5px',
+            fontWeight: 700,
+            cursor: 'pointer',
+            border:
+              activeTab === 'masks'
+                ? '1px solid #d946ef'
+                : '1px solid rgba(255, 255, 255, 0.08)',
+            background:
+              activeTab === 'masks'
+                ? 'linear-gradient(135deg, rgba(217, 70, 239, 0.28), rgba(168, 85, 247, 0.2))'
+                : '#171929',
+            color: activeTab === 'masks' ? '#ffffff' : '#94a3b8',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '3px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span>🎭</span>
+          <span>
+            {isAr
+              ? `الأقنعة (${vapMasksSnap.slots.length})`
+              : `Masks (${vapMasksSnap.slots.length})`}
           </span>
         </button>
 
@@ -427,9 +859,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           id="composerTabStack"
           onClick={() => handleSwitchTab('stack')}
           style={{
-            padding: '7px 6px',
+            padding: '7px 4px',
             borderRadius: '9px',
-            fontSize: '11px',
+            fontSize: '10.5px',
             fontWeight: 700,
             cursor: 'pointer',
             border:
@@ -444,12 +876,12 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '4px',
+            gap: '3px',
             whiteSpace: 'nowrap',
           }}
         >
           <span>🥞</span>
-          <span>{isAr ? 'ترتيب الطبقات' : 'Layer Stack'}</span>
+          <span>{isAr ? 'الترتيب' : 'Stack'}</span>
         </button>
       </div>
 
@@ -502,7 +934,665 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           </div>
         </div>
 
+        {/* Unified All Layers & Uploaded Assets Explorer */}
+        {activeTab === 'all' && (
+          <UnifiedLayersExplorer
+            isAr={isAr}
+            composerState={composerState}
+            onChangeState={onChangeState}
+            vapMasksSnap={vapMasksSnap}
+            primaryInfo={primaryInfo}
+            watermarks={watermarks}
+            assets={motionAssets}
+            selectedItem={selectedUnified}
+            onSelectItem={handleSelectUnifiedItem}
+            onJumpToTransform={handleJumpToTransform}
+            onJumpToMotion={handleJumpToMotion}
+            onJumpToMask={handleJumpToMask}
+            onTriggerUploadOverlay={triggerFileSelect}
+            onRemoveOverlay={onRemoveSecondaryFile}
+            onOpenEdgeFeather={onOpenEdgeFeather}
+            onOpenChromaKey={onOpenChromaKey}
+            onOpenWatermark={onOpenWatermark}
+            onOpenBatchOps={onOpenBatchOps}
+          />
+        )}
+
         {/* Secondary File Upload & Layer Selector Section (Always accessible in Secondary tab, plus quick button in Primary tab) */}
+        {activeTab === 'motion' && (() => {
+          const timelineInfo = (window as any).__getProjectTimelineInfo?.() || {
+            totalFrames: 30,
+            fps: 24,
+            durationSec: 1.25,
+          };
+          const giftTotalFrames = Math.max(1, Number(timelineInfo.totalFrames) || 30);
+          const giftFps = Math.max(1, Number(timelineInfo.fps) || 24);
+          const giftDurSec = (giftTotalFrames / giftFps).toFixed(2);
+          const visEnabled = Boolean(motionTransform.visibilityEnabled);
+          const visStart = Math.max(0, Number(motionTransform.visibilityStartFrame ?? 0));
+          const visEnd = Math.max(
+            visStart,
+            Number(motionTransform.visibilityEndFrame ?? Math.max(0, giftTotalFrames - 1))
+          );
+
+          const MOTION_PRESETS: Array<{ id: AnimationPreset; labelAr: string; labelEn: string; icon: string }> = [
+            { id: 'none', labelAr: 'بدون تأثير', labelEn: 'None', icon: '⚪' },
+            { id: 'flyInRight', labelAr: 'دخول من اليمين', labelEn: 'Fly In From Right', icon: '⬅️' },
+            { id: 'flyInLeft', labelAr: 'دخول من اليسار', labelEn: 'Fly In From Left', icon: '➡️' },
+            { id: 'swayRightLeft', labelAr: 'حركة يمين وشمال مستمرة', labelEn: 'Right ↔ Left Sway', icon: '↔️' },
+            { id: 'windBreeze', labelAr: 'نسيم رياح يمين وشمال', labelEn: 'Wind Breeze Drift', icon: '🌬️' },
+            { id: 'glideRightToLeft', labelAr: 'مرور عرضي يمين ← شمال', labelEn: 'Pass Right → Left', icon: '⏪' },
+            { id: 'glideLeftToRight', labelAr: 'مرور عرضي شمال ← يمين', labelEn: 'Pass Left → Right', icon: '⏩' },
+            { id: 'slideBounceRightLeft', labelAr: 'انزلاق وتمايل يمين وشمال', labelEn: 'Dual Slide Sway', icon: '🔄' },
+            { id: 'dropFromTop', labelAr: 'سقوط من الأعلى', labelEn: 'Drop From Top', icon: '⬇️' },
+            { id: 'riseFromBottom', labelAr: 'صعود فخم من الأسفل', labelEn: 'Rise From Bottom', icon: '⬆️' },
+            { id: 'royalEntrance', labelAr: 'دخول ملكي سينمائي', labelEn: 'Royal Entrance', icon: '👑' },
+            { id: 'zoomIn', labelAr: 'زوم سينمائي', labelEn: 'Cinematic Zoom', icon: '🌀' },
+            { id: 'elasticBounce', labelAr: 'ارتداد مطاطي', labelEn: 'Elastic Bounce', icon: '🏀' },
+            { id: 'rubberSnap', labelAr: 'تثبيت زنبركي سريع', labelEn: 'Rubber Snap', icon: '🎯' },
+            { id: 'popPulse', labelAr: 'نبض وظهور مفاجئ', labelEn: 'Pop & Pulse', icon: '⚡' },
+            { id: 'heartbeatPulse', labelAr: 'نبض قلب مستمر', labelEn: 'Heartbeat Loop', icon: '💓' },
+            { id: 'breathingAura', labelAr: 'تنفس وحضور ناعم', labelEn: 'Breathing Aura', icon: '✨' },
+            { id: 'floatingHover', labelAr: 'طفو وتحويم ناعم', labelEn: 'Floating Hover', icon: '☁️' },
+            { id: 'orbitFloat', labelAr: 'حركة مدارية فخمة', labelEn: 'Orbit Float Loop', icon: '🪐' },
+            { id: 'spinFade', labelAr: 'دوران وتلاشي', labelEn: 'Spin & Fade', icon: '💫' },
+            { id: 'spiralZoom', labelAr: 'دوامة حلزونية', labelEn: 'Spiral Vortex', icon: '🌪️' },
+            { id: 'slideFade', labelAr: 'انزلاق ناعم', labelEn: 'Smooth Slide', icon: '🌊' },
+            { id: 'flip3DReveal', labelAr: 'انقلاب 3D ملكي', labelEn: '3D Flip Reveal', icon: '🃏' },
+            { id: 'swingPendulum', labelAr: 'تأرجح بندول', labelEn: 'Swing Pendulum', icon: '🔔' },
+            { id: 'shakeImpact', labelAr: 'اهتزاز وصدمة', labelEn: 'Shake Impact', icon: '💥' },
+            { id: 'glowFlashReveal', labelAr: 'وميض وظهور فخم', labelEn: 'Flash Reveal', icon: '🌟' },
+            { id: 'neonStrobe', labelAr: 'بريق احتفالي متواصل', labelEn: 'Luxury Shimmer Loop', icon: '🎇' },
+          ];
+
+          const resolvedSelectVal = motionIsMask
+            ? `mask:${motionMaskSlot.srcId}`
+            : motionIsOverlay && motionOverlayLayer
+            ? motionOverlayLayer.id
+            : 'primary';
+
+          return (
+          <div
+            style={{
+              padding: '12px',
+              borderRadius: '10px',
+              background: '#131222',
+              border: '1px solid rgba(56, 189, 248, 0.35)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#e0f2fe' }}>
+                {isAr ? '⚡ استوديو التحريك وفترة الظهور' : 'Motion, Mask & Visibility Studio'}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  (window as any).__replayComposerMotion?.(
+                    visEnabled ? visStart : (motionTransform.startFrame ?? 0)
+                  );
+                }}
+                style={{
+                  padding: '3px 9px',
+                  borderRadius: '5px',
+                  border: '1px solid #22c55e',
+                  background: 'rgba(34, 197, 94, 0.2)',
+                  color: '#bbf7d0',
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+                title={isAr ? 'تشغيل وإعادة معاينة الحركة من البداية' : 'Replay motion preview'}
+              >
+                {isAr ? '▶ تشغيل المعاينة' : '▶ Replay'}
+              </button>
+            </div>
+
+            {/* Unified Target Selector: Primary, Added Overlays/Frames, AND Dynamic Masks */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '5px',
+                padding: '8px',
+                borderRadius: '8px',
+                background: 'rgba(124, 92, 255, 0.1)',
+                border: '1px solid rgba(167, 139, 250, 0.3)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#ddd6fe' }}>
+                  {isAr ? '🎯 العنصر المستهدف (مشروع / إطار / قناع):' : '🎯 Target Element:'}
+                </span>
+                <span style={{ fontSize: '9.5px', color: '#7dd3fc', fontVariantNumeric: 'tabular-nums' }}>
+                  {isAr
+                    ? `الهدية: ${giftTotalFrames} فريم (${giftDurSec}ث)`
+                    : `Gift: ${giftTotalFrames}f (${giftDurSec}s)`}
+                </span>
+              </div>
+              <select
+                id="composerMotionTargetSelect"
+                value={resolvedSelectVal}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setMotionTargetId(val);
+                  if (val === 'primary') {
+                    onChangeState({ ...composerState, activeTargetId: 'primary' });
+                  } else if (val.startsWith('mask:')) {
+                    const sid = val.slice(5);
+                    (window as any).__selectedVapMaskId = sid;
+                  } else {
+                    onChangeState({ ...composerState, activeTargetId: val });
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  color: '#f8fafc',
+                  background: '#17192d',
+                  border: '1px solid rgba(167,139,250,0.45)',
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="primary" style={{ background: '#131222', color: '#fff' }}>
+                  {isAr ? '⭐ المشروع الأساسي الرئيسي' : '⭐ Main Project File'}
+                </option>
+                {composerState.overlays.map((ov) => (
+                  <option key={ov.id} value={ov.id} style={{ background: '#131222', color: '#a7f3d0' }}>
+                    {isAr ? `🖼️ إطار / طبقة: ${ov.name}` : `🖼️ Layer: ${ov.name}`}
+                  </option>
+                ))}
+                {vapMasksSnap.slots.map((sl: any) => (
+                  <option key={`mask_${sl.srcId}`} value={`mask:${sl.srcId}`} style={{ background: '#131222', color: '#f0abfc' }}>
+                    {isAr
+                      ? `🎭 قناع ${sl.isTextSlot ? 'اسم' : 'صورة'}: ${sl.srcTag}`
+                      : `🎭 Mask: ${sl.srcTag}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Visibility Duration Window inside the Gift */}
+            <div
+              style={{
+                padding: '9px 10px',
+                borderRadius: '8px',
+                background: visEnabled ? 'rgba(16, 185, 129, 0.1)' : '#171a2d',
+                border: visEnabled
+                  ? '1px solid rgba(16, 185, 129, 0.45)'
+                  : '1px solid rgba(255, 255, 255, 0.1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '7px',
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  <span style={{ fontSize: '11.5px', fontWeight: 800, color: visEnabled ? '#6ee7b7' : '#e2e8f0' }}>
+                    {isAr ? '⏱️ تحديد فترة الظهور داخل الهدية' : '⏱️ Visibility Duration Window'}
+                  </span>
+                  <span style={{ fontSize: '9.5px', color: '#94a3b8' }}>
+                    {isAr
+                      ? 'اجعل القناع أو الإطار يظهر في مدة معينة ويختفي قبلها وبعدها'
+                      : 'Show element only between specific frames/seconds inside the gift'}
+                  </span>
+                </div>
+                <input
+                  id="composerVisibilityEnabledCheckbox"
+                  type="checkbox"
+                  checked={visEnabled}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    updateMotionTransform({
+                      visibilityEnabled: checked,
+                      visibilityStartFrame: motionTransform.visibilityStartFrame ?? 0,
+                      visibilityEndFrame:
+                        motionTransform.visibilityEndFrame ?? Math.max(1, giftTotalFrames - 1),
+                    });
+                  }}
+                  style={{ width: '16px', height: '16px', accentColor: '#10b981', cursor: 'pointer' }}
+                />
+              </label>
+
+              {visEnabled && (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '10.5px' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <span style={{ color: '#a7f3d0', fontWeight: 700 }}>
+                        {isAr ? `يظهر من فريم (${(visStart / giftFps).toFixed(2)}ث)` : `Show From (${(visStart / giftFps).toFixed(2)}s)`}
+                      </span>
+                      <input
+                        id="composerVisibilityStartInput"
+                        type="number"
+                        min="0"
+                        max={Math.max(0, giftTotalFrames - 1)}
+                        value={visStart}
+                        onChange={(e) => {
+                          const sVal = Math.max(0, Number(e.target.value) || 0);
+                          updateMotionTransform({
+                            visibilityEnabled: true,
+                            visibilityStartFrame: sVal,
+                            visibilityEndFrame: Math.max(sVal, visEnd),
+                          });
+                        }}
+                        style={{
+                          background: '#0c0d16',
+                          border: '1px solid rgba(16, 185, 129, 0.4)',
+                          borderRadius: '6px',
+                          padding: '5px 8px',
+                          color: '#fff',
+                          textAlign: 'left',
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <span style={{ color: '#a7f3d0', fontWeight: 700 }}>
+                        {isAr ? `يختفي بعد فريم (${(visEnd / giftFps).toFixed(2)}ث)` : `Hide After (${(visEnd / giftFps).toFixed(2)}s)`}
+                      </span>
+                      <input
+                        id="composerVisibilityEndInput"
+                        type="number"
+                        min={visStart}
+                        max={Math.max(giftTotalFrames - 1, 1200)}
+                        value={visEnd}
+                        onChange={(e) => {
+                          const eVal = Math.max(visStart, Number(e.target.value) || 0);
+                          updateMotionTransform({
+                            visibilityEnabled: true,
+                            visibilityStartFrame: visStart,
+                            visibilityEndFrame: eVal,
+                          });
+                        }}
+                        style={{
+                          background: '#0c0d16',
+                          border: '1px solid rgba(16, 185, 129, 0.4)',
+                          borderRadius: '6px',
+                          padding: '5px 8px',
+                          color: '#fff',
+                          textAlign: 'left',
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+                    {[
+                      { labelAr: 'الكل', labelEn: 'Full', s: 0, e: Math.max(0, giftTotalFrames - 1) },
+                      { labelAr: 'النصف 1', labelEn: '1st Half', s: 0, e: Math.max(1, Math.floor(giftTotalFrames / 2)) },
+                      { labelAr: 'المنتصف', labelEn: 'Middle', s: Math.floor(giftTotalFrames * 0.2), e: Math.max(1, Math.floor(giftTotalFrames * 0.8)) },
+                      { labelAr: 'النصف 2', labelEn: '2nd Half', s: Math.floor(giftTotalFrames * 0.45), e: Math.max(0, giftTotalFrames - 1) },
+                    ].map((rng) => (
+                      <button
+                        key={rng.labelEn}
+                        type="button"
+                        onClick={() =>
+                          updateMotionTransform({
+                            visibilityEnabled: true,
+                            visibilityStartFrame: rng.s,
+                            visibilityEndFrame: rng.e,
+                          })
+                        }
+                        style={{
+                          padding: '3px 4px',
+                          borderRadius: '5px',
+                          border: '1px solid rgba(16, 185, 129, 0.3)',
+                          background: 'rgba(6, 78, 59, 0.35)',
+                          color: '#a7f3d0',
+                          fontSize: '9.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isAr ? rng.labelAr : rng.labelEn}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Animation Presets Grid (16 Cinematic Presets) */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
+              {MOTION_PRESETS.map((preset) => {
+                const active = (motionTransform.animationPreset || 'none') === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      updateMotionTransform({ animationPreset: preset.id });
+                      if (preset.id !== 'none') {
+                        setTimeout(() => {
+                          (window as any).__replayComposerMotion?.(
+                            visEnabled ? visStart : (motionTransform.startFrame ?? 0)
+                          );
+                        }, 20);
+                      }
+                    }}
+                    style={{
+                      padding: '7px 8px',
+                      borderRadius: '7px',
+                      fontSize: '10.5px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: isAr ? 'right' : 'left',
+                      border: active ? '1px solid #38bdf8' : '1px solid #23273c',
+                      background: active
+                        ? 'linear-gradient(135deg, rgba(56, 189, 248, 0.28), rgba(124, 92, 255, 0.2))'
+                        : '#171929',
+                      color: active ? '#f0f9ff' : '#cbd5e1',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                    }}
+                  >
+                    <span>{preset.icon}</span>
+                    <span>{isAr ? preset.labelAr : preset.labelEn}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Link Frame and Layer Checkbox */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 10px',
+                borderRadius: '8px',
+                background: '#1a1d30',
+                border: '1px solid #2b2f4c',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#f8fafc' }}>
+                  {isAr ? '🔗 ربط الإطار والطبقة ككتلة واحدة' : 'Link Frame & Layer Together'}
+                </span>
+                <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                  {isAr ? 'يضمن تحريك العنصر متزامناً مع حركة المشروع الرئيسي' : 'Synchronizes element with main project motion'}
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={motionTransform.linkFrameAndLayer !== false}
+                onChange={(e) => updateMotionTransform({ linkFrameAndLayer: e.target.checked })}
+                style={{ width: '16px', height: '16px', accentColor: '#38bdf8', cursor: 'pointer' }}
+              />
+            </div>
+
+            {/* Animation Timing Frame Range */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '11px' }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ color: '#94a3b8' }}>{isAr ? 'بداية حركة الدخول (فريم)' : 'Anim Start Frame'}</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="600"
+                  value={motionTransform.startFrame ?? 0}
+                  onChange={(e) => updateMotionTransform({ startFrame: Math.max(0, Number(e.target.value) || 0) })}
+                  style={{
+                    background: '#0c0d16',
+                    border: '1px solid #2b2f4c',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    color: '#fff',
+                    textAlign: 'left',
+                  }}
+                />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ color: '#94a3b8' }}>{isAr ? 'نهاية حركة الدخول (فريم)' : 'Anim End Frame'}</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1200"
+                  value={motionTransform.endFrame ?? 30}
+                  onChange={(e) => updateMotionTransform({ endFrame: Math.max(1, Number(e.target.value) || 30) })}
+                  style={{
+                    background: '#0c0d16',
+                    border: '1px solid #2b2f4c',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    color: '#fff',
+                    textAlign: 'left',
+                  }}
+                />
+              </label>
+            </div>
+
+            {/* Custom Keyframe Waypoints Manager */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '10px',
+                borderRadius: '8px',
+                background: '#181a2e',
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#38bdf8' }}>
+                  {isAr ? '📍 نقاط مسار الحركة (Keyframes & Waypoints)' : 'Motion Waypoints & Keyframes'}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const wps = [...(motionTransform.motionWaypoints || [])];
+                      const curFrame = Math.max(0, Math.round(Number((window as any).__getCurrentComposerFrame?.()) || 0));
+                      if (wps.length === 0) {
+                        wps.push({
+                          frame: 0,
+                          offsetX: motionTransform.offsetX,
+                          offsetY: motionTransform.offsetY,
+                          scale: motionTransform.scale,
+                          rotation: motionTransform.rotation,
+                          opacity: motionTransform.opacity,
+                        });
+                        wps.push({
+                          frame: curFrame > 0 ? curFrame : 15,
+                          offsetX: motionTransform.offsetX,
+                          offsetY: motionTransform.offsetY,
+                          scale: motionTransform.scale,
+                          rotation: motionTransform.rotation,
+                          opacity: motionTransform.opacity,
+                        });
+                      } else {
+                        const lastF = wps[wps.length - 1].frame;
+                        const nextFrame = curFrame > lastF ? curFrame : lastF + 10;
+                        wps.push({
+                          frame: nextFrame,
+                          offsetX: motionTransform.offsetX,
+                          offsetY: motionTransform.offsetY,
+                          scale: motionTransform.scale,
+                          rotation: motionTransform.rotation,
+                          opacity: motionTransform.opacity,
+                        });
+                      }
+                      updateMotionTransform({ motionWaypoints: wps });
+                      setTimeout(() => {
+                        (window as any).__replayComposerMotion?.(0);
+                      }, 20);
+                    }}
+                    style={{
+                      padding: '3px 8px',
+                      borderRadius: '5px',
+                      border: '1px solid #38bdf8',
+                      background: 'rgba(56, 189, 248, 0.2)',
+                      color: '#bae6fd',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {isAr ? '+ إضافة نقطة مسار' : '+ Add Waypoint'}
+                  </button>
+                  {Array.isArray(motionTransform.motionWaypoints) && motionTransform.motionWaypoints.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => updateMotionTransform({ motionWaypoints: [] })}
+                      style={{
+                        padding: '3px 6px',
+                        borderRadius: '5px',
+                        border: '1px solid rgba(239,68,68,0.45)',
+                        background: 'rgba(239,68,68,0.16)',
+                        color: '#fca5a5',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                      title={isAr ? 'مسح كل النقاط' : 'Clear all waypoints'}
+                    >
+                      {isAr ? 'مسح' : 'Clear'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', lineHeight: '1.3' }}>
+                {isAr
+                  ? 'أنشئ نقاط تحريك متتابعة عبر التايملاين مع إحداثيات الدقة والتكبير والدوران والشفافية لكل نقطة.'
+                  : 'Create custom sequential waypoint keyframes across the timeline for precise position, scale, rotation and opacity.'}
+              </div>
+
+              {Array.isArray(motionTransform.motionWaypoints) && motionTransform.motionWaypoints.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', maxHeight: '175px', overflowY: 'auto' }}>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '42px 1fr 1fr 1fr 1fr 1fr 22px',
+                      gap: '4px',
+                      padding: '0 6px',
+                      fontSize: '9.5px',
+                      color: '#94a3b8',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <span>{isAr ? 'فريم' : 'Frm'}</span>
+                    <span>X</span>
+                    <span>Y</span>
+                    <span>{isAr ? 'حجم%' : 'Scale'}</span>
+                    <span>{isAr ? 'دوران°' : 'Rot'}</span>
+                    <span>{isAr ? 'شفاف%' : 'Op%'}</span>
+                    <span></span>
+                  </div>
+                  {motionTransform.motionWaypoints.map((wp, wIdx) => (
+                    <div
+                      key={wIdx}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '42px 1fr 1fr 1fr 1fr 1fr 22px',
+                        gap: '4px',
+                        alignItems: 'center',
+                        padding: '4px 6px',
+                        borderRadius: '6px',
+                        background: '#121422',
+                        border: '1px solid #23273c',
+                        fontSize: '10px',
+                      }}
+                    >
+                      <input
+                        type="number"
+                        value={wp.frame}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, frame: Math.max(0, Number(e.target.value) || 0) };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title={isAr ? 'الفريم' : 'Frame'}
+                      />
+                      <input
+                        type="number"
+                        value={wp.offsetX}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, offsetX: Number(e.target.value) || 0 };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title="X"
+                      />
+                      <input
+                        type="number"
+                        value={wp.offsetY}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, offsetY: Number(e.target.value) || 0 };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title="Y"
+                      />
+                      <input
+                        type="number"
+                        value={wp.scale}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, scale: Math.max(5, Number(e.target.value) || 100) };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title="Scale %"
+                      />
+                      <input
+                        type="number"
+                        value={wp.rotation}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, rotation: Number(e.target.value) || 0 };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title={isAr ? 'دوران' : 'Rotation'}
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={wp.opacity}
+                        onChange={(e) => {
+                          const wps = [...motionTransform.motionWaypoints!];
+                          wps[wIdx] = { ...wp, opacity: Math.max(0, Math.min(100, Number(e.target.value) ?? 100)) };
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: '#0a0b12', border: '1px solid #2b2f4c', borderRadius: '4px', color: '#fff', padding: '2px', textAlign: 'center', fontSize: '10px' }}
+                        title={isAr ? 'الشفافية %' : 'Opacity %'}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const wps = motionTransform.motionWaypoints!.filter((_, i) => i !== wIdx);
+                          updateMotionTransform({ motionWaypoints: wps });
+                        }}
+                        style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '4px', color: '#fca5a5', cursor: 'pointer', fontSize: '11px', height: '20px', display: 'grid', placeItems: 'center' }}
+                        title={isAr ? 'حذف النقطة' : 'Delete Waypoint'}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          );
+        })()}
+
         {activeTab === 'secondary' ? (
           <div
             style={{
@@ -891,8 +1981,1185 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
               </div>
             )}
           </div>
+        ) : activeTab === 'masks' ? (
+          /* Unified Mask Control Bundle (التحكم الموحد في الأقنعة لجميع الصيغ) */
+          (() => {
+            const orderedMasks = [...vapMasksSnap.slots].reverse();
+            const selSlot =
+              orderedMasks.find(
+                (s) => String(s.srcId) === String(vapMasksSnap.selectedSrcId || '')
+              ) || orderedMasks[0] || null;
+            const selRep = selSlot ? vapMasksSnap.replacements?.[selSlot.srcId] || {} : {};
+            const selBand: MaskDepthBand = selSlot ? resolveMaskDepthBand(selSlot) : 'abovePrimary';
+            const selFrame: [number, number, number, number] = selSlot?.defaultFrame || [
+              0,
+              0,
+              Number(selSlot?.w) || 120,
+              Number(selSlot?.h) || 120,
+            ];
+            const selFill = String(selSlot?.fillColor || 'transparent');
+            const selIsColored = Boolean(parseHexColorRgb(selFill));
+            const selShape =
+              selSlot?.shapePreset || (selSlot?.isTextSlot ? 'roundedRect' : 'circle');
+            const bandLabelAr: Record<MaskDepthBand, string> = {
+              belowOverlays: 'خلف الإطارات والكل',
+              behindPrimary: 'خلف الهدية الأساسية',
+              abovePrimary: 'أمام الهدية (خلف الإطارات)',
+              aboveOverlays: 'فوق كل الإطارات',
+            };
+
+            return (
+              <div
+                id="composerUnifiedMasksBundle"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '9px',
+                }}
+              >
+                {/* Bundle Top Action Bar */}
+                <div
+                  style={{
+                    padding: '10px',
+                    borderRadius: '10px',
+                    background: 'linear-gradient(180deg, rgba(168,85,247,0.14), rgba(19,17,32,0.95))',
+                    border: '1px solid rgba(192, 132, 252, 0.35)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '7px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '6px',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#f3e8ff' }}>
+                      {isAr
+                        ? `🎭 بند التحكم في الأقنعة (${vapMasksSnap.slots.length})`
+                        : `🎭 Unified Mask Bundle (${vapMasksSnap.slots.length})`}
+                    </span>
+                    <button
+                      type="button"
+                      id="composerMaskGuidesBtn"
+                      onClick={() => (window as any).__toggleVapMaskGuides?.()}
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: '6px',
+                        border: vapMasksSnap.guidesEnabled
+                          ? '1px solid #38bdf8'
+                          : '1px solid rgba(255,255,255,0.14)',
+                        background: vapMasksSnap.guidesEnabled
+                          ? 'rgba(56, 189, 248, 0.22)'
+                          : '#1a1c2e',
+                        color: vapMasksSnap.guidesEnabled ? '#7dd3fc' : '#cbd5e1',
+                        fontSize: '10.5px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {vapMasksSnap.guidesEnabled
+                        ? isAr
+                          ? '👁️ إخفاء الحدود'
+                          : '👁️ Hide Guides'
+                        : isAr
+                        ? '👁️ تحريك بالماوس'
+                        : '👁️ Show Guides'}
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <button
+                      type="button"
+                      id="composerAddImgMaskBtn"
+                      onClick={() =>
+                        (window as any).__createQuickVapMask?.({
+                          srcType: 'img',
+                          band: 'behindPrimary',
+                        })
+                      }
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(192, 132, 252, 0.5)',
+                        background: 'rgba(139, 92, 246, 0.24)',
+                        color: '#f3e8ff',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {isAr ? '➕ قناع صورة' : '➕ Image Mask'}
+                    </button>
+                    <button
+                      type="button"
+                      id="composerAddTxtMaskBtn"
+                      onClick={() =>
+                        (window as any).__createQuickVapMask?.({
+                          srcType: 'txt',
+                          band: 'behindPrimary',
+                        })
+                      }
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '7px',
+                        border: '1px solid rgba(56, 189, 248, 0.5)',
+                        background: 'rgba(14, 165, 233, 0.2)',
+                        color: '#bae6fd',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {isAr ? '➕ قناع اسم' : '➕ Name Mask'}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    id="composerAddSvgaInMasksBtn"
+                    onClick={() => (window as any).__uploadSvgaFrameInMasksBundle?.()}
+                    style={{
+                      width: '100%',
+                      padding: '6px 8px',
+                      borderRadius: '7px',
+                      border: '1px solid rgba(16, 185, 129, 0.5)',
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      color: '#6ee7b7',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {isAr ? '🟣 رفع ملف SVGA في خانة الأقنعة (إطار / هدية)' : '🟣 Upload SVGA in Masks Tab'}
+                  </button>
+
+                  {(() => {
+                    const uploadedFrameOverlays = (composerState.overlays || []).filter(
+                      (ov) => ov && !ov.isVapMask
+                    );
+                    if (uploadedFrameOverlays.length === 0) return null;
+                    return (
+                      <div
+                        id="composerMasksUploadedFramesBox"
+                        style={{
+                          padding: '7px',
+                          borderRadius: '8px',
+                          background: 'rgba(6, 78, 59, 0.25)',
+                          border: '1px solid rgba(16, 185, 129, 0.35)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '5px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '6px',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <span style={{ fontSize: '10.5px', fontWeight: 800, color: '#6ee7b7' }}>
+                            {isAr
+                              ? `🟣 ملفات / إطارات SVGA المضافة (${uploadedFrameOverlays.length})`
+                              : `🟣 Uploaded Frames / SVGA (${uploadedFrameOverlays.length})`}
+                          </span>
+                          {orderedMasks.length > 0 && (
+                            <button
+                              type="button"
+                              id="composerLockMasksBehindSvgaBtn"
+                              onClick={() => {
+                                const moved =
+                                  (window as any).__ensureMasksBehindAddedFrames?.('behindPrimary') || 0;
+                                if (!moved) {
+                                  (window as any).__ensureMasksBehindAddedFrames?.('abovePrimary');
+                                }
+                              }}
+                              style={{
+                                padding: '3px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(251, 191, 36, 0.55)',
+                                background: 'rgba(251, 191, 36, 0.16)',
+                                color: '#fde68a',
+                                fontSize: '9.5px',
+                                fontWeight: 800,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isAr ? '📌 تثبيت كل الأقنعة بالخلف' : '📌 Lock Masks Behind'}
+                            </button>
+                          )}
+                        </div>
+
+                        {uploadedFrameOverlays.map((ov) => {
+                          const isVisible = ov.transform?.visible !== false;
+                          const isAbove = ov.zOrder !== 'below';
+                          return (
+                            <div
+                              key={`mask_tab_ov_${ov.id}`}
+                              style={{
+                                padding: '5px 6px',
+                                borderRadius: '6px',
+                                background: 'rgba(12, 16, 28, 0.88)',
+                                border: '1px solid rgba(16, 185, 129, 0.28)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    fontSize: '10.5px',
+                                    fontWeight: 700,
+                                    color: '#ecfdf5',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {ov.name}
+                                </div>
+                                <div style={{ fontSize: '9.5px', color: '#a7f3d0' }}>
+                                  {ov.format} · {ov.width}×{ov.height} ·{' '}
+                                  {isAbove
+                                    ? isAr
+                                      ? '⬆️ أمام الأقنعة'
+                                      : 'Above Masks'
+                                    : isAr
+                                    ? '⬇️ خلف المشروع'
+                                    : 'Below Primary'}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                title={
+                                  isAbove
+                                    ? isAr
+                                      ? 'إرسال خلف الهدية الأساسية'
+                                      : 'Send Below Primary'
+                                    : isAr
+                                    ? 'رفع أمام الهدية (فوق الأقنعة)'
+                                    : 'Bring Above Primary'
+                                }
+                                onClick={() =>
+                                  onChangeState(
+                                    isAbove
+                                      ? moveOverlayLayerDown(composerState, ov.id)
+                                      : moveOverlayLayerUp(composerState, ov.id)
+                                  )
+                                }
+                                style={{
+                                  padding: '2px 5px',
+                                  borderRadius: '4px',
+                                  border: '1px solid rgba(255,255,255,0.14)',
+                                  background: '#171d31',
+                                  color: '#f8fafc',
+                                  fontSize: '9.5px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {isAbove ? '⬇️' : '⬆️'}
+                              </button>
+                              <button
+                                type="button"
+                                title={isAr ? 'تحريك وتحديد مدة الظهور' : 'Motion & Visibility'}
+                                onClick={() => {
+                                  setActiveTab('motion');
+                                  setMotionTargetId(ov.id);
+                                }}
+                                style={{
+                                  padding: '2px 5px',
+                                  borderRadius: '4px',
+                                  border: '1px solid rgba(56,189,248,0.45)',
+                                  background: 'rgba(56,189,248,0.16)',
+                                  color: '#7dd3fc',
+                                  fontSize: '9.5px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                ⚡
+                              </button>
+                              <button
+                                type="button"
+                                title={isAr ? 'إظهار/إخفاء' : 'Show/Hide'}
+                                onClick={() =>
+                                  onChangeState({
+                                    ...composerState,
+                                    overlays: composerState.overlays.map((item) =>
+                                      item.id === ov.id
+                                        ? {
+                                            ...item,
+                                            transform: {
+                                              ...item.transform,
+                                              visible: !isVisible,
+                                            },
+                                          }
+                                        : item
+                                    ),
+                                  })
+                                }
+                                style={{
+                                  padding: '2px 5px',
+                                  borderRadius: '4px',
+                                  border: '1px solid rgba(255,255,255,0.14)',
+                                  background: isVisible ? 'rgba(16,185,129,0.18)' : '#171d31',
+                                  color: isVisible ? '#6ee7b7' : '#64748b',
+                                  fontSize: '9.5px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                👁️
+                              </button>
+                              <button
+                                type="button"
+                                title={isAr ? 'حذف الملف' : 'Remove'}
+                                onClick={() => onRemoveSecondaryFile(ov.id)}
+                                style={{
+                                  padding: '2px 5px',
+                                  borderRadius: '4px',
+                                  border: '1px solid rgba(239,68,68,0.4)',
+                                  background: 'rgba(239,68,68,0.15)',
+                                  color: '#fca5a5',
+                                  fontSize: '9.5px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '6px',
+                      padding: '5px 8px',
+                      borderRadius: '7px',
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      fontSize: '10.5px',
+                      color: '#cbd5e1',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span>
+                      {isAr
+                        ? 'تضمين الصور المستبدلة داخل التصدير (Bake)'
+                        : 'Bake replaced photos into exported file'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      id="composerMaskBakeCheckbox"
+                      checked={vapMasksSnap.bakeReplacedSlots}
+                      onChange={(e) => (window as any).__setVapBakeReplaced?.(e.target.checked)}
+                      style={{ accentColor: '#c084fc', cursor: 'pointer' }}
+                    />
+                  </label>
+                </div>
+
+                {/* Detected Dummy Masks Section */}
+                {vapMasksSnap.detectedDummies.length > 0 && (
+                  <div
+                    style={{
+                      padding: '8px',
+                      borderRadius: '9px',
+                      background: 'rgba(48, 12, 34, 0.55)',
+                      border: '1px solid rgba(244, 114, 182, 0.42)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px',
+                    }}
+                  >
+                    <div style={{ fontSize: '11px', fontWeight: 800, color: '#f9a8d4' }}>
+                      {isAr
+                        ? `🎯 أقنعة وهمية مكتشفة تلقائياً (${vapMasksSnap.detectedDummies.length})`
+                        : `🎯 Auto-Detected Dummy Masks (${vapMasksSnap.detectedDummies.length})`}
+                    </div>
+                    {vapMasksSnap.detectedDummies.map((dm: any) => (
+                      <div
+                        key={dm.id}
+                        style={{
+                          padding: '6px',
+                          borderRadius: '7px',
+                          background: 'rgba(15, 11, 20, 0.92)',
+                          border: '1px solid rgba(244, 114, 182, 0.35)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '5px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {dm.thumbUrl && (
+                            <img
+                              src={dm.thumbUrl}
+                              alt={dm.labelAr}
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '5px',
+                                objectFit: 'contain',
+                                border: '1px solid rgba(244,114,182,0.4)',
+                                background: '#171723',
+                              }}
+                            />
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '10.5px', fontWeight: 800, color: '#fce7f3' }}>
+                              {dm.labelAr}
+                            </div>
+                            <div style={{ fontSize: '9.5px', color: '#f472b6' }}>
+                              {dm.frame?.[2]}×{dm.frame?.[3]} · ({dm.frame?.[0]},{dm.frame?.[1]})
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => (window as any).__convertVapDummyMask?.(dm.id, 'convert')}
+                            style={{
+                              flex: 1,
+                              padding: '3px 6px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(168,85,247,0.5)',
+                              background: 'rgba(139,92,246,0.22)',
+                              color: '#e9d5ff',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            🎭 تحويل لقناع نظيف
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              (window as any).__convertVapDummyMask?.(dm.id, 'convertAndReplace')
+                            }
+                            style={{
+                              flex: 1,
+                              padding: '3px 6px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(16,185,129,0.45)',
+                              background: 'rgba(16,185,129,0.18)',
+                              color: '#a7f3d0',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            📁 إزالة + صورة
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              (window as any).__convertVapDummyMask?.(dm.id, 'eraseOnly')
+                            }
+                            style={{
+                              padding: '3px 6px',
+                              borderRadius: '5px',
+                              border: '1px solid rgba(239,68,68,0.4)',
+                              background: 'rgba(239,68,68,0.14)',
+                              color: '#fca5a5',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            🧹 مسح
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Unified Masks List with 4-Band Placement */}
+                {orderedMasks.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '14px',
+                      borderRadius: '9px',
+                      border: '1px dashed rgba(192, 132, 252, 0.35)',
+                      background: 'rgba(19, 17, 32, 0.7)',
+                      textAlign: 'center',
+                      fontSize: '11px',
+                      color: '#cbd5e1',
+                    }}
+                  >
+                    {isAr
+                      ? 'لا توجد أقنعة حالياً — اضغط (➕ قناع صورة) أو (➕ قناع اسم) أعلاه لإضافة قناع جديد متوافق مع SVGA و VAP.'
+                      : 'No masks yet — click + Image Mask or + Name Mask above to add one.'}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {orderedMasks.map((slot: any, idx: number, arr: any[]) => {
+                      const isSel = selSlot && String(selSlot.srcId) === String(slot.srcId);
+                      const rep = vapMasksSnap.replacements?.[slot.srcId] || {};
+                      const band = resolveMaskDepthBand(slot);
+                      const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
+                      const thumbSrc =
+                        (rep.active && rep.dataUrl) ||
+                        vapMasksSnap.silhouettes?.[slot.srcId] ||
+                        '';
+                      const isBehind = band === 'belowOverlays' || band === 'behindPrimary';
+
+                      return (
+                        <div
+                          key={`mask_bundle_row_${slot.srcId}`}
+                          data-composer-mask-card={slot.srcId}
+                          onClick={() => (window as any).__selectVapMaskSlot?.(slot.srcId)}
+                          style={{
+                            padding: '7px',
+                            borderRadius: '9px',
+                            border: isSel
+                              ? '1px solid #fbbf24'
+                              : '1px solid rgba(192, 132, 252, 0.25)',
+                            background: isSel
+                              ? 'rgba(251, 191, 36, 0.1)'
+                              : 'rgba(14, 15, 27, 0.94)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '5px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                (window as any).__uploadVapMaskPhoto?.(slot.srcId);
+                              }}
+                              title={isAr ? 'اضغط لرفع/استبدال صورة القناع' : 'Upload photo inside mask'}
+                              style={{
+                                width: '32px',
+                                height: '32px',
+                                borderRadius: '6px',
+                                overflow: 'hidden',
+                                flexShrink: 0,
+                                border: rep.active
+                                  ? '1px solid #34d399'
+                                  : '1px solid rgba(255,255,255,0.14)',
+                                background: '#171723',
+                                display: 'grid',
+                                placeItems: 'center',
+                              }}
+                            >
+                              {thumbSrc ? (
+                                <img
+                                  src={thumbSrc}
+                                  alt={slot.srcTag}
+                                  style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                />
+                              ) : (
+                                <span style={{ fontSize: '14px' }}>🎭</span>
+                              )}
+                            </div>
+
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  fontSize: '11px',
+                                  fontWeight: 800,
+                                  color: isSel ? '#fde68a' : '#f3f4f6',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '5px',
+                                }}
+                              >
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {slot.srcTag}
+                                </span>
+                                {rep.active && (
+                                  <span
+                                    style={{
+                                      fontSize: '9px',
+                                      background: 'rgba(16,185,129,0.2)',
+                                      color: '#6ee7b7',
+                                      padding: '0 4px',
+                                      borderRadius: '4px',
+                                    }}
+                                  >
+                                    {isAr ? 'محمّل' : 'Loaded'}
+                                  </span>
+                                )}
+                                {hasAnimatedMotion(slot.motionTransform) && (
+                                  <span
+                                    style={{
+                                      fontSize: '9px',
+                                      background: 'rgba(56,189,248,0.2)',
+                                      color: '#7dd3fc',
+                                      padding: '0 4px',
+                                      borderRadius: '4px',
+                                    }}
+                                  >
+                                    ⚡
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: '9.5px',
+                                  color: slot.isTextSlot ? '#38bdf8' : '#c084fc',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                {slot.isTextSlot ? (isAr ? 'اسم' : 'Name') : isAr ? 'صورة' : 'Image'} ·{' '}
+                                {Math.round(fRect[2])}×{Math.round(fRect[3])} ·{' '}
+                                <span style={{ color: isBehind ? '#fde68a' : '#cbd5e1' }}>
+                                  {bandLabelAr[band]}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                title={isAr ? 'تقديم للأمام' : 'Move Up'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  (window as any).__reorderVapMaskSlot?.(slot.srcId, 'up');
+                                }}
+                                style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '5px',
+                                  border: '1px solid rgba(255,255,255,0.12)',
+                                  background: '#1b1d30',
+                                  color: idx === 0 ? '#4b5563' : '#f8fafc',
+                                  fontSize: '10px',
+                                  cursor: idx === 0 ? 'default' : 'pointer',
+                                }}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === arr.length - 1}
+                                title={isAr ? 'إنزال للخلف' : 'Move Down'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  (window as any).__reorderVapMaskSlot?.(slot.srcId, 'down');
+                                }}
+                                style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '5px',
+                                  border: '1px solid rgba(255,255,255,0.12)',
+                                  background: '#1b1d30',
+                                  color: idx === arr.length - 1 ? '#4b5563' : '#f8fafc',
+                                  fontSize: '10px',
+                                  cursor: idx === arr.length - 1 ? 'default' : 'pointer',
+                                }}
+                              >
+                                ↓
+                              </button>
+                              <button
+                                type="button"
+                                title={isAr ? 'رفع صورة داخل القناع' : 'Upload Photo'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  (window as any).__uploadVapMaskPhoto?.(slot.srcId);
+                                }}
+                                style={{
+                                  padding: '0 6px',
+                                  height: '22px',
+                                  borderRadius: '5px',
+                                  border: '1px solid rgba(168, 85, 247, 0.45)',
+                                  background: 'rgba(139, 92, 246, 0.2)',
+                                  color: '#e9d5ff',
+                                  fontSize: '10px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                📁
+                              </button>
+                              {rep.active && (
+                                <button
+                                  type="button"
+                                  title={isAr ? 'مسح الصورة المستبدلة' : 'Clear Photo'}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    (window as any).__clearVapMaskPhoto?.(slot.srcId);
+                                  }}
+                                  style={{
+                                    padding: '0 5px',
+                                    height: '22px',
+                                    borderRadius: '5px',
+                                    border: '1px solid rgba(251, 191, 36, 0.35)',
+                                    background: 'rgba(251, 191, 36, 0.14)',
+                                    color: '#fde68a',
+                                    fontSize: '10px',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  🧹
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                title={isAr ? 'حذف القناع' : 'Delete Mask'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  (window as any).__deleteVapMaskSlot?.(slot.srcId);
+                                }}
+                                style={{
+                                  width: '22px',
+                                  height: '22px',
+                                  borderRadius: '5px',
+                                  border: '1px solid rgba(239,68,68,0.35)',
+                                  background: 'rgba(239,68,68,0.14)',
+                                  color: '#fca5a5',
+                                  fontSize: '11px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 4-Band Placement Selector (Solves Behind-Added-Frame!) */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }}>
+                            <span style={{ fontSize: '9.5px', color: '#94a3b8', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                              {isAr ? 'طبقة العمق:' : 'Depth:'}
+                            </span>
+                            <select
+                              data-composer-mask-depth={slot.srcId}
+                              value={band}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                (window as any).__setVapMaskDepthBand?.(
+                                  slot.srcId,
+                                  e.target.value as MaskDepthBand
+                                );
+                              }}
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                height: '24px',
+                                padding: '0 6px',
+                                borderRadius: '6px',
+                                border: isBehind
+                                  ? '1px solid rgba(251,191,36,0.45)'
+                                  : '1px solid rgba(139,92,246,0.4)',
+                                background: isBehind ? 'rgba(251,191,36,0.14)' : '#15182c',
+                                color: isBehind ? '#fde68a' : '#f1f5f9',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <option value="belowOverlays">
+                                {isAr ? '⬇️⬇️ خلف الإطارات والكل' : '⬇️⬇️ Below Everything & Frames'}
+                              </option>
+                              <option value="behindPrimary">
+                                {isAr ? '⬇️ خلف الهدية الأساسية' : '⬇️ Behind Main Gift'}
+                              </option>
+                              <option value="abovePrimary">
+                                {isAr ? '⬆️ أمام الهدية (خلف الإطارات المضافة)' : '⬆️ Above Gift (Behind Added Frames)'}
+                              </option>
+                              <option value="aboveOverlays">
+                                {isAr ? '🔝 فوق كل الإطارات والملفات' : '🔝 Above All Frames & Layers'}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Selected Mask Properties Inspector */}
+                {selSlot && (
+                  <div
+                    id="composerMaskInspector"
+                    style={{
+                      padding: '10px',
+                      borderRadius: '10px',
+                      background: '#131526',
+                      border: '1px solid rgba(251, 191, 36, 0.35)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '6px',
+                      }}
+                    >
+                      <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#fde68a' }}>
+                        {isAr ? `🎛️ تعديل القناع: ${selSlot.srcTag}` : `🎛️ Edit Mask: ${selSlot.srcTag}`}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <button
+                          type="button"
+                          id="composerMaskMotionQuickBtn"
+                          onClick={() => (window as any).__openComposerMotionForMask?.(selSlot.srcId)}
+                          style={{
+                            padding: '3px 7px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(56, 189, 248, 0.5)',
+                            background: 'rgba(14, 165, 233, 0.2)',
+                            color: '#bae6fd',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ⚡ {isAr ? 'تحريك وفترة ظهور' : 'Motion & Timing'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, { reset: true })
+                          }
+                          style={{
+                            padding: '3px 7px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.14)',
+                            background: '#1c1e33',
+                            color: '#fde68a',
+                            fontSize: '10px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ↺ {isAr ? 'استعادة' : 'Reset'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Text input for Name Masks */}
+                    {selSlot.isTextSlot && (
+                      <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          placeholder={isAr ? 'اكتب النص / الاسم هنا...' : 'Enter text...'}
+                          defaultValue={selRep.text || ''}
+                          onBlur={(e) => {
+                            if (e.target.value.trim()) {
+                              (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                                text: e.target.value.trim(),
+                              });
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                                text: (e.target as HTMLInputElement).value.trim(),
+                              });
+                            }
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '5px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid #2e324a',
+                            background: '#0e101c',
+                            color: '#fff',
+                            fontSize: '11px',
+                          }}
+                        />
+                        <input
+                          type="color"
+                          defaultValue={selRep.textColor || selSlot.color || '#ffffff'}
+                          title={isAr ? 'لون النص' : 'Text color'}
+                          onChange={(e) =>
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                              textColor: e.target.value,
+                              text: selRep.text || 'Name',
+                            })
+                          }
+                          style={{
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '6px',
+                            border: '1px solid #2e324a',
+                            background: 'transparent',
+                            cursor: 'pointer',
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {/* Shape + Fit + Fill Row */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '6px' }}>
+                      <select
+                        value={selShape}
+                        onChange={(e) => {
+                          const v = e.target.value as VapMaskShapePreset;
+                          if (v === 'customImage') {
+                            (window as any).__uploadVapMaskShapePng?.(selSlot.srcId);
+                          } else {
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                              shapePreset: v,
+                            });
+                          }
+                        }}
+                        style={{
+                          padding: '5px 7px',
+                          borderRadius: '6px',
+                          border: '1px solid #2e324a',
+                          background: '#0e101c',
+                          color: '#f1f5f9',
+                          fontSize: '10.5px',
+                        }}
+                      >
+                        <option value="circle">⚪ دائرة</option>
+                        <option value="roundedRect">▢ مستطيل دائري</option>
+                        <option value="shield">🛡️ درع</option>
+                        <option value="rect">⬜ مربع كامل</option>
+                        <option value="customImage">🎭 شكل صورة PNG مخصصة</option>
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={() => (window as any).__uploadVapMaskShapePng?.(selSlot.srcId)}
+                        style={{
+                          padding: '5px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(56,189,248,0.45)',
+                          background: 'rgba(14,165,233,0.16)',
+                          color: '#bae6fd',
+                          fontSize: '10.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        🎭 شكل PNG
+                      </button>
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '6px',
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <select
+                        value={selRep.fitMode || selSlot.fitType || 'fitXY'}
+                        onChange={(e) =>
+                          (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                            fitMode: e.target.value,
+                          })
+                        }
+                        style={{
+                          padding: '4px 7px',
+                          borderRadius: '6px',
+                          border: '1px solid #2e324a',
+                          background: '#0e101c',
+                          color: '#f1f5f9',
+                          fontSize: '10.5px',
+                        }}
+                      >
+                        <option value="cover">Cover</option>
+                        <option value="contain">Contain</option>
+                        <option value="fitXY">FitXY</option>
+                      </select>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          fontSize: '10.5px',
+                          color: '#cbd5e1',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selRep.useMask !== false}
+                          onChange={(e) =>
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                              useMask: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>{isAr ? 'قص مدمج' : 'Clip Mask'}</span>
+                      </label>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                              fillColor: selIsColored ? 'transparent' : '#ec4899',
+                            })
+                          }
+                          style={{
+                            padding: '4px 7px',
+                            borderRadius: '6px',
+                            border: `1px solid ${selIsColored ? selFill : 'rgba(255,255,255,0.16)'}`,
+                            background: selIsColored ? selFill : '#1a1d2e',
+                            color: '#fff',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {selIsColored ? (isAr ? 'لون محدد' : 'Colored') : isAr ? 'شفاف' : 'Transparent'}
+                        </button>
+                        <input
+                          type="color"
+                          value={selIsColored ? selFill : '#ec4899'}
+                          onChange={(e) =>
+                            (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                              fillColor: e.target.value,
+                            })
+                          }
+                          title={isAr ? 'تخصيص لون طبقة القناع' : 'Custom Mask Fill Color'}
+                          style={{
+                            width: '24px',
+                            height: '24px',
+                            borderRadius: '5px',
+                            border: '1px solid rgba(255,255,255,0.18)',
+                            background: 'transparent',
+                            cursor: 'pointer',
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Coordinates & Nudge D-Pad for Mask */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '5px' }}>
+                      {(['X', 'Y', 'W', 'H'] as const).map((axis, ai) => (
+                        <label key={axis} style={{ fontSize: '9.5px', color: '#94a3b8' }}>
+                          {axis}
+                          <input
+                            type="number"
+                            value={Math.round(selFrame[ai])}
+                            min={ai >= 2 ? 8 : 0}
+                            onChange={(e) => {
+                              const next: [number, number, number, number] = [...selFrame] as any;
+                              next[ai] = Number(e.target.value) || 0;
+                              (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                                frame: next,
+                              });
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '3px 5px',
+                              marginTop: '2px',
+                              borderRadius: '5px',
+                              border: '1px solid #2e324a',
+                              background: '#0e101c',
+                              color: '#fff',
+                              fontSize: '10.5px',
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+
+                    {/* Mini Nudge Pad for Selected Mask */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                            frame: [selFrame[0], selFrame[1] - stepPx, selFrame[2], selFrame[3]],
+                          })
+                        }
+                        style={{
+                          padding: '5px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: '#1c1f35',
+                          color: '#fff',
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ⬆️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                            frame: [selFrame[0], selFrame[1] + stepPx, selFrame[2], selFrame[3]],
+                          })
+                        }
+                        style={{
+                          padding: '5px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: '#1c1f35',
+                          color: '#fff',
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ⬇️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                            frame: [selFrame[0] + stepPx, selFrame[1], selFrame[2], selFrame[3]],
+                          })
+                        }
+                        style={{
+                          padding: '5px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: '#1c1f35',
+                          color: '#fff',
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ➡️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          (window as any).__updateVapMaskSlotProps?.(selSlot.srcId, {
+                            frame: [selFrame[0] - stepPx, selFrame[1], selFrame[2], selFrame[3]],
+                          })
+                        }
+                        style={{
+                          padding: '5px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255,255,255,0.12)',
+                          background: '#1c1f35',
+                          color: '#fff',
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ⬅️
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()
         ) : activeTab === 'stack' ? (
-          /* Stack Layer Tree Navigation View */
+          /* Unified 7-Tier Stack Layer Tree Navigation View */
           <div
             style={{
               padding: '10px',
@@ -906,133 +3173,139 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: '12px', fontWeight: 800, color: '#c4b5fd' }}>
-                {isAr ? '🥞 شجرة ترتيب وتنقل طبقات التصميم' : '🥞 Layer Z-Stack Navigation'}
+                {isAr ? '🥞 الترتيب الموحد لطبقات التصميم والأقنعة' : '🥞 Unified Layer & Mask Stack'}
               </span>
               <span style={{ fontSize: '10.5px', color: '#94a3b8' }}>
                 {isAr ? 'أعلى القائمة = المقدمة' : 'Top = Frontmost'}
               </span>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {vapMasksSnap.slots.length > 0 && (
-                <div
-                  style={{
-                    padding: '7px 8px',
-                    borderRadius: '8px',
-                    background: 'rgba(168, 85, 247, 0.08)',
-                    border: '1px solid rgba(168, 85, 247, 0.25)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '5px',
-                  }}
-                >
-                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#e9d5ff' }}>
-                    {isAr ? '🎭 ترتيب الأقنعة (فوق / خلف القناع الآخر)' : '🎭 Masks Z-Order Stack'}
-                  </div>
-                  {[...vapMasksSnap.slots].reverse().map((slot: any, idx: number, arr: any[]) => {
-                    const isSelMask = String(vapMasksSnap.selectedSrcId || '') === String(slot.srcId);
-                    const isBehind = Number(slot.z ?? 0) < 0;
-                    return (
-                      <div
-                        key={`stack_mask_${slot.srcId}`}
-                        onClick={() => (window as any).__selectVapMaskSlot?.(slot.srcId)}
-                        style={{
-                          padding: '6px 8px',
-                          borderRadius: '7px',
-                          border: isSelMask ? '1px solid #fbbf24' : '1px solid rgba(255,255,255,0.08)',
-                          background: isSelMask ? 'rgba(251, 191, 36, 0.12)' : '#101221',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: '6px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: '11px', fontWeight: 700, color: isSelMask ? '#fde68a' : '#f3e8ff' }}>
-                            🎭 {slot.srcTag} {isBehind ? (isAr ? '· خلف المشروع' : '· Behind') : ''}
-                          </div>
-                          <div style={{ fontSize: '9.5px', color: '#94a3b8' }}>
-                            {slot.isTextSlot ? (isAr ? 'قناع اسم' : 'Text Mask') : isAr ? 'قناع صورة' : 'Image Mask'} · {slot.w}×{slot.h}
-                          </div>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-                          <button
-                            type="button"
-                            disabled={idx === 0}
-                            title={isAr ? 'رفع القناع للأمام' : 'Move Mask Up'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'up');
-                            }}
+            {(() => {
+              const allSlotsOrdered = [...vapMasksSnap.slots].reverse();
+              const masksAboveOverlays = allSlotsOrdered.filter(
+                (s) => resolveMaskDepthBand(s) === 'aboveOverlays'
+              );
+              const masksAbovePrimary = allSlotsOrdered.filter(
+                (s) => resolveMaskDepthBand(s) === 'abovePrimary'
+              );
+              const masksBehindPrimary = allSlotsOrdered.filter(
+                (s) => resolveMaskDepthBand(s) === 'behindPrimary'
+              );
+              const masksBelowOverlays = allSlotsOrdered.filter(
+                (s) => resolveMaskDepthBand(s) === 'belowOverlays'
+              );
+              const visualStack = getUnifiedVisualLayerStack(
+                composerState,
+                isAr ? 'المشروع الأساسي الرئيسي' : 'Main Project File'
+              );
+              const aboveOverlays = visualStack.filter(
+                (it) => it.type === 'overlay' && it.zOrder === 'above'
+              );
+              const primaryRow = visualStack.find((it) => it.type === 'primary');
+              const belowOverlays = visualStack.filter(
+                (it) => it.type === 'overlay' && it.zOrder === 'below'
+              );
+
+              const renderMaskBandGroup = (title: string, items: any[], accent: string) => {
+                if (items.length === 0) return null;
+                return (
+                  <div
+                    style={{
+                      padding: '6px 7px',
+                      borderRadius: '8px',
+                      background: 'rgba(168, 85, 247, 0.08)',
+                      border: `1px solid ${accent}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    }}
+                  >
+                    <div style={{ fontSize: '10px', fontWeight: 800, color: '#e9d5ff' }}>
+                      {title}
+                    </div>
+                    {items.map((slot: any) => {
+                      const isSelMask =
+                        String(vapMasksSnap.selectedSrcId || '') === String(slot.srcId);
+                      const band = resolveMaskDepthBand(slot);
+                      return (
+                        <div
+                          key={`stack_mask_${slot.srcId}`}
+                          onClick={() => (window as any).__selectVapMaskSlot?.(slot.srcId)}
+                          style={{
+                            padding: '6px 8px',
+                            borderRadius: '7px',
+                            border: isSelMask
+                              ? '1px solid #fbbf24'
+                              : '1px solid rgba(255,255,255,0.08)',
+                            background: isSelMask ? 'rgba(251, 191, 36, 0.12)' : '#101221',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <div
                             style={{
-                              width: '24px',
-                              height: '24px',
-                              borderRadius: '5px',
-                              border: '1px solid rgba(255,255,255,0.14)',
-                              background: '#1e2035',
-                              color: idx === 0 ? '#4b5563' : '#f8fafc',
-                              fontSize: '11px',
-                              cursor: idx === 0 ? 'default' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '6px',
                             }}
                           >
-                            ⬆️
-                          </button>
-                          <button
-                            type="button"
-                            disabled={idx === arr.length - 1}
-                            title={isAr ? 'تنزيل خلف القناع التالي' : 'Move Mask Down'}
-                            onClick={(e) => {
+                            <div
+                              style={{
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                color: isSelMask ? '#fde68a' : '#f3e8ff',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              🎭 {slot.srcTag}
+                            </div>
+                            <div style={{ fontSize: '9.5px', color: '#94a3b8', flexShrink: 0 }}>
+                              {slot.w}×{slot.h}
+                            </div>
+                          </div>
+                          <select
+                            data-stack-mask-depth={slot.srcId}
+                            value={band}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
                               e.stopPropagation();
-                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'down');
+                              (window as any).__setVapMaskDepthBand?.(
+                                slot.srcId,
+                                e.target.value as MaskDepthBand
+                              );
                             }}
                             style={{
-                              width: '24px',
-                              height: '24px',
+                              width: '100%',
+                              height: '23px',
+                              padding: '0 6px',
                               borderRadius: '5px',
-                              border: '1px solid rgba(255,255,255,0.14)',
-                              background: '#1e2035',
-                              color: idx === arr.length - 1 ? '#4b5563' : '#f8fafc',
-                              fontSize: '11px',
-                              cursor: idx === arr.length - 1 ? 'default' : 'pointer',
-                            }}
-                          >
-                            ⬇️
-                          </button>
-                          <button
-                            type="button"
-                            title={isAr ? 'خلف / أمام المشروع الرئيسي' : 'Toggle Behind Main Project'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              (window as any).__reorderVapMaskSlot?.(slot.srcId, 'toggleBehind');
-                            }}
-                            style={{
-                              padding: '2px 6px',
-                              height: '24px',
-                              borderRadius: '5px',
-                              border: '1px solid rgba(251, 191, 36, 0.35)',
-                              background: isBehind ? 'rgba(251, 191, 36, 0.22)' : '#171928',
-                              color: '#fde68a',
+                              border: '1px solid rgba(168,85,247,0.35)',
+                              background: '#17192c',
+                              color: '#f1f5f9',
                               fontSize: '10px',
                               cursor: 'pointer',
                             }}
                           >
-                            {isBehind ? 'أمام' : 'خلف'}
-                          </button>
+                            <option value="belowOverlays">⬇️⬇️ خلف الإطارات والكل</option>
+                            <option value="behindPrimary">⬇️ خلف الهدية الأساسية</option>
+                            <option value="abovePrimary">⬆️ أمام الهدية (خلف الإطارات)</option>
+                            <option value="aboveOverlays">🔝 فوق كل الإطارات والملفات</option>
+                          </select>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                );
+              };
 
-              {getUnifiedVisualLayerStack(
-                composerState,
-                isAr ? 'المشروع الأساسي الرئيسي' : 'Main Project File'
-              ).map((item) => {
+              const renderComposerRow = (item: UnifiedStackItem) => {
                 const isSel = composerState.activeTargetId === item.id;
                 const isPrimary = item.type === 'primary';
-
                 return (
                   <div
                     key={item.id}
@@ -1063,139 +3336,116 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
                       cursor: 'pointer',
                     }}
                   >
-                    <div style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ fontSize: '13px' }}>
-                        {isPrimary ? '⭐' : item.zOrder === 'above' ? '🔝' : '⬇️'}
-                      </span>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div
-                          style={{
-                            fontSize: '11.5px',
-                            fontWeight: 700,
-                            color: isSel ? '#ffffff' : isPrimary ? '#ddd6fe' : '#e2e8f0',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {item.name}
-                        </div>
-                        <div style={{ fontSize: '9.5px', color: '#94a3b8' }}>
-                          {isPrimary
-                            ? isAr
-                              ? 'المشروع الأصلي الرئيسي'
-                              : 'Primary Original Project'
-                            : item.zOrder === 'above'
-                            ? isAr
-                              ? `طبقة مضافة (فوق المشروع)`
-                              : `Overlay Layer (Above)`
-                            : isAr
-                            ? `طبقة مضافة (تحت المشروع)`
-                            : `Underlay Layer (Below)`}
-                        </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: '11.5px',
+                          fontWeight: 700,
+                          color: isPrimary ? '#ddd6fe' : '#f8fafc',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        <span>{isPrimary ? '⭐' : '🧩'}</span>
+                        <span>{item.name}</span>
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                        {isPrimary
+                          ? isAr
+                            ? 'المشروع الأساسي (المرجع المركزي للطبقات)'
+                            : 'Main Gift Reference'
+                          : `${item.format} · ${
+                              item.zOrder === 'above'
+                                ? isAr
+                                  ? '⬆️ إطار / طبقة أمام المشروع'
+                                  : '⬆️ Frame / Above Gift'
+                                : isAr
+                                ? '⬇️ طبقة خلف المشروع'
+                                : '⬇️ Below Gift'
+                            }`}
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-                      {!isPrimary && (
-                        <>
-                          <button
-                            type="button"
-                            title={isAr ? 'رفع مستوى للأعلى (⬆️)' : 'Move Layer Up'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onChangeState(moveOverlayLayerUp(composerState, item.id));
-                              setTimeout(() => {
-                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                              }, 40);
-                            }}
-                            style={{
-                              padding: '3px 6px',
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.15)',
-                              background: '#1e2035',
-                              color: '#f8fafc',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            ⬆️
-                          </button>
-                          <button
-                            type="button"
-                            title={isAr ? 'تنزيل مستوى للأسفل (⬇️)' : 'Move Layer Down'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onChangeState(moveOverlayLayerDown(composerState, item.id));
-                              setTimeout(() => {
-                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                              }, 40);
-                            }}
-                            style={{
-                              padding: '3px 6px',
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.15)',
-                              background: '#1e2035',
-                              color: '#f8fafc',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            ⬇️
-                          </button>
-                          <button
-                            type="button"
-                            title={isAr ? 'إحالة إلى القمة القصوى (🔝)' : 'Bring to Front'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onChangeState(moveOverlayLayerToTop(composerState, item.id));
-                              setTimeout(() => {
-                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                              }, 40);
-                            }}
-                            style={{
-                              padding: '3px 5px',
-                              borderRadius: '4px',
-                              border: '1px solid rgba(139, 92, 246, 0.4)',
-                              background: 'rgba(139, 92, 246, 0.2)',
-                              color: '#ddd6fe',
-                              fontSize: '10px',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            🔝
-                          </button>
-                          <button
-                            type="button"
-                            title={isAr ? 'إحالة إلى الخلفية القاع (⬇️⬇️)' : 'Send to Back'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onChangeState(moveOverlayLayerToBottom(composerState, item.id));
-                              setTimeout(() => {
-                                document.getElementById(`composer_stack_row_${item.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                              }, 40);
-                            }}
-                            style={{
-                              padding: '3px 5px',
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255, 255, 255, 0.15)',
-                              background: '#171928',
-                              color: '#94a3b8',
-                              fontSize: '10px',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            ⬇️⬇️
-                          </button>
-                        </>
-                      )}
-                    </div>
+                    {!isPrimary && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                        <button
+                          type="button"
+                          title={isAr ? 'رفع مستوى للأعلى (⬆️)' : 'Move Layer Up'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onChangeState(moveOverlayLayerUp(composerState, item.id));
+                          }}
+                          style={{
+                            padding: '3px 6px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(255,255,255,0.15)',
+                            background: '#1e2035',
+                            color: '#f8fafc',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ⬆️
+                        </button>
+                        <button
+                          type="button"
+                          title={isAr ? 'تنزيل مستوى للأسفل (⬇️)' : 'Move Layer Down'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onChangeState(moveOverlayLayerDown(composerState, item.id));
+                          }}
+                          style={{
+                            padding: '3px 6px',
+                            borderRadius: '4px',
+                            border: '1px solid rgba(255,255,255,0.15)',
+                            background: '#1e2035',
+                            color: '#f8fafc',
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ⬇️
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
-              })}
-            </div>
+              };
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {renderMaskBandGroup(
+                    isAr ? '🔝 أقنعة فوق كل الإطارات' : '🔝 Masks Above Frames',
+                    masksAboveOverlays,
+                    'rgba(217, 70, 239, 0.35)'
+                  )}
+                  {aboveOverlays.map(renderComposerRow)}
+                  {renderMaskBandGroup(
+                    isAr
+                      ? '⬆️ أقنعة أمام الهدية (تظهر خلف الإطارات المضافة أعلاه)'
+                      : '⬆️ Masks Above Gift (Behind Added Frames)',
+                    masksAbovePrimary,
+                    'rgba(168, 85, 247, 0.3)'
+                  )}
+                  {primaryRow && renderComposerRow(primaryRow)}
+                  {renderMaskBandGroup(
+                    isAr ? '⬇️ أقنعة خلف الهدية الأساسية' : '⬇️ Masks Behind Main Gift',
+                    masksBehindPrimary,
+                    'rgba(251, 191, 36, 0.3)'
+                  )}
+                  {belowOverlays.map(renderComposerRow)}
+                  {renderMaskBandGroup(
+                    isAr ? '⬇️⬇️ أقنعة خلف الكل والإطارات السفلية' : '⬇️⬇️ Masks Below Everything',
+                    masksBelowOverlays,
+                    'rgba(251, 191, 36, 0.4)'
+                  )}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           /* Quick Add Second File Banner while on Primary Tab */
@@ -1243,8 +3493,9 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
           </div>
         )}
 
-        {/* Controls Section: Show if editing Primary OR if at least one Secondary file exists */}
-        {(isEditingPrimary || selectedOverlay) && (
+        {/* Controls Section: Show on Primary/Secondary tab when editing Primary OR Secondary exists */}
+        {(activeTab === 'primary' || activeTab === 'secondary') &&
+          (isEditingPrimary || selectedOverlay) && (
           <>
             {/* Active Target Indicator */}
             <div

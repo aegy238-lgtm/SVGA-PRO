@@ -7,13 +7,27 @@ import {
 
 export type VapMaskShapePreset = 'rect' | 'roundedRect' | 'circle' | 'shield' | 'customImage';
 
+export type MaskDepthBand =
+  | 'belowOverlays'
+  | 'behindPrimary'
+  | 'abovePrimary'
+  | 'aboveOverlays';
+
 export interface CustomEditableVapSlot extends VapDynamicMaskSlot {
   shapePreset?: VapMaskShapePreset;
   maskSilhouetteDataUrl?: string;
   isCustomAdded?: boolean;
+  /** True when user moved or resized this slot relative to source metadata */
+  hasCustomFrame?: boolean;
+  /** True when user chose a shape preset or custom PNG silhouette overriding source mFrame */
+  hasCustomShape?: boolean;
+  /** 4-tier depth band relative to Main Gift & Added Composer Frames/Images */
+  zLayer?: MaskDepthBand;
   linkedComposerLayerId?: string;
   /** Optional mask layer fill color ('transparent' or '#rrggbb') */
   fillColor?: string;
+  /** Optional motion/animation & visibility window transform for this mask slot */
+  motionTransform?: Record<string, any>;
   /** Optional percentage/pixel bounds preserved across edits */
   mt: number;
 }
@@ -90,7 +104,7 @@ export function planVapMaskAtlasLayout(opts: {
   const rgbFrame: [number, number, number, number] = [0, 0, W, H];
   const aFrame: [number, number, number, number] = Y ? [W, 0, W, H] : [W + 4, 0, aw, ah];
 
-  const slots = Array.isArray(opts.slots) ? opts.slots : [];
+  const slots = sortSlotsByZ(Array.isArray(opts.slots) ? opts.slots : []);
   if (slots.length === 0) {
     const VW = Y ? W * 2 : Math.ceil((W + 4 + aw) / 16) * 16;
     const VH = Y ? H : Math.ceil(Math.max(H, ah) / 16) * 16;
@@ -194,6 +208,18 @@ export interface BuildVapMetadataOptions {
   srcW: number;
   srcH: number;
   sourceMeta?: VapYyevaMeta | null;
+  resolveSlotTransformAtFrame?: (
+    slot: CustomEditableVapSlot,
+    frameIdx: number,
+    totalFrames: number
+  ) => {
+    offsetX: number;
+    offsetY: number;
+    scale: number;
+    rotation: number;
+    opacity: number;
+    visible: boolean;
+  } | null;
 }
 
 /**
@@ -203,6 +229,8 @@ export interface BuildVapMetadataOptions {
 export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
   metaJson: Record<string, any>;
   srcMFrameAtFrame: Array<Record<string, [number, number, number, number]>>;
+  resolvedFrameAtFrame: Array<Record<string, [number, number, number, number]>>;
+  opacityAtFrame: Array<Record<string, number>>;
 } {
   const { plan, nk, fps, start, end, srcFps, srcTotalFrames, srcW, srcH, sourceMeta } = opts;
   const { W, H, VW, VH, aFrame, rgbFrame, packedSlots, format } = plan;
@@ -210,6 +238,8 @@ export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
   const isYyeva = format === 'yyeva';
 
   const srcMFrameAtFrame: Array<Record<string, [number, number, number, number]>> = [];
+  const resolvedFrameAtFrame: Array<Record<string, [number, number, number, number]>> = [];
+  const opacityAtFrame: Array<Record<string, number>> = [];
   const frameEntries: any[] = [];
 
   for (let k = 0; k < nk; k++) {
@@ -220,18 +250,51 @@ export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
     for (const p of sourcePlacements) byId.set(p.srcId, p);
 
     const frameMMap: Record<string, [number, number, number, number]> = {};
+    const frameRectMap: Record<string, [number, number, number, number]> = {};
+    const frameOpMap: Record<string, number> = {};
     const objs: any[] = [];
 
     for (const packed of packedSlots) {
       const { slot, mFrame, targetFrame } = packed;
       const srcPlacement = byId.get(slot.srcId);
-      const isOrigSourceFrame = Boolean(srcPlacement) && !slot.isCustomAdded;
+      const isOrigSourceFrame =
+        Boolean(srcPlacement) && !slot.isCustomAdded && !slot.hasCustomFrame;
 
-      const resolvedFrame = isOrigSourceFrame && srcPlacement
+      let resolvedFrame: [number, number, number, number] = isOrigSourceFrame && srcPlacement
         ? scaleRectForOutput(srcPlacement.frame, srcW, srcH, W, H)
         : targetFrame;
 
-      if (srcPlacement && srcPlacement.mFrame[2] > 0 && srcPlacement.mFrame[3] > 0) {
+      const slotTr = opts.resolveSlotTransformAtFrame
+        ? opts.resolveSlotTransformAtFrame(slot, k, nk)
+        : null;
+      if (slotTr) {
+        if (!slotTr.visible || slotTr.opacity <= 0.001) {
+          frameOpMap[slot.srcId] = 0;
+          continue;
+        }
+        const scaleRatio = Math.max(0.05, Math.min(5, (Number(slotTr.scale) || 100) / 100));
+        const dx = (Number(slotTr.offsetX) || 0) * (W / Math.max(1, srcW));
+        const dy = (Number(slotTr.offsetY) || 0) * (H / Math.max(1, srcH));
+        const cx = resolvedFrame[0] + resolvedFrame[2] / 2 + dx;
+        const cy = resolvedFrame[1] + resolvedFrame[3] / 2 + dy;
+        const rw = Math.max(2, Math.min(W, Math.round(resolvedFrame[2] * scaleRatio)));
+        const rh = Math.max(2, Math.min(H, Math.round(resolvedFrame[3] * scaleRatio)));
+        const rx = Math.max(0, Math.min(W - rw, Math.round(cx - rw / 2)));
+        const ry = Math.max(0, Math.min(H - rh, Math.round(cy - rh / 2)));
+        resolvedFrame = [rx, ry, rw, rh];
+        frameOpMap[slot.srcId] = Math.max(0, Math.min(1, Number(slotTr.opacity) / 100));
+      } else {
+        frameOpMap[slot.srcId] = 1;
+      }
+
+      frameRectMap[slot.srcId] = resolvedFrame;
+
+      if (
+        srcPlacement &&
+        srcPlacement.hasExplicitMFrame !== false &&
+        srcPlacement.mFrame[2] > 0 &&
+        srcPlacement.mFrame[3] > 0
+      ) {
         frameMMap[slot.srcId] = srcPlacement.mFrame;
       }
 
@@ -253,7 +316,10 @@ export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
       }
     }
 
+    objs.sort((a, b) => Number(a.z ?? 0) - Number(b.z ?? 0));
     srcMFrameAtFrame.push(frameMMap);
+    resolvedFrameAtFrame.push(frameRectMap);
+    opacityAtFrame.push(frameOpMap);
 
     if (hasMasks) {
       if (isYyeva) {
@@ -291,6 +357,8 @@ export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
         datas: frameEntries,
       },
       srcMFrameAtFrame,
+      resolvedFrameAtFrame,
+      opacityAtFrame,
     };
   }
 
@@ -340,7 +408,7 @@ export function buildVapDynamicMetadataJson(opts: BuildVapMetadataOptions): {
     metaJson.frame = frameEntries;
   }
 
-  return { metaJson, srcMFrameAtFrame };
+  return { metaJson, srcMFrameAtFrame, resolvedFrameAtFrame, opacityAtFrame };
 }
 
 /**
@@ -518,13 +586,40 @@ export function makeCustomVapSlot(params: {
   };
 }
 
+const DEPTH_BAND_RANK: Record<MaskDepthBand, number> = {
+  belowOverlays: 0,
+  behindPrimary: 1,
+  abovePrimary: 2,
+  aboveOverlays: 3,
+};
+
 /**
- * Sorts dynamic slots in ascending painter's Z-order (lowest Z drawn first / behind, highest Z drawn last / on top).
+ * Resolves the canonical 4-tier depth band for a mask slot while preserving
+ * the `z < 0` (behind gift) vs `z >= 0` (in front of gift) invariant.
  */
-export function sortSlotsByZ<T extends { srcId: string; z?: number }>(slots: T[]): T[] {
+export function resolveMaskDepthBand(slot: {
+  z?: number;
+  zLayer?: MaskDepthBand;
+}): MaskDepthBand {
+  const zVal = Number(slot?.z ?? 0);
+  if (zVal < 0) {
+    return slot?.zLayer === 'belowOverlays' ? 'belowOverlays' : 'behindPrimary';
+  }
+  return slot?.zLayer === 'aboveOverlays' ? 'aboveOverlays' : 'abovePrimary';
+}
+
+/**
+ * Sorts dynamic slots in ascending painter's Z-order (lowest band & Z drawn first / behind, highest Z drawn last / on top).
+ */
+export function sortSlotsByZ<T extends { srcId: string; z?: number; zLayer?: MaskDepthBand }>(
+  slots: T[]
+): T[] {
   return [...slots]
     .map((s, idx) => ({ s, idx }))
     .sort((a, b) => {
+      const ra = DEPTH_BAND_RANK[resolveMaskDepthBand(a.s)];
+      const rb = DEPTH_BAND_RANK[resolveMaskDepthBand(b.s)];
+      if (ra !== rb) return ra - rb;
       const za = Number.isFinite(Number(a.s.z)) ? Number(a.s.z) : a.idx;
       const zb = Number.isFinite(Number(b.s.z)) ? Number(b.s.z) : b.idx;
       if (za !== zb) return za - zb;
@@ -534,48 +629,258 @@ export function sortSlotsByZ<T extends { srcId: string; z?: number }>(slots: T[]
 }
 
 /**
- * Reorders a slot up (towards front/higher Z) or down (towards back/behind lower-Z masks).
- * Returns a clean `srcId -> z` integer map preserving contiguous Z indices starting from the lowest Z (e.g. -1 or 0).
+ * Assigns a slot to an explicit depth band (`belowOverlays`, `behindPrimary`, `abovePrimary`, or `aboveOverlays`)
+ * and returns clean contiguous `{ z, zLayer }` assignments for all slots.
+ */
+export function setSlotDepthBand(
+  slots: Array<{ srcId: string; z?: number; zLayer?: MaskDepthBand }>,
+  targetSrcId: string,
+  targetBand: MaskDepthBand
+): Record<string, { z: number; zLayer: MaskDepthBand }> {
+  const sorted = sortSlotsByZ(slots);
+  const buckets: Record<MaskDepthBand, Array<{ srcId: string; z?: number; zLayer?: MaskDepthBand }>> = {
+    belowOverlays: [],
+    behindPrimary: [],
+    abovePrimary: [],
+    aboveOverlays: [],
+  };
+
+  let targetItem: { srcId: string; z?: number; zLayer?: MaskDepthBand } | null = null;
+  for (const s of sorted) {
+    if (String(s.srcId) === String(targetSrcId)) {
+      targetItem = s;
+    } else {
+      buckets[resolveMaskDepthBand(s)].push(s);
+    }
+  }
+  if (targetItem) {
+    buckets[targetBand].push({ ...targetItem, zLayer: targetBand });
+  }
+
+  const belowAll = [...buckets.belowOverlays, ...buckets.behindPrimary];
+  const aboveAll = [...buckets.abovePrimary, ...buckets.aboveOverlays];
+  const out: Record<string, { z: number; zLayer: MaskDepthBand }> = {};
+  buckets.belowOverlays.forEach((s) => {
+    const idx = belowAll.indexOf(s);
+    out[s.srcId] = { z: -(belowAll.length - idx), zLayer: 'belowOverlays' };
+  });
+  buckets.behindPrimary.forEach((s) => {
+    const idx = belowAll.indexOf(s);
+    out[s.srcId] = { z: -(belowAll.length - idx), zLayer: 'behindPrimary' };
+  });
+  buckets.abovePrimary.forEach((s) => {
+    const idx = aboveAll.indexOf(s);
+    out[s.srcId] = { z: idx, zLayer: 'abovePrimary' };
+  });
+  buckets.aboveOverlays.forEach((s) => {
+    const idx = aboveAll.indexOf(s);
+    out[s.srcId] = { z: idx, zLayer: 'aboveOverlays' };
+  });
+  return out;
+}
+
+/**
+ * Reorders a slot up (towards front/higher Z), down (towards back/behind gift/lower Z),
+ * or explicitly across the gift boundary ('toFront' | 'toBack').
+ * Partition between Behind-Gift (`z < 0`) and In-Front-Of-Gift (`z >= 0`) is strictly preserved
+ * for all sibling masks so moving two front masks never flips another mask behind the gift.
  */
 export function reorderMaskSlotsZ(
   slots: Array<{ srcId: string; z?: number }>,
   targetSrcId: string,
-  direction: 'up' | 'down' | 'top' | 'bottom'
+  direction: 'up' | 'down' | 'top' | 'bottom' | 'toFront' | 'toBack'
 ): Record<string, number> {
   const sorted = sortSlotsByZ(slots);
-  const idx = sorted.findIndex((s) => String(s.srcId) === String(targetSrcId));
   const out: Record<string, number> = {};
-  if (idx === -1) {
-    sorted.forEach((s, i) => {
-      out[s.srcId] = Number.isFinite(Number(s.z)) ? Number(s.z) : i;
+  const below = sorted.filter((s) => Number(s.z ?? 0) < 0);
+  const above = sorted.filter((s) => Number(s.z ?? 0) >= 0);
+
+  const idxB = below.findIndex((s) => String(s.srcId) === String(targetSrcId));
+  const idxA = above.findIndex((s) => String(s.srcId) === String(targetSrcId));
+
+  if (idxB === -1 && idxA === -1) {
+    below.forEach((s, i) => {
+      out[s.srcId] = -(below.length - i);
+    });
+    above.forEach((s, i) => {
+      out[s.srcId] = i;
     });
     return out;
   }
 
-  const nextOrder = [...sorted];
-  if (direction === 'up' && idx < nextOrder.length - 1) {
-    const tmp = nextOrder[idx];
-    nextOrder[idx] = nextOrder[idx + 1];
-    nextOrder[idx + 1] = tmp;
-  } else if (direction === 'down' && idx > 0) {
-    const tmp = nextOrder[idx];
-    nextOrder[idx] = nextOrder[idx - 1];
-    nextOrder[idx - 1] = tmp;
-  } else if (direction === 'top') {
-    const [item] = nextOrder.splice(idx, 1);
-    nextOrder.push(item);
-  } else if (direction === 'bottom') {
-    const [item] = nextOrder.splice(idx, 1);
-    nextOrder.unshift(item);
+  if (idxB >= 0) {
+    if (direction === 'up') {
+      if (idxB < below.length - 1) {
+        const tmp = below[idxB];
+        below[idxB] = below[idxB + 1];
+        below[idxB + 1] = tmp;
+      } else {
+        const [item] = below.splice(idxB, 1);
+        above.unshift(item);
+      }
+    } else if (direction === 'down') {
+      if (idxB > 0) {
+        const tmp = below[idxB];
+        below[idxB] = below[idxB - 1];
+        below[idxB - 1] = tmp;
+      }
+    } else if (direction === 'top' || direction === 'toFront') {
+      const [item] = below.splice(idxB, 1);
+      above.push(item);
+    } else if (direction === 'bottom') {
+      const [item] = below.splice(idxB, 1);
+      below.unshift(item);
+    }
+  } else if (idxA >= 0) {
+    if (direction === 'up') {
+      if (idxA < above.length - 1) {
+        const tmp = above[idxA];
+        above[idxA] = above[idxA + 1];
+        above[idxA + 1] = tmp;
+      }
+    } else if (direction === 'down') {
+      if (idxA > 0) {
+        const tmp = above[idxA];
+        above[idxA] = above[idxA - 1];
+        above[idxA - 1] = tmp;
+      } else {
+        const [item] = above.splice(idxA, 1);
+        below.push(item);
+      }
+    } else if (direction === 'top') {
+      const [item] = above.splice(idxA, 1);
+      above.push(item);
+    } else if (direction === 'bottom') {
+      const [item] = above.splice(idxA, 1);
+      if (below.length === 0) {
+        above.unshift(item);
+      } else {
+        below.unshift(item);
+      }
+    } else if (direction === 'toBack') {
+      const [item] = above.splice(idxA, 1);
+      below.push(item);
+    }
   }
 
-  // Assign contiguous integers (preserving any negative base if any slot had z < 0, otherwise 0..N-1)
-  const hadNegative = sorted.some((s) => (s.z ?? 0) < 0);
-  const minBase = hadNegative
-    ? Math.min(...sorted.map((s) => (Number.isFinite(Number(s.z)) ? Number(s.z) : 0)))
-    : 0;
-  nextOrder.forEach((s, i) => {
-    out[s.srcId] = minBase + i;
+  below.forEach((s, i) => {
+    out[s.srcId] = -(below.length - i);
+  });
+  above.forEach((s, i) => {
+    out[s.srcId] = i;
+  });
+  return out;
+}
+
+const BAND_ORDER: MaskDepthBand[] = [
+  'belowOverlays',
+  'behindPrimary',
+  'abovePrimary',
+  'aboveOverlays',
+];
+
+export function reorderMaskSlotsWithBands(
+  slots: Array<{ srcId: string; z?: number; zLayer?: MaskDepthBand }>,
+  targetSrcId: string,
+  direction:
+    | 'up'
+    | 'down'
+    | 'top'
+    | 'bottom'
+    | 'toFront'
+    | 'toBack'
+    | 'belowAll'
+    | 'aboveAll'
+): Record<string, { z: number; zLayer: MaskDepthBand }> {
+  const sorted = sortSlotsByZ(slots);
+  const out: Record<string, { z: number; zLayer: MaskDepthBand }> = {};
+  const buckets: Record<MaskDepthBand, Array<{ srcId: string; z?: number; zLayer?: MaskDepthBand }>> = {
+    belowOverlays: [],
+    behindPrimary: [],
+    abovePrimary: [],
+    aboveOverlays: [],
+  };
+  let targetBand: MaskDepthBand = 'abovePrimary';
+  let found = false;
+  for (const s of sorted) {
+    const b = resolveMaskDepthBand(s);
+    buckets[b].push({ ...s, zLayer: b });
+    if (String(s.srcId) === String(targetSrcId)) {
+      targetBand = b;
+      found = true;
+    }
+  }
+  if (!found) {
+    return setSlotDepthBand(sorted, targetSrcId, 'abovePrimary');
+  }
+
+  if (direction === 'belowAll') return setSlotDepthBand(sorted, targetSrcId, 'belowOverlays');
+  if (direction === 'aboveAll') return setSlotDepthBand(sorted, targetSrcId, 'aboveOverlays');
+  if (direction === 'toBack') return setSlotDepthBand(sorted, targetSrcId, 'behindPrimary');
+  if (direction === 'toFront') return setSlotDepthBand(sorted, targetSrcId, 'abovePrimary');
+  if (direction === 'top') {
+    const arr = buckets[targetBand];
+    const idx = arr.findIndex((s) => String(s.srcId) === String(targetSrcId));
+    if (idx >= 0) {
+      const [item] = arr.splice(idx, 1);
+      buckets.aboveOverlays.push({ ...item, zLayer: 'aboveOverlays' });
+    }
+  } else if (direction === 'bottom') {
+    const arr = buckets[targetBand];
+    const idx = arr.findIndex((s) => String(s.srcId) === String(targetSrcId));
+    if (idx >= 0) {
+      const [item] = arr.splice(idx, 1);
+      buckets.belowOverlays.unshift({ ...item, zLayer: 'belowOverlays' });
+    }
+  } else if (direction === 'up') {
+    const arr = buckets[targetBand];
+    const idx = arr.findIndex((s) => String(s.srcId) === String(targetSrcId));
+    if (idx < arr.length - 1) {
+      const tmp = arr[idx];
+      arr[idx] = arr[idx + 1];
+      arr[idx + 1] = tmp;
+    } else {
+      const bandIdx = BAND_ORDER.indexOf(targetBand);
+      if (bandIdx < BAND_ORDER.length - 1) {
+        const nextBand = BAND_ORDER[bandIdx + 1];
+        const [item] = arr.splice(idx, 1);
+        buckets[nextBand].unshift({ ...item, zLayer: nextBand });
+      }
+    }
+  } else if (direction === 'down') {
+    const arr = buckets[targetBand];
+    const idx = arr.findIndex((s) => String(s.srcId) === String(targetSrcId));
+    if (idx > 0) {
+      const tmp = arr[idx];
+      arr[idx] = arr[idx - 1];
+      arr[idx - 1] = tmp;
+    } else {
+      const bandIdx = BAND_ORDER.indexOf(targetBand);
+      if (bandIdx > 0) {
+        const prevBand = BAND_ORDER[bandIdx - 1];
+        const [item] = arr.splice(idx, 1);
+        buckets[prevBand].push({ ...item, zLayer: prevBand });
+      }
+    }
+  }
+
+  const belowAll = [...buckets.belowOverlays, ...buckets.behindPrimary];
+  const aboveAll = [...buckets.abovePrimary, ...buckets.aboveOverlays];
+  buckets.belowOverlays.forEach((s) => {
+    const i = belowAll.indexOf(s);
+    out[s.srcId] = { z: -(belowAll.length - i), zLayer: 'belowOverlays' };
+  });
+  buckets.behindPrimary.forEach((s) => {
+    const i = belowAll.indexOf(s);
+    out[s.srcId] = { z: -(belowAll.length - i), zLayer: 'behindPrimary' };
+  });
+  buckets.abovePrimary.forEach((s) => {
+    const i = aboveAll.indexOf(s);
+    out[s.srcId] = { z: i, zLayer: 'abovePrimary' };
+  });
+  buckets.aboveOverlays.forEach((s) => {
+    const i = aboveAll.indexOf(s);
+    out[s.srcId] = { z: i, zLayer: 'aboveOverlays' };
   });
   return out;
 }
@@ -710,5 +1015,288 @@ export function parseHexColorRgb(color?: string): [number, number, number] | nul
   }
   return null;
 }
+
+/**
+ * Attenuates a white-on-black `mFrame` luminance RGBA buffer in-place by subtracting the opacity
+ * of any foreground layers sitting in front of the mask (e.g., foreground flowers/crown or added SVGA frames).
+ * Ensures replaced mask photos NEVER render on top of opaque foreground elements in any VAP/YYEVA player.
+ */
+export function attenuateMaskRgbaByForegroundAlpha(
+  maskRgba: Uint8ClampedArray | Uint8Array,
+  foregroundRgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number
+): void {
+  const totalBytes = Math.min(maskRgba.length, foregroundRgba.length, width * height * 4);
+  for (let i = 0; i < totalBytes; i += 4) {
+    const fgAlpha = foregroundRgba[i + 3];
+    if (fgAlpha <= 4) continue;
+    const keepRatio = fgAlpha >= 250 ? 0 : (255 - fgAlpha) / 255;
+    const r = Math.round(maskRgba[i] * keepRatio);
+    const g = Math.round(maskRgba[i + 1] * keepRatio);
+    const b = Math.round(maskRgba[i + 2] * keepRatio);
+    maskRgba[i] = r;
+    maskRgba[i + 1] = g;
+    maskRgba[i + 2] = b;
+    maskRgba[i + 3] = 255;
+  }
+}
+
+/**
+ * Builds an SVG Bezier `clipPath` string (`M ... C ... Z` / `M ... L ... Z`) in mask-local
+ * coordinates (`0..width`, `0..height`) compatible with both browser `Path2D` and SVGA 2.0 `BezierPath`.
+ * Preserves circular / rounded-rect / shield clipping when mask images are replaced later in SVGA players.
+ */
+export function buildSvgClipPathForMaskPreset(
+  shape: VapMaskShapePreset | undefined,
+  width: number,
+  height: number,
+  isTextSlot = false
+): string | undefined {
+  const w = Math.max(2, Math.round(width));
+  const h = Math.max(2, Math.round(height));
+  const resolved =
+    shape && shape !== 'customImage' ? shape : isTextSlot ? 'roundedRect' : 'circle';
+  if (resolved === 'rect') {
+    return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;
+  }
+  const fmt = (n: number) => Number(n.toFixed(2));
+  const kappa = 0.5522847498;
+  if (resolved === 'circle') {
+    const cx = w / 2;
+    const cy = h / 2;
+    const rx = Math.max(1, w / 2 - 1);
+    const ry = Math.max(1, h / 2 - 1);
+    const kx = rx * kappa;
+    const ky = ry * kappa;
+    return [
+      `M ${fmt(cx)} ${fmt(cy - ry)}`,
+      `C ${fmt(cx + kx)} ${fmt(cy - ry)} ${fmt(cx + rx)} ${fmt(cy - ky)} ${fmt(cx + rx)} ${fmt(cy)}`,
+      `C ${fmt(cx + rx)} ${fmt(cy + ky)} ${fmt(cx + kx)} ${fmt(cy + ry)} ${fmt(cx)} ${fmt(cy + ry)}`,
+      `C ${fmt(cx - kx)} ${fmt(cy + ry)} ${fmt(cx - rx)} ${fmt(cy + ky)} ${fmt(cx - rx)} ${fmt(cy)}`,
+      `C ${fmt(cx - rx)} ${fmt(cy - ky)} ${fmt(cx - kx)} ${fmt(cy - ry)} ${fmt(cx)} ${fmt(cy - ry)}`,
+      'Z',
+    ].join(' ');
+  }
+  if (resolved === 'roundedRect') {
+    const r = Math.min(w / 2, h / 2, Math.max(2, Math.round(Math.min(w, h) * 0.22)));
+    const kr = r * kappa;
+    return [
+      `M ${fmt(r)} 0`,
+      `L ${fmt(w - r)} 0`,
+      `C ${fmt(w - r + kr)} 0 ${fmt(w)} ${fmt(r - kr)} ${fmt(w)} ${fmt(r)}`,
+      `L ${fmt(w)} ${fmt(h - r)}`,
+      `C ${fmt(w)} ${fmt(h - r + kr)} ${fmt(w - r + kr)} ${fmt(h)} ${fmt(w - r)} ${fmt(h)}`,
+      `L ${fmt(r)} ${fmt(h)}`,
+      `C ${fmt(r - kr)} ${fmt(h)} 0 ${fmt(h - r + kr)} 0 ${fmt(h - r)}`,
+      `L 0 ${fmt(r)}`,
+      `C 0 ${fmt(r - kr)} ${fmt(r - kr)} 0 ${fmt(r)} 0`,
+      'Z',
+    ].join(' ');
+  }
+  if (resolved === 'shield') {
+    const cx = w / 2;
+    const hw = Math.max(1, (w / 2 - 1) * 0.92);
+    const left = cx - hw;
+    const right = cx + hw;
+    const midY = h * 0.5;
+    const botY = h * 0.96;
+    return [
+      `M ${fmt(left)} 0`,
+      `L ${fmt(right)} 0`,
+      `L ${fmt(right)} ${fmt(midY)}`,
+      `C ${fmt(right)} ${fmt(midY + (botY - midY) * 0.55)} ${fmt(cx + hw * 0.45)} ${fmt(botY * 0.9)} ${fmt(cx)} ${fmt(botY)}`,
+      `C ${fmt(cx - hw * 0.45)} ${fmt(botY * 0.9)} ${fmt(left)} ${fmt(midY + (botY - midY) * 0.55)} ${fmt(left)} ${fmt(midY)}`,
+      'Z',
+    ].join(' ');
+  }
+  return undefined;
+}
+
+export interface SessionEditedSlotSnapshot {
+  slot: CustomEditableVapSlot;
+  replacement?: PersistedSlotReplacementData;
+  geometryOverride?: Record<string, any>;
+  customMaskDataUrl?: string;
+}
+
+export interface SessionMaskVaultState {
+  guidesEnabled?: boolean;
+  bakeReplacedSlots?: boolean;
+  preserveMasksOnExport?: boolean;
+  customSlots: CustomEditableVapSlot[];
+  editedNativeSlotsByTag: Record<string, SessionEditedSlotSnapshot>;
+  customMaskDataUrls: Record<string, string>;
+  replacements: Record<string, PersistedSlotReplacementData>;
+  slotGeometryOverrides: Record<string, Record<string, any>>;
+}
+
+export interface ReconciledSessionMasksResult {
+  customSlots: CustomEditableVapSlot[];
+  replacements: Record<string, PersistedSlotReplacementData>;
+  customMaskDataUrls: Record<string, string>;
+  slotGeometryOverrides: Record<string, Record<string, any>>;
+  composerLinkRemaps: Record<string, string>;
+  hasAnyRestoredEdits: boolean;
+}
+
+export function createEmptySessionMaskVault(): SessionMaskVaultState {
+  return {
+    guidesEnabled: false,
+    bakeReplacedSlots: true,
+    preserveMasksOnExport: true,
+    customSlots: [],
+    editedNativeSlotsByTag: {},
+    customMaskDataUrls: {},
+    replacements: {},
+    slotGeometryOverrides: {},
+  };
+}
+
+function normalizeTagKey(tag?: string): string {
+  return String(tag || '').trim().toLowerCase();
+}
+
+function makeAssetKeyForSlot(srcId: string, srcTag: string): string {
+  const safeTagSlug = String(srcTag || srcId).replace(/[^a-zA-Z0-9_\u0600-\u06FF-]/g, '_') || srcId;
+  return `mask_${srcId}_${safeTagSlug}`;
+}
+
+/**
+ * Reconciles saved session mask edits (custom added masks, uploaded photos/texts,
+ * custom PNG silhouettes, fill colors, shapes, positions, and depth bands) onto
+ * a newly loaded primary source's native dynamic slots without colliding IDs or duplicating slots.
+ */
+export function reconcileSessionMasksOntoSource(
+  vault: SessionMaskVaultState | null | undefined,
+  nativeSlots: VapDynamicMaskSlot[]
+): ReconciledSessionMasksResult {
+  const outCustomSlots: CustomEditableVapSlot[] = [];
+  const outReplacements: Record<string, PersistedSlotReplacementData> = {};
+  const outCustomMaskDataUrls: Record<string, string> = {};
+  const outGeometryOverrides: Record<string, Record<string, any>> = {};
+  const composerLinkRemaps: Record<string, string> = {};
+
+  if (!vault) {
+    return {
+      customSlots: outCustomSlots,
+      replacements: outReplacements,
+      customMaskDataUrls: outCustomMaskDataUrls,
+      slotGeometryOverrides: outGeometryOverrides,
+      composerLinkRemaps,
+      hasAnyRestoredEdits: false,
+    };
+  }
+
+  const nativeList = Array.isArray(nativeSlots) ? nativeSlots : [];
+  const usedIds = new Set<string>(nativeList.map((s) => String(s.srcId)));
+  const allocatedForIdGen: Array<{ srcId: string }> = nativeList.map((s) => ({ srcId: String(s.srcId) }));
+  const matchedNativeIds = new Set<string>();
+  let touched = false;
+
+  const allocId = (preferredId: string): string => {
+    const cleanPref = String(preferredId || '').trim();
+    if (cleanPref && !usedIds.has(cleanPref)) {
+      usedIds.add(cleanPref);
+      allocatedForIdGen.push({ srcId: cleanPref });
+      return cleanPref;
+    }
+    const nextId = buildNextSlotId(allocatedForIdGen);
+    usedIds.add(nextId);
+    allocatedForIdGen.push({ srcId: nextId });
+    return nextId;
+  };
+
+  // 1. Reconcile edited native slots from previous primary files
+  for (const snap of Object.values(vault.editedNativeSlotsByTag || {})) {
+    if (!snap || !snap.slot) continue;
+    const tagKey = normalizeTagKey(snap.slot.srcTag);
+    const matchingNative = nativeList.find(
+      (ns) => !matchedNativeIds.has(String(ns.srcId)) && normalizeTagKey(ns.srcTag) === tagKey
+    );
+
+    if (matchingNative) {
+      matchedNativeIds.add(String(matchingNative.srcId));
+      const nid = String(matchingNative.srcId);
+      if (snap.replacement && (snap.replacement.active || snap.replacement.text || snap.replacement.fitMode || snap.replacement.useMask === false)) {
+        outReplacements[nid] = { ...snap.replacement };
+        touched = true;
+      }
+      if (snap.customMaskDataUrl) {
+        outCustomMaskDataUrls[nid] = snap.customMaskDataUrl;
+        touched = true;
+      }
+      if (snap.geometryOverride) {
+        const nextOv: Record<string, any> = { ...snap.geometryOverride };
+        // Keep new native file's defaultFrame unless user explicitly resized/moved the mask frame
+        if (!nextOv.hasCustomFrame && Array.isArray(matchingNative.defaultFrame)) {
+          nextOv.defaultFrame = [...matchingNative.defaultFrame];
+          nextOv.w = matchingNative.w;
+          nextOv.h = matchingNative.h;
+        }
+        outGeometryOverrides[nid] = nextOv;
+        touched = true;
+      }
+      continue;
+    }
+
+    // No matching native slot on new primary file -> carry edited slot over as custom added mask
+    const oldId = String(snap.slot.srcId);
+    const finalId = allocId(oldId);
+    if (finalId !== oldId && snap.slot.linkedComposerLayerId) {
+      composerLinkRemaps[oldId] = finalId;
+    }
+    const cloned: CustomEditableVapSlot = {
+      ...snap.slot,
+      srcId: finalId,
+      assetKey: makeAssetKeyForSlot(finalId, snap.slot.srcTag),
+      isCustomAdded: true,
+      hasCustomFrame: true,
+    };
+    outCustomSlots.push(cloned);
+    if (snap.replacement) outReplacements[finalId] = { ...snap.replacement };
+    if (snap.customMaskDataUrl) outCustomMaskDataUrls[finalId] = snap.customMaskDataUrl;
+    if (snap.geometryOverride) outGeometryOverrides[finalId] = { ...snap.geometryOverride };
+    touched = true;
+  }
+
+  // 2. Reconcile user-added custom mask slots
+  for (const cs of vault.customSlots || []) {
+    if (!cs) continue;
+    const oldId = String(cs.srcId);
+    const finalId = allocId(oldId);
+    if (finalId !== oldId) {
+      composerLinkRemaps[oldId] = finalId;
+    }
+    const cloned: CustomEditableVapSlot = {
+      ...cs,
+      srcId: finalId,
+      assetKey: makeAssetKeyForSlot(finalId, cs.srcTag),
+      isCustomAdded: true,
+    };
+    outCustomSlots.push(cloned);
+    if (vault.replacements?.[oldId]) {
+      outReplacements[finalId] = { ...vault.replacements[oldId] };
+    }
+    if (vault.customMaskDataUrls?.[oldId]) {
+      outCustomMaskDataUrls[finalId] = vault.customMaskDataUrls[oldId];
+    }
+    if (vault.slotGeometryOverrides?.[oldId]) {
+      outGeometryOverrides[finalId] = { ...vault.slotGeometryOverrides[oldId] };
+    }
+    touched = true;
+  }
+
+  return {
+    customSlots: outCustomSlots,
+    replacements: outReplacements,
+    customMaskDataUrls: outCustomMaskDataUrls,
+    slotGeometryOverrides: outGeometryOverrides,
+    composerLinkRemaps,
+    hasAnyRestoredEdits: touched,
+  };
+}
+
+
 
 

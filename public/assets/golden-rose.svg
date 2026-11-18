@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="roseBg" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#c81d32" stop-opacity="0.25"/>
+      <stop offset="70%" stop-color="#1a1224" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#0b101d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="stemGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f9e4a7"/>
+      <stop offset="50%" stop-color="#c7973b"/>
+      <stop offset="100%" stop-color="#7c5816"/>
+    </linearGradient>
+    <linearGradient id="petalRuby" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff758f"/>
+      <stop offset="45%" stop-color="#d90429"/>
+      <stop offset="100%" stop-color="#640d14"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#roseBg)"/>
+  <g transform="translate(200, 155)">
+    <animateTransform attributeName="transform" type="translate" values="200,158; 200,147; 200,158" dur="3.8s" repeatCount="indefinite"/>
+    <!-- Glass Dome Arch -->
+    <path d="M-75,85 L-75,-35 A75,75 0 0,1 75,-35 L75,85 Z" fill="none" stroke="#e8bd62" stroke-width="1.5" opacity="0.35"/>
+    <!-- Golden Stem & Leaves -->
+    <path d="M0,15 Q-6,50 4,80" fill="none" stroke="url(#stemGold)" stroke-width="5" stroke-linecap="round"/>
+    <path d="M-2,45 Q-38,32 -44,48 Q-22,62 -2,45 Z" fill="url(#stemGold)"/>
+    <path d="M2,55 Q38,42 44,58 Q22,72 2,55 Z" fill="url(#stemGold)"/>
+    <!-- Rose Blossom -->
+    <path d="M0,-68 C-48,-62 -62,-8 -25,16 C0,28 25,16 62,-8 C48,-62 0,-68 0,-68 Z" fill="url(#petalRuby)" stroke="#ffd6a5" stroke-width="1"/>
+    <path d="M0,-52 C-32,-45 -38,-5 -10,12 C12,20 38,-5 28,-45 Z" fill="#ef233c" stroke="#ffccd5" stroke-width="0.9"/>
+    <path d="M-12,-28 C-5,-44 18,-38 14,-18 C8,-2 -15,-10 -12,-28 Z" fill="#ff8fa3" opacity="0.85"/>
+    <!-- Base Pedestal -->
+    <rect x="-86" y="82" width="172" height="12" rx="6" fill="url(#stemGold)"/>
+  </g>
+</svg>

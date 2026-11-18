@@ -1,0 +1,133 @@
+{
+  "id": "/",
+  "name": "SVGA Genius Processor Procgcvh88",
+  "short_name": "SVGA Genius",
+  "description": "موقع احترافي مصمم بأحدث تقنيات التصميم ثلاثي الأبعاد والرسوم المتحركة التفاعلية، يقدّم تجربة استخدام فريدة ومحرر وسائط متكامل.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#090e1c",
+  "background_color": "#020617",
+  "categories": ["photo", "video", "graphics", "utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "فتح ملف",
+      "short_name": "فتح ملف",
+      "description": "فتح وتصفح ملفات الوسائط والأنيميشن من هاتفك",
+      "url": "/?action=open_file",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "محرر طبقات SVGA",
+      "short_name": "محرر SVGA",
+      "description": "تشغيل محرر طبقات الرسوم المتحركة",
+      "url": "/?action=editor",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "المشغل الشامل للصيغ",
+      "short_name": "مشغل الصيغ",
+      "description": "مشغل لجميع صيغ الفيديو والأنيميشن",
+      "url": "/?action=player",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/?file_launch=1",
+      "name": "SVGA & Media Animations",
+      "icons": [
+        {
+          "src": "/pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "accept": {
+        "application/octet-stream": [".svga", ".vap", ".pag", ".lottie"],
+        "video/mp4": [".mp4"],
+        "video/webm": [".webm"],
+        "video/quicktime": [".mov"],
+        "image/svg+xml": [".svg"],
+        "image/webp": [".webp"],
+        "image/gif": [".gif"],
+        "image/png": [".png", ".apng"],
+        "application/json": [".json"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "mediaFiles",
+          "accept": [
+            "image/*",
+            "video/*",
+            "application/json",
+            "application/octet-stream",
+            ".svga",
+            ".vap",
+            ".pag",
+            ".lottie",
+            ".svg",
+            ".mp4",
+            ".webp",
+            ".gif",
+            ".apng",
+            ".png",
+            ".json"
+          ]
+        }
+      ]
+    }
+  }
+}

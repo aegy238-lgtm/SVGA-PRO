@@ -35,6 +35,26 @@ export interface VapEmbeddedFrameOverride {
   replacementSource?: any;
 }
 
+export interface VapDetectedDummyMask {
+  id: string;
+  kind: 'hole' | 'chroma_dummy';
+  labelAr: string;
+  labelEn: string;
+  frame: [number, number, number, number];
+  shapePreset: 'circle' | 'roundedRect' | 'rect';
+  fillRgb?: [number, number, number];
+  pixelCount: number;
+  silhouetteRgba: Uint8ClampedArray;
+}
+
+export interface VapDummyErasureRegion {
+  id?: string;
+  kind?: 'hole' | 'chroma_dummy';
+  frame: [number, number, number, number];
+  fillRgb?: [number, number, number];
+  silhouetteRgba?: Uint8ClampedArray;
+}
+
 /**
  * Computes tight RGBA bounding box [x, y, w, h] and visible pixel count within a sub-rectangle
  * `[rx0, ry0, rx1, ry1]` (inclusive) of an RGBA buffer (`cw x ch`).
@@ -128,7 +148,6 @@ function splitVerticalBandAtPinchPoints(
   let bestPinchRatio = 1.0;
 
   for (let y = y0 + minSubBandH; y <= y1 - minSubBandH; y++) {
-    // Find peak active count and span in upper sub-band and lower sub-band
     let maxAboveA = 0;
     let maxAboveS = 0;
     for (let uy = y0; uy <= y - Math.max(4, Math.floor(minSubBandH * 0.4)); uy++) {
@@ -151,7 +170,6 @@ function splitVerticalBandAtPinchPoints(
     const spanRatio = smoothSpan[y] / refPeakS;
     const combinedScore = Math.min(activeRatio, spanRatio * 0.95);
 
-    // A genuine pinch point between two frames drops active pixels or width below 58% of both peaks
     if (combinedScore < 0.58 && combinedScore < bestPinchRatio) {
       bestPinchRatio = combinedScore;
       bestSplitY = y;
@@ -168,11 +186,25 @@ function splitVerticalBandAtPinchPoints(
   ];
 }
 
+function hasSlotCenterInRowBand(
+  dynamicSlots: VapDynamicMaskSlot[],
+  y0: number,
+  y1: number
+): boolean {
+  for (const slot of dynamicSlots || []) {
+    const sf = slot.defaultFrame;
+    if (!sf) continue;
+    const scy = sf[1] + sf[3] / 2;
+    if (scy >= y0 - 4 && scy <= y1 + 4) return true;
+  }
+  return false;
+}
+
 /**
  * Automatically detects embedded visual frames and layers placed inside a VAP / YYEVA video frame
  * (such as the Winged Avatar Frame `إطار الصورة`, Name Banner Frame `إطار الاسم`, decorative badges,
  * and Main Scene `المشهد الأساسي`) using the combined RGBA buffer (`rgbFrame` + `aFrame`) and optional
- * `dynamicSlots` metadata.
+ * `dynamicSlots` metadata — without slicing curved top edges off the main artwork.
  */
 export function detectVapEmbeddedFramesFromRgba(
   rgba: Uint8Array | Uint8ClampedArray,
@@ -228,7 +260,7 @@ export function detectVapEmbeddedFramesFromRgba(
   let currentRunStart = -1;
   let currentRunLen = 0;
 
-  for (let y = Math.round(ch * 0.15); y < ch; y++) {
+  for (let y = Math.round(ch * 0.10); y < ch; y++) {
     if (rowFullBleed[y]) {
       if (currentRunStart === -1) currentRunStart = y;
       currentRunLen++;
@@ -242,14 +274,18 @@ export function detectVapEmbeddedFramesFromRgba(
     }
   }
 
-  // Refine sceneStartY: if rows just above sceneStartY are the full-width top edge of the scene (span >= 90% cw), include them in the scene
+  // Refine sceneStartY upward across contiguous wide top edges/curves of the main scene so curved artwork never gets sliced off
   if (sceneStartY > 0) {
-    while (sceneStartY > Math.round(ch * 0.12) && rowSpan[sceneStartY - 1] >= cw * 0.90 && rowActive[sceneStartY - 1] >= cw * 0.72) {
+    while (
+      sceneStartY > 0 &&
+      rowSpan[sceneStartY - 1] >= cw * 0.72 &&
+      !hasSlotCenterInRowBand(dynamicSlots, sceneStartY - 1, sceneStartY - 1)
+    ) {
       sceneStartY--;
     }
   }
 
-  const floatingLimitY = sceneStartY > 0 ? sceneStartY - 1 : ch - 1;
+  let floatingLimitY = sceneStartY > 0 ? sceneStartY - 1 : ch - 1;
 
   // 2. Find contiguous vertical non-empty bands in the Floating Frames Zone [0 .. floatingLimitY]
   const rawBands: Array<[number, number]> = [];
@@ -276,6 +312,29 @@ export function detectVapEmbeddedFramesFromRgba(
   }
   if (inBand) {
     rawBands.push([bandStart, floatingLimitY - gapCount]);
+  }
+
+  // Merge any contiguous/adjacent bottom band above sceneStartY whose horizontal span covers >=82% width
+  // and has no dynamic slot (prevents slicing curved/tapered gift tops into fake "banner" strips!)
+  if (sceneStartY > 0) {
+    const maxMergeGap = Math.max(8, Math.round(ch * 0.018));
+    while (rawBands.length > 0) {
+      const last = rawBands[rawBands.length - 1];
+      const vGap = sceneStartY - last[1];
+      if (vGap > maxMergeGap) break;
+      let maxBandSpan = 0;
+      for (let ry = last[0]; ry <= last[1]; ry++) {
+        if (rowSpan[ry] > maxBandSpan) maxBandSpan = rowSpan[ry];
+      }
+      const hasSlot = hasSlotCenterInRowBand(dynamicSlots, last[0], last[1]);
+      if (maxBandSpan >= cw * 0.82 && !hasSlot) {
+        sceneStartY = last[0];
+        floatingLimitY = sceneStartY - 1;
+        rawBands.pop();
+      } else {
+        break;
+      }
+    }
   }
 
   // 3. Split any touching vertical bands at pinch points (e.g., Winged Avatar Frame touching Name Banner Frame)
@@ -397,7 +456,10 @@ export function detectVapEmbeddedFramesFromRgba(
       idSlug = 'vap_frame_main_scene';
       labelAr = 'مشهد الفيديو الأساسي';
       labelEn = 'Main Video Scene';
-    } else if (linkedSlot?.isTextSlot || (!linkedSlot && aspectRatio >= 2.05 && bh <= ch * 0.25)) {
+    } else if (!linkedSlot && bw >= cw * 0.90 && bh <= ch * 0.14 && coverageRatio < 0.65) {
+      // Wide, thin semi-empty sliver near top of a wide gift artwork — skip instead of slicing the gift
+      continue;
+    } else if (linkedSlot?.isTextSlot || (!linkedSlot && aspectRatio >= 2.05 && bh <= ch * 0.25 && bw < cw * 0.90)) {
       bannerCount++;
       kind = 'banner_frame';
       idSlug = `vap_frame_banner_${bannerCount}`;
@@ -565,3 +627,428 @@ export function applyEmbeddedFrameOverridesToRgba(
     }
   }
 }
+
+function overlapsExistingSlot(
+  box: [number, number, number, number],
+  existingSlots: VapDynamicMaskSlot[]
+): boolean {
+  const [bx, by, bw, bh] = box;
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+  for (const s of existingSlots || []) {
+    const sf = s.defaultFrame;
+    if (!sf) continue;
+    if (cx >= sf[0] && cx <= sf[0] + sf[2] && cy >= sf[1] && cy <= sf[1] + sf[3]) {
+      return true;
+    }
+    const ix0 = Math.max(bx, sf[0]);
+    const iy0 = Math.max(by, sf[1]);
+    const ix1 = Math.min(bx + bw, sf[0] + sf[2]);
+    const iy1 = Math.min(by + bh, sf[1] + sf[3]);
+    if (ix1 > ix0 && iy1 > iy0) {
+      const interArea = (ix1 - ix0) * (iy1 - iy0);
+      if (interArea >= Math.min(bw * bh, sf[2] * sf[3]) * 0.45) return true;
+    }
+  }
+  return false;
+}
+
+function inferShapePreset(
+  bw: number,
+  bh: number,
+  fillRatio: number
+): 'circle' | 'roundedRect' | 'rect' {
+  const ar = bw / Math.max(1, bh);
+  if (ar >= 0.72 && ar <= 1.38 && fillRatio >= 0.62 && fillRatio <= 0.87) {
+    return 'circle';
+  }
+  if (fillRatio >= 0.85 && fillRatio <= 0.96) {
+    return 'roundedRect';
+  }
+  return 'rect';
+}
+
+function isChromaDummyPixel(r: number, g: number, b: number, a: number): number {
+  if (a < 180) return 0;
+  // 1: Pink / Magenta dummy (#ec4899, #ff00ff, #e91e63, etc.)
+  if (r >= 165 && b >= 100 && g <= Math.min(r, b) * 0.65 && Math.max(r, b) - g >= 65) return 1;
+  // 2: Chroma green dummy (#00ff00, #22c55e, #10b981, etc.)
+  if (g >= 165 && r <= g * 0.55 && b <= g * 0.68 && g - Math.max(r, b) >= 60) return 2;
+  // 3: Bright cyan/aqua dummy (#00ffff, #06b6d4, #38bdf8)
+  if (g >= 170 && b >= 190 && r <= 75 && Math.min(g, b) - r >= 110) return 3;
+  return 0;
+}
+
+/**
+ * Automatically detects dummy placeholder shapes inside rendered RGBA frames:
+ * 1) Enclosed transparent cutout holes surrounded by gift frame artwork (`kind: 'hole'`)
+ * 2) Flat solid chroma dummy shapes such as pink/magenta/green/cyan avatar placeholders (`kind: 'chroma_dummy'`)
+ * Guarded strictly by compactness and color uniformity so gradient/textured artwork causes zero false positives.
+ */
+export function detectDummyMasksFromRgba(
+  rgba: Uint8Array | Uint8ClampedArray,
+  cw: number,
+  ch: number,
+  existingSlots: VapDynamicMaskSlot[] = []
+): VapDetectedDummyMask[] {
+  if (!rgba || cw < 24 || ch < 24 || rgba.length < cw * ch * 4) return [];
+
+  const results: VapDetectedDummyMask[] = [];
+  const step = Math.max(1, Math.ceil(Math.max(cw, ch) / 320));
+  const gw = Math.max(8, Math.floor(cw / step));
+  const gh = Math.max(8, Math.floor(ch / step));
+  const cellArea = step * step;
+
+  // --- 1. Detect Enclosed Transparent Cutout Holes (BFS from canvas borders) ---
+  const transMask = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) {
+    const sy = Math.min(ch - 1, gy * step + (step >> 1));
+    for (let gx = 0; gx < gw; gx++) {
+      const sx = Math.min(cw - 1, gx * step + (step >> 1));
+      const a = rgba[(sy * cw + sx) * 4 + 3];
+      if (a < 32) transMask[gy * gw + gx] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(gw * gh);
+  const queue = new Int32Array(gw * gh);
+  let qHead = 0;
+  let qTail = 0;
+
+  const pushBorder = (gx: number, gy: number) => {
+    const idx = gy * gw + gx;
+    if (transMask[idx] && !visited[idx]) {
+      visited[idx] = 1;
+      queue[qTail++] = idx;
+    }
+  };
+  for (let gx = 0; gx < gw; gx++) {
+    pushBorder(gx, 0);
+    pushBorder(gx, gh - 1);
+  }
+  for (let gy = 0; gy < gh; gy++) {
+    pushBorder(0, gy);
+    pushBorder(gw - 1, gy);
+  }
+  while (qHead < qTail) {
+    const cur = queue[qHead++];
+    const cx = cur % gw;
+    const cy = (cur / gw) | 0;
+    if (cx > 0 && transMask[cur - 1] && !visited[cur - 1]) {
+      visited[cur - 1] = 1;
+      queue[qTail++] = cur - 1;
+    }
+    if (cx + 1 < gw && transMask[cur + 1] && !visited[cur + 1]) {
+      visited[cur + 1] = 1;
+      queue[qTail++] = cur + 1;
+    }
+    if (cy > 0 && transMask[cur - gw] && !visited[cur - gw]) {
+      visited[cur - gw] = 1;
+      queue[qTail++] = cur - gw;
+    }
+    if (cy + 1 < gh && transMask[cur + gw] && !visited[cur + gw]) {
+      visited[cur + gw] = 1;
+      queue[qTail++] = cur + gw;
+    }
+  }
+
+  const minDimPx = Math.max(24, Math.round(Math.min(cw, ch) * 0.06));
+  const minAreaPx = Math.max(400, Math.round(cw * ch * 0.004));
+  const maxAreaPx = Math.round(cw * ch * 0.55);
+
+  let holeIdx = 0;
+  for (let start = 0; start < gw * gh; start++) {
+    if (!transMask[start] || visited[start]) continue;
+    let h = 0;
+    let t = 0;
+    visited[start] = 1;
+    queue[t++] = start;
+    let minGx = gw;
+    let maxGx = -1;
+    let minGy = gh;
+    let maxGy = -1;
+
+    while (h < t) {
+      const cur = queue[h++];
+      const gx = cur % gw;
+      const gy = (cur / gw) | 0;
+      if (gx < minGx) minGx = gx;
+      if (gx > maxGx) maxGx = gx;
+      if (gy < minGy) minGy = gy;
+      if (gy > maxGy) maxGy = gy;
+
+      const neighbors = [
+        gx > 0 ? cur - 1 : -1,
+        gx + 1 < gw ? cur + 1 : -1,
+        gy > 0 ? cur - gw : -1,
+        gy + 1 < gh ? cur + gw : -1,
+      ];
+      for (const nb of neighbors) {
+        if (nb >= 0 && transMask[nb] && !visited[nb]) {
+          visited[nb] = 1;
+          queue[t++] = nb;
+        }
+      }
+    }
+
+    const bx = Math.max(0, minGx * step);
+    const by = Math.max(0, minGy * step);
+    const bw = Math.min(cw - bx, (maxGx - minGx + 1) * step);
+    const bh = Math.min(ch - by, (maxGy - minGy + 1) * step);
+    const approxArea = t * cellArea;
+    if (bw < minDimPx || bh < minDimPx || approxArea < minAreaPx || approxArea > maxAreaPx) continue;
+    const ar = Math.max(bw / Math.max(1, bh), bh / Math.max(1, bw));
+    if (ar > 4.5) continue;
+    const fillRatio = t / Math.max(1, (maxGx - minGx + 1) * (maxGy - minGy + 1));
+    if (fillRatio < 0.45) continue;
+
+    const frame: [number, number, number, number] = [bx, by, bw, bh];
+    if (overlapsExistingSlot(frame, existingSlots)) continue;
+
+    // Build exact full-res white-on-black silhouette of the transparent cutout
+    const sil = new Uint8ClampedArray(bw * bh * 4);
+    let exactPx = 0;
+    for (let y = 0; y < bh; y++) {
+      const rowOff = (by + y) * cw * 4;
+      for (let x = 0; x < bw; x++) {
+        const a = rgba[rowOff + (bx + x) * 4 + 3];
+        const sIdx = (y * bw + x) * 4;
+        const inside = a < 48;
+        const v = inside ? 255 : 0;
+        if (inside) exactPx++;
+        sil[sIdx] = v;
+        sil[sIdx + 1] = v;
+        sil[sIdx + 2] = v;
+        sil[sIdx + 3] = 255;
+      }
+    }
+
+    holeIdx++;
+    results.push({
+      id: `dummy_hole_${holeIdx}`,
+      kind: 'hole',
+      labelAr: holeIdx === 1 ? 'فراغ قناع مكتشف تلقائياً' : `فراغ قناع مكتشف (${holeIdx})`,
+      labelEn: holeIdx === 1 ? 'Detected Cutout Hole' : `Detected Cutout Hole (${holeIdx})`,
+      frame,
+      shapePreset: inferShapePreset(bw, bh, exactPx / Math.max(1, bw * bh)),
+      pixelCount: exactPx,
+      silhouetteRgba: sil,
+    });
+  }
+
+  // --- 2. Detect Compact Flat Chroma Dummy Shapes (Pink/Magenta/Green/Cyan) ---
+  const chromaCat = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) {
+    const sy = Math.min(ch - 1, gy * step + (step >> 1));
+    for (let gx = 0; gx < gw; gx++) {
+      const sx = Math.min(cw - 1, gx * step + (step >> 1));
+      const idx = (sy * cw + sx) * 4;
+      chromaCat[gy * gw + gx] = isChromaDummyPixel(rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]);
+    }
+  }
+
+  const cVisited = new Uint8Array(gw * gh);
+  let chromaIdx = 0;
+  for (let start = 0; start < gw * gh; start++) {
+    const cat = chromaCat[start];
+    if (!cat || cVisited[start]) continue;
+
+    const sGx = start % gw;
+    const sGy = (start / gw) | 0;
+    const sPx = (Math.min(ch - 1, sGy * step + (step >> 1)) * cw + Math.min(cw - 1, sGx * step + (step >> 1))) * 4;
+    const sr = rgba[sPx];
+    const sg = rgba[sPx + 1];
+    const sb = rgba[sPx + 2];
+
+    let h = 0;
+    let t = 0;
+    cVisited[start] = 1;
+    queue[t++] = start;
+    let minGx = gw;
+    let maxGx = -1;
+    let minGy = gh;
+    let maxGy = -1;
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+
+    while (h < t) {
+      const cur = queue[h++];
+      const gx = cur % gw;
+      const gy = (cur / gw) | 0;
+      const pIdx = (Math.min(ch - 1, gy * step + (step >> 1)) * cw + Math.min(cw - 1, gx * step + (step >> 1))) * 4;
+      sumR += rgba[pIdx];
+      sumG += rgba[pIdx + 1];
+      sumB += rgba[pIdx + 2];
+
+      if (gx < minGx) minGx = gx;
+      if (gx > maxGx) maxGx = gx;
+      if (gy < minGy) minGy = gy;
+      if (gy > maxGy) maxGy = gy;
+
+      const neighbors = [
+        gx > 0 ? cur - 1 : -1,
+        gx + 1 < gw ? cur + 1 : -1,
+        gy > 0 ? cur - gw : -1,
+        gy + 1 < gh ? cur + gw : -1,
+      ];
+      for (const nb of neighbors) {
+        if (nb >= 0 && !cVisited[nb] && chromaCat[nb] === cat) {
+          const nGx = nb % gw;
+          const nGy = (nb / gw) | 0;
+          const nIdx = (Math.min(ch - 1, nGy * step + (step >> 1)) * cw + Math.min(cw - 1, nGx * step + (step >> 1))) * 4;
+          const diff = Math.abs(rgba[nIdx] - sr) + Math.abs(rgba[nIdx + 1] - sg) + Math.abs(rgba[nIdx + 2] - sb);
+          if (diff <= 54) {
+            cVisited[nb] = 1;
+            queue[t++] = nb;
+          }
+        }
+      }
+    }
+
+    const bx = Math.max(0, minGx * step);
+    const by = Math.max(0, minGy * step);
+    const bw = Math.min(cw - bx, (maxGx - minGx + 1) * step);
+    const bh = Math.min(ch - by, (maxGy - minGy + 1) * step);
+    const approxArea = t * cellArea;
+    if (bw < minDimPx || bh < minDimPx || approxArea < minAreaPx || approxArea > maxAreaPx) continue;
+    const ar = Math.max(bw / Math.max(1, bh), bh / Math.max(1, bw));
+    if (ar > 4.5) continue;
+    const fillRatio = t / Math.max(1, (maxGx - minGx + 1) * (maxGy - minGy + 1));
+    if (fillRatio < 0.55) continue;
+
+    // Flatness check: reject rich gradients / glowing textures (requires >= 78% of cells within +/-40 Manhattan distance of component mean)
+    const meanR = Math.round(sumR / t);
+    const meanG = Math.round(sumG / t);
+    const meanB = Math.round(sumB / t);
+    let uniformCells = 0;
+    for (let k = 0; k < t; k++) {
+      const cur = queue[k];
+      const gx = cur % gw;
+      const gy = (cur / gw) | 0;
+      const pIdx = (Math.min(ch - 1, gy * step + (step >> 1)) * cw + Math.min(cw - 1, gx * step + (step >> 1))) * 4;
+      const diff = Math.abs(rgba[pIdx] - meanR) + Math.abs(rgba[pIdx + 1] - meanG) + Math.abs(rgba[pIdx + 2] - meanB);
+      if (diff <= 40) uniformCells++;
+    }
+    if (uniformCells / t < 0.78) continue;
+
+    const frame: [number, number, number, number] = [bx, by, bw, bh];
+    if (overlapsExistingSlot(frame, existingSlots)) continue;
+
+    const sil = new Uint8ClampedArray(bw * bh * 4);
+    let exactPx = 0;
+    for (let y = 0; y < bh; y++) {
+      const rowOff = (by + y) * cw * 4;
+      for (let x = 0; x < bw; x++) {
+        const pIdx = rowOff + (bx + x) * 4;
+        const a = rgba[pIdx + 3];
+        const diff = Math.abs(rgba[pIdx] - meanR) + Math.abs(rgba[pIdx + 1] - meanG) + Math.abs(rgba[pIdx + 2] - meanB);
+        const inside = a >= 140 && diff <= 65;
+        const v = inside ? 255 : 0;
+        if (inside) exactPx++;
+        const sIdx = (y * bw + x) * 4;
+        sil[sIdx] = v;
+        sil[sIdx + 1] = v;
+        sil[sIdx + 2] = v;
+        sil[sIdx + 3] = 255;
+      }
+    }
+
+    chromaIdx++;
+    results.push({
+      id: `dummy_chroma_${chromaIdx}`,
+      kind: 'chroma_dummy',
+      labelAr: chromaIdx === 1 ? 'قناع وهمي ملون مكتشف' : `قناع وهمي ملون (${chromaIdx})`,
+      labelEn: chromaIdx === 1 ? 'Detected Dummy Mask' : `Detected Dummy Mask (${chromaIdx})`,
+      frame,
+      shapePreset: inferShapePreset(bw, bh, exactPx / Math.max(1, bw * bh)),
+      fillRgb: [meanR, meanG, meanB],
+      pixelCount: exactPx,
+      silhouetteRgba: sil,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Cleanly erases converted dummy placeholder mask pixels (and any 1-2px color fringe halo)
+ * from an RGBA buffer without harming surrounding gift artwork.
+ */
+export function eraseDummyMaskPixelsFromRgba(
+  rgba: Uint8ClampedArray | Uint8Array,
+  cw: number,
+  ch: number,
+  erasures: VapDummyErasureRegion[] | undefined
+): void {
+  if (!rgba || !erasures || erasures.length === 0 || cw < 1 || ch < 1) return;
+
+  for (const er of erasures) {
+    if (!er || !Array.isArray(er.frame)) continue;
+    const fx = Math.round(er.frame[0]);
+    const fy = Math.round(er.frame[1]);
+    const fw = Math.max(1, Math.round(er.frame[2]));
+    const fh = Math.max(1, Math.round(er.frame[3]));
+
+    const pad = 2;
+    const x0 = Math.max(0, fx - pad);
+    const y0 = Math.max(0, fy - pad);
+    const x1 = Math.min(cw - 1, fx + fw - 1 + pad);
+    const y1 = Math.min(ch - 1, fy + fh - 1 + pad);
+    const sil = er.silhouetteRgba;
+    const rgb = er.fillRgb;
+
+    for (let y = y0; y <= y1; y++) {
+      const rowOff = y * cw * 4;
+      for (let x = x0; x <= x1; x++) {
+        const i = rowOff + x * 4;
+        if (rgba[i + 3] === 0) continue;
+
+        let eraseStrength = 0;
+        const lx = x - fx;
+        const ly = y - fy;
+        if (sil && lx >= 0 && lx < fw && ly >= 0 && ly < fh) {
+          const sv = sil[(ly * fw + lx) * 4];
+          if (sv >= 200) eraseStrength = 255;
+          else if (sv > 12) eraseStrength = sv;
+        } else if (!sil && !rgb) {
+          eraseStrength = 255;
+        }
+
+        if (rgb) {
+          const diff = Math.abs(rgba[i] - rgb[0]) + Math.abs(rgba[i + 1] - rgb[1]) + Math.abs(rgba[i + 2] - rgb[2]);
+          if (diff <= 75) {
+            eraseStrength = 255;
+          } else if (diff <= 135 && sil) {
+            // Check 1-2px neighborhood inside silhouette for anti-aliased fringe halo
+            let nearSil = false;
+            for (let ny = -2; ny <= 2 && !nearSil; ny++) {
+              for (let nx = -2; nx <= 2; nx++) {
+                const slx = lx + nx;
+                const sly = ly + ny;
+                if (slx >= 0 && slx < fw && sly >= 0 && sly < fh && sil[(sly * fw + slx) * 4] >= 128) {
+                  nearSil = true;
+                  break;
+                }
+              }
+            }
+            if (nearSil) {
+              eraseStrength = Math.max(eraseStrength, 255);
+            }
+          }
+        }
+
+        if (eraseStrength >= 250) {
+          rgba[i] = 0;
+          rgba[i + 1] = 0;
+          rgba[i + 2] = 0;
+          rgba[i + 3] = 0;
+        } else if (eraseStrength > 0) {
+          const remainFactor = (255 - eraseStrength) / 255;
+          rgba[i + 3] = Math.round(rgba[i + 3] * remainFactor);
+        }
+      }
+    }
+  }
+}
+

@@ -1,0 +1,26 @@
+# Development and test files
+test*.js
+test*.ts
+test*.html
+fix*.js
+fix*.ts
+fix*.txt
+patch*
+temp_*.txt
+lint_output.txt
+*.log
+
+# Text phrases dumps
+arabic_phrases.txt
+svga_arabic_strings.txt
+svga_missing_strings.txt
+unique_arabic_words.txt
+all_phrases_to_translate.json
+
+# Local storage and caches
+uploads/
+.vercel
+node_modules
+dist
+build
+.git

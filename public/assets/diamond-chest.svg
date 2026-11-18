@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="diaBg" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#d8b76e" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#0b101d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="diaFacet1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e0f2fe"/>
+      <stop offset="50%" stop-color="#7dd3fc"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="diaFacet2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="60%" stop-color="#bae6fd"/>
+      <stop offset="100%" stop-color="#0369a1"/>
+    </linearGradient>
+    <linearGradient id="goldMount" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b4832c"/>
+      <stop offset="50%" stop-color="#fce39c"/>
+      <stop offset="100%" stop-color="#96691e"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#diaBg)"/>
+  <g transform="translate(200, 150)">
+    <animateTransform attributeName="transform" type="translate" values="200,154; 200,142; 200,154" dur="3.6s" repeatCount="indefinite"/>
+    <!-- Rotating Geometric Halo -->
+    <polygon points="0,-96 68,-68 96,0 68,68 0,96 -68,68 -96,0 -68,-68" fill="none" stroke="#7dd3fc" stroke-width="1" opacity="0.3">
+      <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="30s" repeatCount="indefinite"/>
+    </polygon>
+    <!-- Golden Pedestal Ring -->
+    <ellipse cx="0" cy="64" rx="64" ry="14" fill="url(#goldMount)" stroke="#fff2c2" stroke-width="1"/>
+    <!-- Diamond Crown & Pavilion -->
+    <polygon points="-50,-42 50,-42 78,-12 -78,-12" fill="url(#diaFacet1)" stroke="#e0f2fe" stroke-width="1.2"/>
+    <polygon points="-78,-12 78,-12 0,62" fill="url(#diaFacet2)" stroke="#e0f2fe" stroke-width="1.2"/>
+    <polygon points="-32,-12 32,-12 0,62" fill="#e0f2fe" opacity="0.55"/>
+    <polygon points="-50,-42 0,-42 -32,-12 -78,-12" fill="#ffffff" opacity="0.45"/>
+    <polygon points="50,-42 0,-42 32,-12 78,-12" fill="#38bdf8" opacity="0.35"/>
+  </g>
+</svg>

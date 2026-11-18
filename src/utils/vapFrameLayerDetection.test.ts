@@ -4,6 +4,8 @@ import {
   detectVapEmbeddedFramesFromRgba,
   extractEmbeddedFrameRgbaCrop,
   applyEmbeddedFrameOverridesToRgba,
+  detectDummyMasksFromRgba,
+  eraseDummyMaskPixelsFromRgba,
 } from './vapFrameLayerDetection';
 import { VapDynamicMaskSlot } from './vapYyevaDetection';
 
@@ -32,6 +34,32 @@ function paintRect(
       rgba[i + 1] = g;
       rgba[i + 2] = b;
       rgba[i + 3] = a;
+    }
+  }
+}
+
+function paintCircle(
+  rgba: Uint8ClampedArray,
+  cw: number,
+  ch: number,
+  cx: number,
+  cy: number,
+  radius: number,
+  r: number,
+  g: number,
+  b: number,
+  a: number
+): void {
+  const r2 = radius * radius;
+  for (let y = Math.max(0, Math.floor(cy - radius)); y <= Math.min(ch - 1, Math.ceil(cy + radius)); y++) {
+    for (let x = Math.max(0, Math.floor(cx - radius)); x <= Math.min(cw - 1, Math.ceil(cx + radius)); x++) {
+      if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+        const i = (y * cw + x) * 4;
+        rgba[i] = r;
+        rgba[i + 1] = g;
+        rgba[i + 2] = b;
+        rgba[i + 3] = a;
+      }
     }
   }
 }
@@ -116,6 +144,74 @@ test('detectVapEmbeddedFramesFromRgba detects Winged Avatar Frame, Name Banner F
   assert.equal(mainScene!.frame[2], 300);
 });
 
+test('detectVapEmbeddedFramesFromRgba never slices a wide curved gift artwork into bogus banner strips', () => {
+  const cw = 300;
+  const ch = 640;
+  const rgba = new Uint8ClampedArray(cw * ch * 4);
+
+  // Curved top glow strip touching the full-bleed car gift artwork with a 3px dip
+  paintRect(rgba, cw, ch, 20, 95, 280, 14, 255, 210, 120, 200);
+  paintRect(rgba, cw, ch, 120, 109, 10, 2, 255, 200, 100, 120);
+  paintRect(rgba, cw, ch, 0, 111, 300, 500, 220, 170, 90, 255);
+
+  const detected = detectVapEmbeddedFramesFromRgba(rgba, cw, ch, []);
+  const banners = detected.filter((d) => d.kind === 'banner_frame');
+  const main = detected.find((d) => d.kind === 'main_scene');
+
+  assert.equal(banners.length, 0, 'Must not fabricate a fake banner_frame strip from the gift top');
+  assert.ok(main, 'Should preserve the main_scene');
+  assert.ok(main!.frame[1] <= 98, 'main_scene should include the curved top glow edge intact');
+});
+
+test('detectDummyMasksFromRgba finds chroma dummy & enclosed cutout hole while ignoring textured gift pixels, and eraseDummyMaskPixelsFromRgba removes dummy cleanly', () => {
+  const cw = 200;
+  const ch = 200;
+  const rgba = new Uint8ClampedArray(cw * ch * 4);
+
+  // Textured gradient gold frame enclosing a circular hole on left
+  for (let y = 10; y < 110; y++) {
+    for (let x = 10; x < 110; x++) {
+      const dist = Math.hypot(x - 60, y - 60);
+      if (dist >= 28 && dist <= 46) {
+        const i = (y * cw + x) * 4;
+        rgba[i] = Math.min(255, 180 + ((x * 3 + y * 5) % 60));
+        rgba[i + 1] = Math.min(255, 130 + ((x * 7 + y * 2) % 70));
+        rgba[i + 2] = 40;
+        rgba[i + 3] = 255;
+      }
+    }
+  }
+
+  // Flat magenta dummy circle + 1px anti-aliased fringe halo inside a gold ring on right
+  paintCircle(rgba, cw, ch, 150, 60, 32, 220, 170, 50, 255);
+  paintCircle(rgba, cw, ch, 150, 60, 25, 230, 70, 170, 255); // fringe ring
+  paintCircle(rgba, cw, ch, 150, 60, 23, 236, 72, 153, 255); // solid pink core
+
+  const dummies = detectDummyMasksFromRgba(rgba, cw, ch, []);
+  const holeDummy = dummies.find((d) => d.kind === 'hole');
+  const chromaDummy = dummies.find((d) => d.kind === 'chroma_dummy');
+
+  assert.ok(holeDummy, 'Should detect enclosed transparent cutout hole inside gift ring');
+  assert.ok(chromaDummy, 'Should detect flat pink chroma placeholder mask');
+
+  // Erase detected chroma dummy and verify pink core + fringe gone while outer gold ring stays opaque
+  eraseDummyMaskPixelsFromRgba(rgba, cw, ch, [
+    {
+      id: chromaDummy!.id,
+      kind: chromaDummy!.kind,
+      frame: chromaDummy!.frame,
+      fillRgb: chromaDummy!.fillRgb,
+      silhouetteRgba: chromaDummy!.silhouetteRgba,
+    },
+  ]);
+
+  const centerIdx = (60 * cw + 150) * 4;
+  assert.equal(rgba[centerIdx + 3], 0, 'Dummy core pixel should be cleanly erased');
+
+  const goldRingIdx = (60 * cw + 179) * 4;
+  assert.equal(rgba[goldRingIdx + 3], 255, 'Outer gold frame pixel must remain intact');
+});
+
 test('extractEmbeddedFrameRgbaCrop extracts accurate transparent sub-crop', () => {
   const cw = 100;
   const ch = 100;
@@ -182,3 +278,4 @@ test('applyEmbeddedFrameOverridesToRgba supports hiding and moving detected fram
   assert.equal(rgba[newBannerIdx + 1], 200);
   assert.equal(rgba[newBannerIdx + 3], 255);
 });
+

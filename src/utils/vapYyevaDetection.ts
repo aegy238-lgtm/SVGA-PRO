@@ -12,6 +12,7 @@ export interface VapDynamicMaskSlot {
   z: number;
   defaultFrame: [number, number, number, number];
   defaultMFrame: [number, number, number, number];
+  hasExplicitMFrame?: boolean;
   mt: number;
   assetKey: string;
   labelAr: string;
@@ -23,7 +24,33 @@ export interface VapFrameObjPlacement {
   z: number;
   frame: [number, number, number, number];
   mFrame: [number, number, number, number];
+  hasExplicitMFrame?: boolean;
   mt: number;
+}
+
+export function isValidExternalMFrame(
+  mFrame: number[] | null | undefined,
+  rgbFrame?: number[] | null,
+  videoW?: number,
+  videoH?: number
+): boolean {
+  if (!Array.isArray(mFrame) || mFrame.length < 4) return false;
+  const [mx, my, mw, mh] = mFrame.map(Number);
+  if (![mx, my, mw, mh].every(Number.isFinite) || mw <= 1 || mh <= 1 || mx < 0 || my < 0) {
+    return false;
+  }
+  if (videoW && videoW > 0 && videoH && videoH > 0) {
+    if (mx >= videoW || my >= videoH) return false;
+  }
+  if (Array.isArray(rgbFrame) && rgbFrame.length >= 4 && rgbFrame[2] > 0 && rgbFrame[3] > 0) {
+    const [rx, ry, rw, rh] = rgbFrame.map(Number);
+    const mcx = mx + mw / 2;
+    const mcy = my + mh / 2;
+    if (mcx >= rx && mcx < rx + rw && mcy >= ry && mcy < ry + rh) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export interface VapYyevaMeta {
@@ -148,7 +175,6 @@ export function extractDynamicMaskData(
 
   // 1. Parse per-frame placements in VAP (`data.frame`)
   if (Array.isArray(data.frame)) {
-    // Sort frame entries by frame index `i` ascending so firstSeenBySrcId is deterministic
     const sortedEntries = [...data.frame].sort((a, b) => Number(a?.i ?? 0) - Number(b?.i ?? 0));
     for (const entry of sortedEntries) {
       if (!entry || typeof entry !== 'object') continue;
@@ -161,12 +187,14 @@ export function extractDynamicMaskData(
         const srcId = String(o.srcId);
         const fRect = normalizeRect(o.frame);
         if (!fRect) continue;
-        const mRect = normalizeRect(o.mFrame) || [0, 0, fRect[2], fRect[3]];
+        const explicitM = normalizeRect(o.mFrame);
+        const mRect = explicitM || [0, 0, 0, 0];
         const placement: VapFrameObjPlacement = {
           srcId,
           z: Number.isFinite(Number(o.z)) ? Number(o.z) : 0,
           frame: [fRect[0], fRect[1], fRect[2], fRect[3]],
           mFrame: [mRect[0], mRect[1], mRect[2], mRect[3]],
+          hasExplicitMFrame: Boolean(explicitM),
           mt: Number.isFinite(Number(o.mt)) ? Number(o.mt) : 0,
         };
         placements.push(placement);
@@ -174,10 +202,8 @@ export function extractDynamicMaskData(
           firstSeenBySrcId[srcId] = placement;
         }
       }
-      if (placements.length > 0) {
-        placements.sort((a, b) => a.z - b.z);
-        dynamicFrames[frameIdx] = placements;
-      }
+      placements.sort((a, b) => a.z - b.z);
+      dynamicFrames[frameIdx] = placements;
     }
   }
 
@@ -200,12 +226,14 @@ export function extractDynamicMaskData(
         const srcId = String(rawId);
         const fRect = normalizeRect(o.renderFrame ?? o.frame);
         if (!fRect) continue;
-        const mRect = normalizeRect(o.outputFrame ?? o.mFrame) || [0, 0, fRect[2], fRect[3]];
+        const explicitM = normalizeRect(o.outputFrame ?? o.mFrame);
+        const mRect = explicitM || [0, 0, 0, 0];
         const placement: VapFrameObjPlacement = {
           srcId,
           z: Number.isFinite(Number(o.z)) ? Number(o.z) : idx,
           frame: [fRect[0], fRect[1], fRect[2], fRect[3]],
           mFrame: [mRect[0], mRect[1], mRect[2], mRect[3]],
+          hasExplicitMFrame: Boolean(explicitM),
           mt: Number.isFinite(Number(o.mt)) ? Number(o.mt) : 0,
         };
         placements.push(placement);
@@ -213,10 +241,8 @@ export function extractDynamicMaskData(
           firstSeenBySrcId[srcId] = placement;
         }
       }
-      if (placements.length > 0) {
-        placements.sort((a, b) => a.z - b.z);
-        dynamicFrames[frameIdx] = placements;
-      }
+      placements.sort((a, b) => a.z - b.z);
+      dynamicFrames[frameIdx] = placements;
     }
   }
 
@@ -255,9 +281,9 @@ export function extractDynamicMaskData(
     const defaultFrame: [number, number, number, number] = firstPlacement
       ? firstPlacement.frame
       : [0, 0, w, h];
-    const defaultMFrame: [number, number, number, number] = firstPlacement
-      ? firstPlacement.mFrame
-      : [0, 0, w, h];
+    const hasExplicitMFrame = Boolean(firstPlacement?.hasExplicitMFrame);
+    const defaultMFrame: [number, number, number, number] =
+      firstPlacement && hasExplicitMFrame ? firstPlacement.mFrame : [0, 0, 0, 0];
     const safeTagSlug = srcTag.replace(/[^a-zA-Z0-9_\u0600-\u06FF-]/g, '_') || srcId;
     const assetKey = `mask_${srcId}_${safeTagSlug}`;
 
@@ -275,6 +301,7 @@ export function extractDynamicMaskData(
       z: firstPlacement ? firstPlacement.z : idx,
       defaultFrame,
       defaultMFrame,
+      hasExplicitMFrame,
       mt: firstPlacement ? firstPlacement.mt : 0,
       assetKey,
       labelAr: isTxt ? `قناع الاسم (${srcTag})` : `قناع الصورة (${srcTag})`,
@@ -301,6 +328,7 @@ export function extractDynamicMaskData(
       z: firstPlacement.z,
       defaultFrame: firstPlacement.frame,
       defaultMFrame: firstPlacement.mFrame,
+      hasExplicitMFrame: firstPlacement.hasExplicitMFrame,
       mt: firstPlacement.mt,
       assetKey,
       labelAr: `قناع الطبقة (${srcTag})`,
@@ -321,14 +349,24 @@ export function resolveDynamicFramePlacements(
 ): VapFrameObjPlacement[] {
   if (!meta || !meta.dynamicSlots || meta.dynamicSlots.length === 0) return [];
   const framesMap = meta.dynamicFrames;
-  if (framesMap && Object.keys(framesMap).length > 0) {
-    const safeIdx = Math.max(0, Math.floor(frameIndex));
-    if (framesMap[safeIdx]) return framesMap[safeIdx];
-    const total = meta.frames || 0;
-    if (total > 0 && safeIdx >= total && framesMap[total - 1]) {
-      return framesMap[total - 1];
+  if (framesMap) {
+    const keys = Object.keys(framesMap)
+      .map(Number)
+      .filter((k) => Number.isFinite(k))
+      .sort((a, b) => a - b);
+    if (keys.length > 0) {
+      const safeIdx = Math.max(0, Math.floor(frameIndex));
+      if (Object.prototype.hasOwnProperty.call(framesMap, safeIdx)) {
+        return framesMap[safeIdx] || [];
+      }
+      // Sparse keyframe fallback: hold nearest preceding listed keyframe, or first listed keyframe if before start
+      let bestKey = keys[0];
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i] <= safeIdx) bestKey = keys[i];
+        else break;
+      }
+      return framesMap[bestKey] || [];
     }
-    return [];
   }
   // Fallback when slots are defined without per-frame table
   return meta.dynamicSlots.map((slot) => ({
@@ -336,6 +374,7 @@ export function resolveDynamicFramePlacements(
     z: slot.z,
     frame: slot.defaultFrame,
     mFrame: slot.defaultMFrame,
+    hasExplicitMFrame: slot.hasExplicitMFrame,
     mt: slot.mt,
   }));
 }

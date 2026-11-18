@@ -910,12 +910,13 @@ export function retargetCopiedFramesDimensions(
 }
 
 /**
- * Clones (and optionally mirrors horizontally) a `LayerPropertyKeyframes` object.
+ * Clones (and optionally mirrors horizontally or vertically) a `LayerPropertyKeyframes` object.
  */
 export function cloneLayerPropertyKeyframes(
   pkf: LayerPropertyKeyframes | undefined,
   mirrorMode: 'none' | 'canvas' | 'local' = 'none',
-  hasCopiedFrames = false
+  hasCopiedFrames = false,
+  axis: 'horizontal' | 'vertical' = 'horizontal'
 ): LayerPropertyKeyframes | undefined {
   if (!pkf) return undefined;
   const next: LayerPropertyKeyframes = {};
@@ -923,8 +924,18 @@ export function cloneLayerPropertyKeyframes(
     next.position = {};
     for (const [k, v] of Object.entries(pkf.position)) {
       next.position[Number(k)] = {
-        x: mirrorMode === 'canvas' ? (Math.abs(v.x) < 1e-6 ? 0 : -v.x) : v.x,
-        y: v.y,
+        x:
+          mirrorMode === 'canvas' && axis === 'horizontal'
+            ? Math.abs(v.x) < 1e-6
+              ? 0
+              : -v.x
+            : v.x,
+        y:
+          mirrorMode === 'canvas' && axis === 'vertical'
+            ? Math.abs(v.y) < 1e-6
+              ? 0
+              : -v.y
+            : v.y,
       };
     }
   }
@@ -932,8 +943,8 @@ export function cloneLayerPropertyKeyframes(
     next.scale = {};
     for (const [k, v] of Object.entries(pkf.scale)) {
       next.scale[Number(k)] = {
-        sx: mirrorMode !== 'none' && !hasCopiedFrames ? -v.sx : v.sx,
-        sy: v.sy,
+        sx: mirrorMode !== 'none' && !hasCopiedFrames && axis === 'horizontal' ? -v.sx : v.sx,
+        sy: mirrorMode !== 'none' && !hasCopiedFrames && axis === 'vertical' ? -v.sy : v.sy,
       };
     }
   }
@@ -1000,6 +1011,53 @@ export function mirrorSvgaFramesHorizontally(
 }
 
 /**
+ * Mirrors an array of SVGA frames vertically:
+ * - mode === 'canvas': reflects top-to-bottom across the full canvas height (`Y' = canvasH - Y`)
+ * - mode === 'local': flips vertically in-place around each frame's own center (`Y' = 2*cy - Y`)
+ */
+export function mirrorSvgaFramesVertically(
+  frames: SvgaFrame[],
+  canvasH: number,
+  defaultW: number,
+  defaultH: number,
+  mode: 'canvas' | 'local' = 'canvas'
+): SvgaFrame[] {
+  const H = Math.max(1, canvasH || 300);
+  const safeW = Math.max(1, defaultW || H);
+  const safeH = Math.max(1, defaultH || H);
+
+  return frames.map((f) => {
+    const cloned = cloneSvgaFrame(f);
+    const [a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0] = cloned.t || [1, 0, 0, 1, 0, 0];
+    if (mode === 'canvas') {
+      cloned.t = [
+        Number(a.toFixed(6)),
+        Number((-b).toFixed(6)),
+        Number(c.toFixed(6)),
+        Number((-d).toFixed(6)),
+        Number(tx.toFixed(4)),
+        Number((H - ty).toFixed(4)),
+      ];
+    } else {
+      const fw = cloned.w > 0 ? cloned.w : safeW;
+      const fh = cloned.h > 0 ? cloned.h : safeH;
+      const lx = (cloned.x || 0) + fw / 2;
+      const ly = (cloned.y || 0) + fh / 2;
+      const cy = b * lx + d * ly + ty;
+      cloned.t = [
+        Number(a.toFixed(6)),
+        Number((-b).toFixed(6)),
+        Number(c.toFixed(6)),
+        Number((-d).toFixed(6)),
+        Number(tx.toFixed(4)),
+        Number((2 * cy - ty).toFixed(4)),
+      ];
+    }
+    return cloned;
+  });
+}
+
+/**
  * Mirrors a LayerTransform horizontally (either across canvas center X=0 or in-place).
  */
 export function mirrorLayerTransformHorizontally(
@@ -1010,6 +1068,21 @@ export function mirrorLayerTransformHorizontally(
     ...lt,
     x: mode === 'canvas' ? (Math.abs(lt.x) < 1e-6 ? 0 : Number((-lt.x).toFixed(2))) : lt.x,
     sx: Number((-lt.sx).toFixed(2)),
+    rotation: Math.abs(lt.rotation) < 1e-6 ? 0 : Number((-lt.rotation).toFixed(2)),
+  };
+}
+
+/**
+ * Mirrors a LayerTransform vertically (either across canvas center Y=0 or in-place).
+ */
+export function mirrorLayerTransformVertically(
+  lt: LayerTransform,
+  mode: 'canvas' | 'local' = 'canvas'
+): LayerTransform {
+  return {
+    ...lt,
+    y: mode === 'canvas' ? (Math.abs(lt.y) < 1e-6 ? 0 : Number((-lt.y).toFixed(2))) : lt.y,
+    sy: Number((-lt.sy).toFixed(2)),
     rotation: Math.abs(lt.rotation) < 1e-6 ? 0 : Number((-lt.rotation).toFixed(2)),
   };
 }
@@ -1161,9 +1234,7 @@ export function serializeDecomposedSvga(
     if (mg.spriteIds) {
       for (const spId of mg.spriteIds) {
         spriteToGroupOrderMap.set(spId, gIdx);
-        if (!mg.isUngrouped) {
-          spriteToGroupMap.set(spId, mg);
-        }
+        spriteToGroupMap.set(spId, mg);
       }
     }
   });

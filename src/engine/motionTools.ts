@@ -39,9 +39,11 @@ import {
   applyLuminanceMaskToRgba,
   extractMaskPreviewRgba,
   computeSlotFitDrawRect,
+  isValidExternalMFrame,
 } from '../utils/vapYyevaDetection';
 import {
   CustomEditableVapSlot,
+  MaskDepthBand,
   VapMaskShapePreset,
   planVapMaskAtlasLayout,
   buildVapDynamicMetadataJson,
@@ -51,18 +53,31 @@ import {
   makeCustomVapSlot,
   evenCeil,
   sortSlotsByZ,
+  resolveMaskDepthBand,
+  setSlotDepthBand,
   reorderMaskSlotsZ,
+  reorderMaskSlotsWithBands,
   hitTestMaskSlotsOnStage,
   computeDraggedOrResizedMaskFrame,
   composerLayerBoxToMaskFrame,
   parseHexColorRgb,
+  attenuateMaskRgbaByForegroundAlpha,
+  buildSvgClipPathForMaskPreset,
+  SessionMaskVaultState,
+  SessionEditedSlotSnapshot,
+  createEmptySessionMaskVault,
+  reconcileSessionMasksOntoSource,
 } from '../utils/vapDynamicMaskPacking';
 import {
   detectVapEmbeddedFramesFromRgba,
   extractEmbeddedFrameRgbaCrop,
   applyEmbeddedFrameOverridesToRgba,
+  detectDummyMasksFromRgba,
+  eraseDummyMaskPixelsFromRgba,
   VapDetectedEmbeddedFrame,
   VapEmbeddedFrameOverride,
+  VapDetectedDummyMask,
+  VapDummyErasureRegion,
 } from '../utils/vapFrameLayerDetection';
 import { removeImageBackgroundData } from '../utils/batchImageOps';
 import { computeAffineMatrix2D, AppliedWatermarkLayer } from '../utils/watermark';
@@ -110,13 +125,17 @@ import {
 } from '../utils/pagEngine';
 import {
   ProjectComposerState,
+  ProjectLayerTransform,
   SecondaryOverlayLayer,
   INITIAL_PROJECT_COMPOSER_STATE,
   DEFAULT_LAYER_TRANSFORM,
   hasActiveComposerModifications,
+  hasAnimatedMotion,
   isDefaultLayerTransform,
   nudgeLayerTransform,
   computeLayerDrawGeometry,
+  interpolateTransformAtFrame,
+  resolveLinkedTransformAtFrame,
   buildPrimaryPreviewCssTransform,
   clampTransformValues,
   composeDecomposedSvgaMovie,
@@ -483,34 +502,47 @@ export function initMotionToolsFixed() {
           el.id === 'stageWatermarkOverlay' ||
           el.id === 'projectComposerUnderlayCanvas' ||
           el.id === 'projectComposerOverlayCanvas' ||
-          el.id === 'vapDynamicMaskOverlay'
+          el.id === 'vapDynamicMaskBelowAll' ||
+          el.id === 'vapDynamicMaskUnderlay' ||
+          el.id === 'vapDynamicMaskOverlay' ||
+          el.id === 'vapDynamicMaskAboveAll' ||
+          el.id === 'vapDynamicMaskGuides'
         ) {
           el.style.position = 'absolute';
+          el.style.inset = '0';
           el.style.left = '0px';
           el.style.top = '0px';
-          el.style.width = `${displayW}px`;
-          el.style.height = `${displayH}px`;
+          el.style.width = '100%';
+          el.style.height = '100%';
+          el.style.transform = 'none';
           el.style.pointerEvents = 'none';
-          if (el.id === 'vapDynamicMaskOverlay') el.style.zIndex = '6';
+          if (el.id === 'vapDynamicMaskBelowAll') el.style.zIndex = '1';
+          if (el.id === 'projectComposerUnderlayCanvas') el.style.zIndex = '2';
+          if (el.id === 'vapDynamicMaskUnderlay') el.style.zIndex = '3';
+          if (el.id === 'vapDynamicMaskOverlay') el.style.zIndex = '5';
+          if (el.id === 'projectComposerOverlayCanvas') el.style.zIndex = '6';
+          if (el.id === 'vapDynamicMaskAboveAll') el.style.zIndex = '7';
+          if (el.id === 'stageWatermarkOverlay') el.style.zIndex = '8';
+          if (el.id === 'vapDynamicMaskGuides') el.style.zIndex = '9';
           return;
         }
         // Skip hidden offscreen video (width: 2px; opacity: 0.001)
         if (el.tagName === 'VIDEO' && el.style.opacity === '0.001') return;
 
-        el.style.width = `${displayW}px`;
-        el.style.height = `${displayH}px`;
+        el.style.width = '100%';
+        el.style.height = '100%';
         el.style.maxWidth = 'none';
         el.style.maxHeight = 'none';
         el.style.position = 'relative';
-        el.style.zIndex = '2';
+        el.style.zIndex = '4';
         if (el.tagName === 'VIDEO' || el.tagName === 'IMG' || el.tagName === 'CANVAS') {
           el.style.display = 'block';
           el.style.objectFit = 'fill';
         }
         const innerCanvas = el.tagName === 'CANVAS' ? null : (el.querySelector?.('canvas') as HTMLCanvasElement | null);
         if (innerCanvas) {
-          innerCanvas.style.width = `${displayW}px`;
-          innerCanvas.style.height = `${displayH}px`;
+          innerCanvas.style.width = '100%';
+          innerCanvas.style.height = '100%';
           innerCanvas.style.maxWidth = 'none';
           innerCanvas.style.maxHeight = 'none';
           innerCanvas.style.display = 'block';
@@ -822,6 +854,10 @@ export function initMotionToolsFixed() {
     }
     S = null;
     anim = null;
+    (window as any).__svgaCurrentFrame = undefined;
+    (window as any).__currentAnimationStepIdx = undefined;
+    (window as any).__composerStaticPausedFrame = 0;
+    (window as any).__composerAnimStartMs = performance.now();
     show('convert');
     $('#view').textContent = 'Loading…';
     const ext = f.name.split('.').pop().toLowerCase(),
@@ -858,6 +894,7 @@ export function initMotionToolsFixed() {
           fps: vi.FPS,
           n: vi.frames,
           set: async (i) => {
+            (window as any).__svgaCurrentFrame = i;
             player.stepToFrame(i, false);
             try {
               player._renderer?.drawFrame?.(i);
@@ -905,6 +942,7 @@ export function initMotionToolsFixed() {
           fps: data.fr,
           n: Math.max(1, Math.round(data.op - data.ip)),
           set: async (i) => {
+            (window as any).__currentAnimationStepIdx = i;
             anim.goToAndStop(i, true);
             await sleep(0);
           },
@@ -1122,6 +1160,7 @@ export function initMotionToolsFixed() {
         let timerId: any = null;
 
         const paintFrame = (idx: number) => {
+          (window as any).__currentAnimationStepIdx = idx;
           const bm = frameBitmaps[idx] || frameBitmaps[0];
           if (!bm) return;
           cx.clearRect(0, 0, cv.width, cv.height);
@@ -1231,6 +1270,8 @@ export function initMotionToolsFixed() {
     try {
       for (let k = 0; k < nk; k++) {
         const t = performance.now();
+        (window as any).__activeRenderFrame = k;
+        (window as any).__activeRenderTotalFrames = nk;
         await S.set(Math.min(S.n - 1, Math.round((k * S.fps) / fps)));
         if (typeof (window as any).__seekComposerOverlays === 'function') {
           await (window as any).__seekComposerOverlays((k + 0.5) / Math.max(1, fps));
@@ -1244,6 +1285,8 @@ export function initMotionToolsFixed() {
         if (stEl) stEl.textContent = `Rendering frames… ${pct}% (${k + 1}/${nk})`;
       }
     } finally {
+      delete (window as any).__activeRenderFrame;
+      delete (window as any).__activeRenderTotalFrames;
       (window as any).__vapExportingFrames = prevExp;
     }
   }
@@ -1732,8 +1775,42 @@ export function initMotionToolsFixed() {
     if (im) window.SV.bm[k] = await createImageBitmap(im);
   };
   $('#msave').onclick = () => {
-    const url = $('#mc').toDataURL('image/png'),
-      k = M.k;
+    const k = M.k;
+    if (M.isVapMask && M.vapSlot && (M.del || !M.show)) {
+      const slot = M.vapSlot;
+      S._vapSlotReplacements = S._vapSlotReplacements || {};
+      if (M.del) {
+        delete S._vapSlotReplacements[slot.srcId];
+        if (window.EDIT) delete window.EDIT[k];
+        const origUrl = S._vapOrigSilhouettes?.[slot.srcId] || '';
+        if (origUrl) {
+          A[k] = origUrl;
+          const thImg = document.querySelector('.th[data-k="' + k + '"] img') as HTMLImageElement | null;
+          if (thImg) thImg.src = origUrl;
+        }
+        toast('تمت إزالة الصورة المرفوعة واستعادة القناع الأصلي');
+      } else {
+        S._vapSlotReplacements[slot.srcId] = {
+          ...(S._vapSlotReplacements[slot.srcId] || {}),
+          hidden: true,
+        };
+        toast('تم إخفاء محتوى القناع مؤقتاً');
+      }
+      S._hasMaskEdits = true;
+      if (S.vid && S._alphaCanvas && S.meta) {
+        const ax = S._alphaCanvas.getContext('2d');
+        if (ax) {
+          ax.clearRect(0, 0, S._alphaCanvas.width, S._alphaCanvas.height);
+          vapDraw(ax, S._alphaCanvas.width, S._alphaCanvas.height, S.vid, S.meta);
+        }
+      } else {
+        (window as any).__syncNonVapMaskStageOverlay?.(S);
+      }
+      (window as any).__refreshVapDynamicMasksPanel?.(S);
+      mclose();
+      return;
+    }
+    const url = $('#mc').toDataURL('image/png');
     A[k] = url;
     const t = document.querySelector('.th[data-k="' + k + '"] img');
     if (t) t.src = url;
@@ -1985,6 +2062,25 @@ export function initMotionToolsFixed() {
           A[key] = asset.p;
         }
       });
+    }
+    const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
+    for (const wm of wmLayers) {
+      if (wm && wm.imageKey && wm.dataUrl) {
+        A[wm.imageKey] = (window.EDIT && window.EDIT[wm.imageKey]) || wm.dataUrl;
+      }
+    }
+    if (S && S._vapSlotReplacements) {
+      try {
+        const effSlots = (window as any).__getEffectiveVapSlots?.(S) || [];
+        for (const sl of effSlots) {
+          const rep = S._vapSlotReplacements[sl.srcId];
+          if (rep && rep.active && rep.dataUrl) {
+            A[sl.assetKey] = rep.dataUrl;
+          } else if (S.meta && S._vapOrigSilhouettes?.[sl.srcId]) {
+            A[sl.assetKey] = S._vapOrigSilhouettes[sl.srcId];
+          }
+        }
+      } catch (_) {}
     }
     const qVal = ($('#q') as HTMLInputElement)?.value || '';
     renderAssetCards(qVal);
@@ -2286,7 +2382,43 @@ export function initMotionToolsFixed() {
     }
 
     syncStageWatermarks();
+    try {
+      window.dispatchEvent(new CustomEvent('watermarklayerschange'));
+    } catch (_) {}
     toast(`Watermark "${key}" added as top layer`);
+  };
+
+  (window as any).__getWatermarkLayersSnapshot = () => {
+    const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+    return layers.map((ly) => ({
+      imageKey: ly.imageKey,
+      text: ly.text,
+      dataUrl: ly.dataUrl,
+      width: ly.width,
+      height: ly.height,
+      x: ly.x,
+      y: ly.y,
+      scale: ly.scale,
+      rotation: ly.rotation,
+      opacity: ly.opacity,
+    }));
+  };
+
+  (window as any).__removeWatermarkLayerByKey = (imageKey: string) => {
+    const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+    const target = layers.find((ly) => ly.imageKey === imageKey);
+    if (!target) return;
+    delete A[target.imageKey];
+    if (window.EDIT) delete window.EDIT[target.imageKey];
+    if (window.SV?.bm) delete window.SV.bm[target.imageKey];
+    (window as any).__WATERMARK_LAYERS = layers.filter((ly) => ly.imageKey !== imageKey);
+    syncStageWatermarks();
+    const qVal = ($('#q') as HTMLInputElement)?.value || '';
+    renderAssetCards(qVal);
+    try {
+      window.dispatchEvent(new CustomEvent('watermarklayerschange'));
+    } catch (_) {}
+    toast('🗑️ تمت إزالة العلامة المائية');
   };
 
   (window as any).__clearWatermarkLayers = () => {
@@ -2300,6 +2432,9 @@ export function initMotionToolsFixed() {
     syncStageWatermarks();
     const qVal = ($('#q') as HTMLInputElement)?.value || '';
     renderAssetCards(qVal);
+    try {
+      window.dispatchEvent(new CustomEvent('watermarklayerschange'));
+    } catch (_) {}
     toast('Watermark removed');
   };
 
@@ -2474,7 +2609,6 @@ export function initMotionToolsFixed() {
     anim = null;
     window.VI = null;
     (window as any).__lottieData = null;
-    (window as any).__WATERMARK_LAYERS = [];
     window.EDIT = {};
     const vapMasksEl = document.getElementById('vapDynamicMasksPanel');
     if (vapMasksEl) {
@@ -2501,6 +2635,20 @@ export function initMotionToolsFixed() {
       previewZoom = getAutoDefaultZoom(S.w, S.h);
     }
     syncPreviewSize(S.w, S.h);
+    if (typeof (window as any).__rehydrateSessionVisualsOnSource === 'function') {
+      queueMicrotask(() => {
+        if (S) {
+          void (window as any).__rehydrateSessionVisualsOnSource(S);
+        }
+      });
+    } else if (S && !S.meta) {
+      queueMicrotask(() => {
+        if (S && !S.meta) {
+          (window as any).__refreshVapDynamicMasksPanel?.(S);
+          (window as any).__emitVapMasksChange?.(S);
+        }
+      });
+    }
   }
   function lot(data, f, v, fmt) {
     (window as any).__lottieData = data;
@@ -3062,6 +3210,7 @@ export function initMotionToolsFixed() {
         n: m.n,
         set: async (k) => {
           ix = k;
+          (window as any).__svgaCurrentFrame = k;
         },
         draw: (c, W, H) => svPaint(c, W, H, ix),
         stop: () => (run = false),
@@ -3102,6 +3251,8 @@ export function initMotionToolsFixed() {
   let readMeta = baseReadMeta;
   let _vapScratchCanvas: HTMLCanvasElement | null = null;
   let _vapScratchCtx: CanvasRenderingContext2D | null = null;
+  let _vapCompCanvas: HTMLCanvasElement | null = null;
+  let _vapCompCtx: CanvasRenderingContext2D | null = null;
   let _vapSlotLayerCanvas: HTMLCanvasElement | null = null;
   let _vapSlotLayerCtx: CanvasRenderingContext2D | null = null;
   let _vapSlotMaskCanvas: HTMLCanvasElement | null = null;
@@ -3114,8 +3265,14 @@ export function initMotionToolsFixed() {
       _vapScratchCanvas = mk(cw, ch);
       _vapScratchCtx = _vapScratchCanvas.getContext('2d', { willReadFrequently: true });
     }
+    if (!_vapCompCanvas || _vapCompCanvas.width !== cw || _vapCompCanvas.height !== ch) {
+      _vapCompCanvas = mk(cw, ch);
+      _vapCompCtx = _vapCompCanvas.getContext('2d', { willReadFrequently: true });
+    }
     const t = _vapScratchCanvas,
-      x = _vapScratchCtx!;
+      x = _vapScratchCtx!,
+      compCanvas = _vapCompCanvas!,
+      compCtx = _vapCompCtx!;
     x.clearRect(0, 0, cw, ch);
     x.drawImage(m, cx, cy, cw, ch, 0, 0, cw, ch);
     const C = x.getImageData(0, 0, cw, ch);
@@ -3146,10 +3303,16 @@ export function initMotionToolsFixed() {
         : null;
     const slots = effRes ? effRes.slots : M.dynamicSlots;
 
-    // Auto-detect embedded video frames (Avatar Frame, Name Banner Frame, Main Scene) once an active frame is rendered
+    // Cleanly erase any dummy/placeholder masks converted or deleted by user before rendering gift
+    if (isMainSource && Array.isArray(S._dummyMaskErasures) && S._dummyMaskErasures.length > 0) {
+      eraseDummyMaskPixelsFromRgba(d, cw, ch, S._dummyMaskErasures);
+    }
+
+    // Auto-detect embedded video frames & dummy placeholder masks once an active frame is rendered
     if (
       isMainSource &&
       !isExporting &&
+      !S._vapInitialRgbaScanDone &&
       (!Array.isArray(S._detectedEmbeddedFrames) || S._detectedEmbeddedFrames.length === 0) &&
       typeof (window as any).__ingestDetectedVapEmbeddedFramesFromRgba === 'function'
     ) {
@@ -3161,6 +3324,7 @@ export function initMotionToolsFixed() {
         }
       }
       if (sampledVisible >= Math.max(24, (cw * ch * 0.015) / 4)) {
+        S._vapInitialRgbaScanDone = true;
         (window as any).__ingestDetectedVapEmbeddedFramesFromRgba(S, d, cw, ch, slots || []);
       }
     }
@@ -3177,7 +3341,15 @@ export function initMotionToolsFixed() {
 
     x.putImageData(C, 0, 0);
 
-    // Draw replacement images or guide boxes for detected embedded video frames
+    // Draw replacement images for detected embedded video frames onto main scratch buffer
+    const pendingFrameGuides: Array<{
+      df: VapDetectedEmbeddedFrame;
+      fx: number;
+      fy: number;
+      fw: number;
+      fh: number;
+      isSelFrame: boolean;
+    }> = [];
     if (isMainSource && Array.isArray(S._detectedEmbeddedFrames) && S._detectedEmbeddedFrames.length > 0) {
       const fOverrides: Record<string, VapEmbeddedFrameOverride> = S._embeddedFrameOverrides || {};
       for (const df of S._detectedEmbeddedFrames as VapDetectedEmbeddedFrame[]) {
@@ -3202,177 +3374,340 @@ export function initMotionToolsFixed() {
 
         const isSelFrame = String((window as any).__selectedVapMaskId || '') === String(df.id);
         if (showGuides && (df.isIsolatedFrame || isSelFrame)) {
-          x.save();
-          x.strokeStyle = isSelFrame ? '#fbbf24' : '#10b981';
-          x.lineWidth = Math.max(isSelFrame ? 3 : 2, Math.round(cw / (isSelFrame ? 200 : 280)));
-          x.setLineDash(isSelFrame ? [] : [5, 3]);
-          x.strokeRect(fx + 1, fy + 1, Math.max(2, fw - 2), Math.max(2, fh - 2));
-          x.setLineDash([]);
-
-          const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
-          x.fillStyle = isSelFrame ? '#fbbf24' : '#10b981';
-          x.strokeStyle = '#064e3b';
-          x.lineWidth = 2;
-          x.fillRect(fx + fw - hs, fy + fh - hs, hs, hs);
-          x.strokeRect(fx + fw - hs, fy + fh - hs, hs, hs);
-
-          const label = `🖼️ ${df.labelAr}`;
-          const fontSize = Math.max(10, Math.min(16, Math.round(cw / 45)));
-          x.font = `bold ${fontSize}px system-ui, sans-serif`;
-          const tw = x.measureText(label).width + 10;
-          const th = fontSize + 6;
-          const bx = Math.max(0, Math.min(cw - tw, fx));
-          const by = Math.max(0, fy - th - 2);
-          x.fillStyle = isSelFrame ? 'rgba(217, 119, 6, 0.95)' : 'rgba(5, 150, 105, 0.92)';
-          x.fillRect(bx, by, tw, th);
-          x.fillStyle = '#fff';
-          x.textBaseline = 'middle';
-          x.fillText(label, bx + 5, by + th / 2);
-          x.restore();
+          pendingFrameGuides.push({ df, fx, fy, fw, fh, isSelFrame });
         }
       }
     }
 
-    // Render VAP / YYEVA Dynamic Mask Slots (Image & Text/Name masks)
+    // Helper that renders one dynamic mask placement onto a target 2D canvas context using source-over painter's order
+    const drawMaskPlacementToTarget = (targetCtx: CanvasRenderingContext2D, pl: any, slot: any) => {
+      const [dx, dy, dw, dh] = pl.frame;
+      const [mx, my, mw, mh] = pl.mFrame;
+      if (dw <= 0 || dh <= 0) return;
+
+      const effTotalFrames = Math.max(
+        1,
+        typeof (window as any).__activeRenderTotalFrames === 'number'
+          ? (window as any).__activeRenderTotalFrames
+          : M.frames || S?.n || 1
+      );
+      const effFrameIdx = Math.max(
+        0,
+        typeof (window as any).__activeRenderFrame === 'number'
+          ? (window as any).__activeRenderFrame
+          : Math.floor(((Number(m?.currentTime) || 0) + 0.0005) * Math.max(1, M.fps || S?.fps || 30))
+      );
+      const stForMask: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      const rawPTrans = stForMask?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+      const primaryAtFrame = interpolateTransformAtFrame(rawPTrans, effFrameIdx, effTotalFrames, cw, ch);
+      const effMaskT = resolveLinkedTransformAtFrame(
+        (slot as any).motionTransform as ProjectLayerTransform | undefined,
+        rawPTrans,
+        primaryAtFrame,
+        effFrameIdx,
+        effTotalFrames,
+        cw,
+        ch
+      );
+      if (effMaskT.visible === false || (Number(effMaskT.opacity ?? 100) || 0) <= 0.001) {
+        return;
+      }
+
+      const drawTransformedMaskCanvas = (srcCanvas: HTMLCanvasElement) => {
+        const offX = Number(effMaskT.offsetX) || 0;
+        const offY = Number(effMaskT.offsetY) || 0;
+        const mScale = Math.max(0.05, Math.min(5, (Number(effMaskT.scale ?? 100) || 100) / 100));
+        const mRot = ((Number(effMaskT.rotation) || 0) * Math.PI) / 180;
+        const mFlipX = effMaskT.flipH ? -1 : 1;
+        const mFlipY = effMaskT.flipV ? -1 : 1;
+        const mAlpha = Math.max(0, Math.min(1, (Number(effMaskT.opacity ?? 100) || 0) / 100));
+        const isIdentity =
+          Math.abs(offX) < 0.01 &&
+          Math.abs(offY) < 0.01 &&
+          Math.abs(mScale - 1) < 0.001 &&
+          Math.abs(mRot) < 0.0001 &&
+          mFlipX === 1 &&
+          mFlipY === 1 &&
+          mAlpha > 0.999;
+        if (isIdentity) {
+          targetCtx.drawImage(srcCanvas, dx, dy, dw, dh);
+          return;
+        }
+        targetCtx.save();
+        targetCtx.globalAlpha *= mAlpha;
+        targetCtx.translate(dx + dw / 2 + offX, dy + dh / 2 + offY);
+        if (Math.abs(mRot) > 0.0001) targetCtx.rotate(mRot);
+        if (mScale !== 1 || mFlipX !== 1 || mFlipY !== 1) targetCtx.scale(mScale * mFlipX, mScale * mFlipY);
+        targetCtx.drawImage(srcCanvas, -dw / 2, -dh / 2, dw, dh);
+        targetCtx.restore();
+      };
+
+      const replacements = (isMainSource ? S?._vapSlotReplacements : null) || {};
+      const allowBake = !isExporting || (window as any).__bakeReplacedVapSlotsInRender !== false;
+      const rep = replacements[slot.srcId];
+      const drawMaskHelper = isMainSource ? (window as any).__drawSlotMaskToCtx : null;
+      const fillRgb = parseHexColorRgb((slot as any).fillColor);
+      const validSrcM = isValidExternalMFrame(pl.mFrame, M.c, M.videoW, M.videoH);
+      const customMaskCanvas = isMainSource ? S?._customMaskCanvases?.[slot.srcId] : null;
+
+      if (allowBake && rep && rep.active && !rep.hidden && rep.source) {
+        if (!_vapSlotLayerCanvas || _vapSlotLayerCanvas.width !== dw || _vapSlotLayerCanvas.height !== dh) {
+          _vapSlotLayerCanvas = mk(dw, dh);
+          _vapSlotLayerCtx = _vapSlotLayerCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const lx = _vapSlotLayerCtx!;
+        lx.clearRect(0, 0, dw, dh);
+
+        const srcEl = rep.source;
+        const srcW = Number(srcEl.naturalWidth || srcEl.width || dw) || dw;
+        const srcH = Number(srcEl.naturalHeight || srcEl.height || dh) || dh;
+        const fitMode = rep.fitMode || slot.fitType || 'fitXY';
+        const scale = Number(rep.scale) > 0 ? Number(rep.scale) : 1;
+        const offX = Number(rep.offsetX) || 0;
+        const offY = Number(rep.offsetY) || 0;
+        const rect = computeSlotFitDrawRect(srcW, srcH, dw, dh, fitMode, scale, offX, offY);
+        lx.imageSmoothingEnabled = true;
+        lx.imageSmoothingQuality = 'high';
+        lx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
+
+        const useMask = rep.useMask !== false;
+        if (useMask && (customMaskCanvas || slot.hasCustomShape || validSrcM || slot.isCustomAdded)) {
+          if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
+            _vapSlotMaskCanvas = mk(dw, dh);
+            _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
+          }
+          const mxCtx = _vapSlotMaskCtx!;
+          mxCtx.clearRect(0, 0, dw, dh);
+          if (drawMaskHelper) {
+            drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
+          } else if (validSrcM) {
+            mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+          }
+          const layerData = lx.getImageData(0, 0, dw, dh);
+          const maskData = mxCtx.getImageData(0, 0, dw, dh);
+          applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
+          lx.putImageData(layerData, 0, 0);
+        }
+
+        drawTransformedMaskCanvas(_vapSlotLayerCanvas);
+      } else if (allowBake && fillRgb) {
+        if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
+          _vapSlotMaskCanvas = mk(dw, dh);
+          _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const mxCtx = _vapSlotMaskCtx!;
+        mxCtx.clearRect(0, 0, dw, dh);
+        if (customMaskCanvas || slot.hasCustomShape || validSrcM || slot.isCustomAdded) {
+          if (drawMaskHelper) {
+            drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
+          } else if (validSrcM) {
+            mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
+          }
+          const maskData = mxCtx.getImageData(0, 0, dw, dh);
+          const coloredRgba = extractMaskPreviewRgba(maskData.data, dw, dh, fillRgb);
+          mxCtx.putImageData(new ImageData(coloredRgba, dw, dh), 0, 0);
+        } else {
+          mxCtx.fillStyle = `rgb(${fillRgb[0]},${fillRgb[1]},${fillRgb[2]})`;
+          mxCtx.fillRect(0, 0, dw, dh);
+        }
+        drawTransformedMaskCanvas(_vapSlotMaskCanvas);
+      }
+    };
+
+    // 3-Pass / 4-Band Painter's Order Compositing:
+    // Pass 1: behindPrimary (or all below during single-pass VAP export)
+    // Pass 2: main gift video layer
+    // Pass 3: abovePrimary (or all above during single-pass VAP export)
+    // External bands (belowOverlays / aboveOverlays) & selection guides sync cleanly to dedicated stage overlays in Live Preview,
+    // and split around Composer overlays during contentDraw exports.
+    compCtx.clearRect(0, 0, cw, ch);
+    let activePairs: Array<{ pl: any; slot: any }> = [];
     if (Array.isArray(slots) && slots.length > 0) {
       const fps = Math.max(1, M.fps || S?.fps || 30);
       const totalFrames = Math.max(1, M.frames || S?.n || 1);
       const curTime = Number(m?.currentTime) || 0;
       const curFrameIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor((curTime + 0.0005) * fps)));
       const placements = effRes ? effRes.placements(curFrameIdx) : resolveDynamicFramePlacements(M, curFrameIdx);
-      const replacements = (isMainSource ? S?._vapSlotReplacements : null) || {};
-      const allowBake = !isExporting || (window as any).__bakeReplacedVapSlotsInRender !== false;
+      for (const pl of placements) {
+        const slot = slots.find((s: any) => String(s.srcId) === String(pl.srcId));
+        if (slot) activePairs.push({ pl, slot });
+      }
+      activePairs.sort((a, b) => Number(a.slot.z ?? 0) - Number(b.slot.z ?? 0));
+    }
 
-      if (placements.length > 0) {
-        for (const pl of placements) {
-          const slot = slots.find((s: any) => s.srcId === pl.srcId);
-          if (!slot) continue;
+    const renderAllBandsExternally =
+      isMainSource && (!isExporting || Boolean((window as any).__contentDrawSplitExtMaskBands));
+    const belowAllPairs = activePairs.filter((p) => resolveMaskDepthBand(p.slot) === 'belowOverlays');
+    const belowPrimPairs = activePairs.filter((p) => {
+      const b = resolveMaskDepthBand(p.slot);
+      return renderAllBandsExternally ? b === 'behindPrimary' : b === 'belowOverlays' || b === 'behindPrimary';
+    });
+    const abovePrimPairs = activePairs.filter((p) => {
+      const b = resolveMaskDepthBand(p.slot);
+      return renderAllBandsExternally ? b === 'abovePrimary' : b === 'abovePrimary' || b === 'aboveOverlays';
+    });
+    const aboveAllPairs = activePairs.filter((p) => resolveMaskDepthBand(p.slot) === 'aboveOverlays');
+
+    if (renderAllBandsExternally) {
+      // Keep primary canvas strictly containing primary gift pixels so primaryTransform CSS / affine transforms
+      // NEVER shift behindPrimary/abovePrimary masks out of alignment with guides & stage overlays.
+      compCtx.drawImage(t, 0, 0, cw, ch);
+    } else {
+      for (const p of belowPrimPairs) {
+        drawMaskPlacementToTarget(compCtx, p.pl, p.slot);
+      }
+      compCtx.drawImage(t, 0, 0, cw, ch);
+      for (const p of abovePrimPairs) {
+        drawMaskPlacementToTarget(compCtx, p.pl, p.slot);
+      }
+    }
+
+    // Expose live external-band paint helper for contentDraw when exporting with overlays
+    if (isMainSource && isExporting) {
+      (window as any).__vapCurrentBelowAllPairs = belowAllPairs;
+      (window as any).__vapCurrentAboveAllPairs = aboveAllPairs;
+      (window as any).__vapPaintExtPairs = (tCtx: CanvasRenderingContext2D, tW: number, tH: number, band: MaskDepthBand) => {
+        const pairs =
+          band === 'belowOverlays'
+            ? belowAllPairs
+            : band === 'behindPrimary'
+              ? belowPrimPairs
+              : band === 'abovePrimary'
+                ? abovePrimPairs
+                : aboveAllPairs;
+        if (!pairs || pairs.length === 0) return;
+        const tmp = mk(cw, ch);
+        const tx = tmp.getContext('2d')!;
+        for (const p of pairs) drawMaskPlacementToTarget(tx, p.pl, p.slot);
+        tCtx.drawImage(tmp, 0, 0, tW, tH);
+      };
+    }
+
+    // In Live Preview, sync ALL 4 mask bands ('belowOverlays':1, 'behindPrimary':3, 'abovePrimary':5, 'aboveOverlays':7) & guides (9)
+    if (isMainSource && !isExporting) {
+      const viewEl = document.getElementById('view');
+      const ensureVapExtCv = (id: string, zIdx: string, show: boolean) => {
+        let cv = document.getElementById(id) as HTMLCanvasElement | null;
+        if (!show || !viewEl) {
+          if (cv) cv.style.display = 'none';
+          return null;
+        }
+        if (!cv) {
+          cv = document.createElement('canvas');
+          cv.id = id;
+          viewEl.appendChild(cv);
+        }
+        cv.style.display = 'block';
+        cv.style.position = 'absolute';
+        cv.style.inset = '0';
+        cv.style.left = '0px';
+        cv.style.top = '0px';
+        cv.style.width = '100%';
+        cv.style.height = '100%';
+        cv.style.transform = 'none';
+        cv.style.zIndex = zIdx;
+        cv.style.pointerEvents = 'none';
+        if (cv.width !== cw) cv.width = cw;
+        if (cv.height !== ch) cv.height = ch;
+        return cv;
+      };
+
+      const belowCv = ensureVapExtCv('vapDynamicMaskBelowAll', '1', belowAllPairs.length > 0);
+      if (belowCv) {
+        const bx = belowCv.getContext('2d')!;
+        bx.clearRect(0, 0, cw, ch);
+        for (const p of belowAllPairs) drawMaskPlacementToTarget(bx, p.pl, p.slot);
+      }
+      const underlayCv = ensureVapExtCv('vapDynamicMaskUnderlay', '3', belowPrimPairs.length > 0);
+      if (underlayCv) {
+        const ux = underlayCv.getContext('2d')!;
+        ux.clearRect(0, 0, cw, ch);
+        for (const p of belowPrimPairs) drawMaskPlacementToTarget(ux, p.pl, p.slot);
+      }
+      const overlayCv = ensureVapExtCv('vapDynamicMaskOverlay', '5', abovePrimPairs.length > 0);
+      if (overlayCv) {
+        const ox = overlayCv.getContext('2d')!;
+        ox.clearRect(0, 0, cw, ch);
+        for (const p of abovePrimPairs) drawMaskPlacementToTarget(ox, p.pl, p.slot);
+      }
+      const aboveCv = ensureVapExtCv('vapDynamicMaskAboveAll', '7', aboveAllPairs.length > 0);
+      if (aboveCv) {
+        const ax = aboveCv.getContext('2d')!;
+        ax.clearRect(0, 0, cw, ch);
+        for (const p of aboveAllPairs) drawMaskPlacementToTarget(ax, p.pl, p.slot);
+      }
+
+      const guidesCv = ensureVapExtCv(
+        'vapDynamicMaskGuides',
+        '9',
+        Boolean(showGuides && (pendingFrameGuides.length > 0 || activePairs.length > 0))
+      );
+      if (guidesCv) {
+        const gx = guidesCv.getContext('2d')!;
+        gx.clearRect(0, 0, cw, ch);
+        for (const g of pendingFrameGuides) {
+          gx.save();
+          gx.strokeStyle = g.isSelFrame ? '#fbbf24' : '#10b981';
+          gx.lineWidth = Math.max(g.isSelFrame ? 3 : 2, Math.round(cw / (g.isSelFrame ? 200 : 280)));
+          gx.setLineDash(g.isSelFrame ? [] : [5, 3]);
+          gx.strokeRect(g.fx + 1, g.fy + 1, Math.max(2, g.fw - 2), Math.max(2, g.fh - 2));
+          gx.setLineDash([]);
+          const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
+          gx.fillStyle = g.isSelFrame ? '#fbbf24' : '#10b981';
+          gx.strokeStyle = '#064e3b';
+          gx.lineWidth = 2;
+          gx.fillRect(g.fx + g.fw - hs, g.fy + g.fh - hs, hs, hs);
+          gx.strokeRect(g.fx + g.fw - hs, g.fy + g.fh - hs, hs, hs);
+          const label = `🖼️ ${g.df.labelAr}`;
+          const fontSize = Math.max(10, Math.min(16, Math.round(cw / 45)));
+          gx.font = `bold ${fontSize}px system-ui, sans-serif`;
+          const tw = gx.measureText(label).width + 10;
+          const th = fontSize + 6;
+          const bx = Math.max(0, Math.min(cw - tw, g.fx));
+          const by = Math.max(0, g.fy - th - 2);
+          gx.fillStyle = g.isSelFrame ? 'rgba(217, 119, 6, 0.95)' : 'rgba(5, 150, 105, 0.92)';
+          gx.fillRect(bx, by, tw, th);
+          gx.fillStyle = '#fff';
+          gx.textBaseline = 'middle';
+          gx.fillText(label, bx + 5, by + th / 2);
+          gx.restore();
+        }
+        for (const { pl, slot } of activePairs) {
           const [dx, dy, dw, dh] = pl.frame;
-          const [mx, my, mw, mh] = pl.mFrame;
           if (dw <= 0 || dh <= 0) continue;
-
-          const rep = replacements[slot.srcId];
-          const drawMaskHelper = isMainSource ? (window as any).__drawSlotMaskToCtx : null;
-          const isBehindMain = Number(slot.z ?? 0) < 0;
-          const fillRgb = parseHexColorRgb((slot as any).fillColor);
-
-          if (allowBake && rep && rep.active && !rep.hidden && rep.source) {
-            if (!_vapSlotLayerCanvas || _vapSlotLayerCanvas.width !== dw || _vapSlotLayerCanvas.height !== dh) {
-              _vapSlotLayerCanvas = mk(dw, dh);
-              _vapSlotLayerCtx = _vapSlotLayerCanvas.getContext('2d', { willReadFrequently: true });
-            }
-            const lx = _vapSlotLayerCtx!;
-            lx.clearRect(0, 0, dw, dh);
-
-            const srcEl = rep.source;
-            const srcW = Number(srcEl.naturalWidth || srcEl.width || dw) || dw;
-            const srcH = Number(srcEl.naturalHeight || srcEl.height || dh) || dh;
-            const fitMode = rep.fitMode || slot.fitType || 'fitXY';
-            const scale = Number(rep.scale) > 0 ? Number(rep.scale) : 1;
-            const offX = Number(rep.offsetX) || 0;
-            const offY = Number(rep.offsetY) || 0;
-            const rect = computeSlotFitDrawRect(srcW, srcH, dw, dh, fitMode, scale, offX, offY);
-            lx.imageSmoothingEnabled = true;
-            lx.imageSmoothingQuality = 'high';
-            lx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
-
-            const useMask = rep.useMask !== false;
-            const customMaskCanvas = isMainSource ? S?._customMaskCanvases?.[slot.srcId] : null;
-            if (useMask && (customMaskCanvas || (mw > 0 && mh > 0) || slot.isCustomAdded)) {
-              if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
-                _vapSlotMaskCanvas = mk(dw, dh);
-                _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
-              }
-              const mxCtx = _vapSlotMaskCtx!;
-              mxCtx.clearRect(0, 0, dw, dh);
-              if (drawMaskHelper) {
-                drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
-              } else if (mw > 0 && mh > 0) {
-                mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
-              }
-              const layerData = lx.getImageData(0, 0, dw, dh);
-              const maskData = mxCtx.getImageData(0, 0, dw, dh);
-              applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
-              lx.putImageData(layerData, 0, 0);
-            }
-
-            x.save();
-            if (isBehindMain) x.globalCompositeOperation = 'destination-over';
-            x.drawImage(_vapSlotLayerCanvas, dx, dy, dw, dh);
-            x.restore();
-          } else if (allowBake && fillRgb) {
-            // User explicitly selected a mask layer color (e.g. pink or custom) instead of transparent
-            const customMaskCanvas = isMainSource ? S?._customMaskCanvases?.[slot.srcId] : null;
-            if (!_vapSlotMaskCanvas || _vapSlotMaskCanvas.width !== dw || _vapSlotMaskCanvas.height !== dh) {
-              _vapSlotMaskCanvas = mk(dw, dh);
-              _vapSlotMaskCtx = _vapSlotMaskCanvas.getContext('2d', { willReadFrequently: true });
-            }
-            const mxCtx = _vapSlotMaskCtx!;
-            mxCtx.clearRect(0, 0, dw, dh);
-            if (customMaskCanvas || (mw > 0 && mh > 0) || slot.isCustomAdded) {
-              if (drawMaskHelper) {
-                drawMaskHelper(slot, S, m, pl.mFrame, mxCtx, dw, dh);
-              } else if (mw > 0 && mh > 0) {
-                mxCtx.drawImage(m, mx, my, mw, mh, 0, 0, dw, dh);
-              }
-              const maskData = mxCtx.getImageData(0, 0, dw, dh);
-              const coloredRgba = extractMaskPreviewRgba(maskData.data, dw, dh, fillRgb);
-              mxCtx.putImageData(new ImageData(coloredRgba, dw, dh), 0, 0);
-            } else {
-              mxCtx.fillStyle = `rgb(${fillRgb[0]},${fillRgb[1]},${fillRgb[2]})`;
-              mxCtx.fillRect(0, 0, dw, dh);
-            }
-            x.save();
-            if (isBehindMain) x.globalCompositeOperation = 'destination-over';
-            x.drawImage(_vapSlotMaskCanvas, dx, dy, dw, dh);
-            x.restore();
-          }
-
-          if (showGuides) {
-            const isSel = String((window as any).__selectedVapMaskId || '') === String(slot.srcId);
-            x.save();
-            x.strokeStyle = isSel
-              ? '#fbbf24'
-              : slot.isTextSlot
-                ? '#38bdf8'
-                : '#c084fc';
-            x.lineWidth = Math.max(isSel ? 3 : 2, Math.round(cw / (isSel ? 200 : 280)));
-            x.setLineDash(isSel ? [] : [6, 4]);
-            x.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
-            x.setLineDash([]);
-            // Corner resize grip handle (bottom-right)
-            const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
-            x.fillStyle = isSel ? '#fbbf24' : '#ffffff';
-            x.strokeStyle = slot.isTextSlot ? '#0284c7' : '#7e22ce';
-            x.lineWidth = 2;
-            x.fillRect(dx + dw - hs, dy + dh - hs, hs, hs);
-            x.strokeRect(dx + dw - hs, dy + dh - hs, hs, hs);
-
-            const label = `${slot.srcTag} (${slot.srcType})`;
-            const fontSize = Math.max(11, Math.min(18, Math.round(cw / 42)));
-            x.font = `bold ${fontSize}px system-ui, sans-serif`;
-            const tw = x.measureText(label).width + 10;
-            const th = fontSize + 6;
-            const bx = Math.max(0, Math.min(cw - tw, dx));
-            const by = Math.max(0, dy - th - 2);
-            x.fillStyle = isSel
-              ? 'rgba(217, 119, 6, 0.95)'
-              : slot.isTextSlot
-                ? 'rgba(2, 132, 199, 0.9)'
-                : 'rgba(126, 34, 206, 0.9)';
-            x.fillRect(bx, by, tw, th);
-            x.fillStyle = '#fff';
-            x.textBaseline = 'middle';
-            x.fillText(label, bx + 5, by + th / 2);
-            x.restore();
-          }
+          const isSel = String((window as any).__selectedVapMaskId || '') === String(slot.srcId);
+          gx.save();
+          gx.strokeStyle = isSel ? '#fbbf24' : slot.isTextSlot ? '#38bdf8' : '#c084fc';
+          gx.lineWidth = Math.max(isSel ? 3 : 2, Math.round(cw / (isSel ? 200 : 280)));
+          gx.setLineDash(isSel ? [] : [6, 4]);
+          gx.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
+          gx.setLineDash([]);
+          const hs = Math.max(9, Math.min(16, Math.round(cw / 40)));
+          gx.fillStyle = isSel ? '#fbbf24' : '#ffffff';
+          gx.strokeStyle = slot.isTextSlot ? '#0284c7' : '#7e22ce';
+          gx.lineWidth = 2;
+          gx.fillRect(dx + dw - hs, dy + dh - hs, hs, hs);
+          gx.strokeRect(dx + dw - hs, dy + dh - hs, hs, hs);
+          const label = `${slot.srcTag} (${slot.srcType})`;
+          const fontSize = Math.max(11, Math.min(18, Math.round(cw / 42)));
+          gx.font = `bold ${fontSize}px system-ui, sans-serif`;
+          const tw = gx.measureText(label).width + 10;
+          const th = fontSize + 6;
+          const bx = Math.max(0, Math.min(cw - tw, dx));
+          const by = Math.max(0, dy - th - 2);
+          gx.fillStyle = isSel ? 'rgba(217, 119, 6, 0.95)' : slot.isTextSlot ? 'rgba(2, 132, 199, 0.9)' : 'rgba(126, 34, 206, 0.9)';
+          gx.fillRect(bx, by, tw, th);
+          gx.fillStyle = '#fff';
+          gx.textBaseline = 'middle';
+          gx.fillText(label, bx + 5, by + th / 2);
+          gx.restore();
         }
       }
     }
 
     c.imageSmoothingEnabled = true;
     c.imageSmoothingQuality = 'high';
-    c.drawImage(t, 0, 0, W, H);
+    c.drawImage(compCanvas, 0, 0, W, H);
   }
   const _dv = drawVid;
   drawVid = function (c, W, H, m) {
@@ -3972,6 +4307,9 @@ export function initMotionToolsFixed() {
       const sp = sprites[spIdx];
       if (!sp || !Array.isArray(sp.frames)) continue;
       const cleanKey = (sp.imageKey || '').replace(/\.matte$/, '');
+      if (cleanKey.startsWith('vapmask_') || cleanKey.startsWith('avatar') || cleanKey.startsWith('textName')) {
+        continue;
+      }
       const dim = imgDims[sp.imageKey] || imgDims[cleanKey];
       const parsedSp =
         parsedMovie && Array.isArray(parsedMovie.sp) ? parsedMovie.sp[spIdx] : null;
@@ -4106,6 +4444,8 @@ export function initMotionToolsFixed() {
       });
       Object.assign(S, {
         set: async (i) => {
+          (window as any).__svgaCurrentFrame = i;
+          (pl as any).currentFrame = i;
           pl.stepToFrame(i, false);
           try {
             pl._renderer?.drawFrame?.(i);
@@ -4118,6 +4458,9 @@ export function initMotionToolsFixed() {
       });
       if ((window as any).__chromaKey?.enabled && (window as any).__chromaKey?.applyToLayers !== false) {
         (window as any).__applyChromaKeyToStageAndAssets?.((window as any).__chromaKey);
+      }
+      if (S && typeof (window as any).__rehydrateSessionVisualsOnSource === 'function') {
+        void (window as any).__rehydrateSessionVisualsOnSource(S);
       }
     } catch (e) {}
   }
@@ -4132,6 +4475,13 @@ export function initMotionToolsFixed() {
     if (allSlots.length > 0) {
       const slot = allSlots.find((s: any) => s.assetKey === k);
       if (slot) {
+        S._slotGeometryOverrides = S._slotGeometryOverrides || {};
+        S._slotGeometryOverrides[slot.srcId] = {
+          ...(S._slotGeometryOverrides[slot.srcId] || {}),
+          z: slot.z,
+          zLayer: slot.zLayer || resolveMaskDepthBand(slot),
+          defaultFrame: slot.defaultFrame || [0, 0, slot.w, slot.h],
+        };
         S._vapSlotReplacements = S._vapSlotReplacements || {};
         const im = await imgOf(u);
         if (im) {
@@ -4165,6 +4515,7 @@ export function initMotionToolsFixed() {
           } else {
             (window as any).__syncNonVapMaskStageOverlay?.(S);
           }
+          (window as any).__emitVapMasksChange?.(S);
           (window as any).__refreshVapDynamicMasksPanel?.(S);
         }
       }
@@ -4190,12 +4541,15 @@ export function initMotionToolsFixed() {
               vapDraw(x, S._alphaCanvas.width, S._alphaCanvas.height, S.vid, S.meta);
             }
           }
+          (window as any).__emitVapMasksChange?.(S);
           (window as any).__refreshVapDynamicMasksPanel?.(S);
         }
       }
     }
     return _ae(u, k);
   };
+
+  let exportDecomposedSvgaProject: any = null;
 
   /* Block 10: Audio engine + native SVGA patch export */
   (() => {
@@ -4698,15 +5052,21 @@ export function initMotionToolsFixed() {
       }
       return st;
     };
-    const exportDecomposedSvgaProject = async (
+    exportDecomposedSvgaProject = async (
       baseMovie: any,
       targetW: number,
       targetH: number,
       targetFps: number,
-      qualityPercent: number = 100
+      qualityPercent: number = 100,
+      exportOpts?: {
+        composerStateOverride?: ProjectComposerState;
+        ignoreGlobalPrimaryTransform?: boolean;
+      }
     ): Promise<Blob> => {
       const composerState: ProjectComposerState =
-        (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+        exportOpts?.composerStateOverride ||
+        (window as any).__projectComposerState ||
+        INITIAL_PROJECT_COMPOSER_STATE;
 
       // 1. Collect image edits from window.EDIT
       const imageReplacements: Record<string, Uint8Array> = {};
@@ -4762,6 +5122,20 @@ export function initMotionToolsFixed() {
             }
           }
         }
+      } else if (
+        (!finalAudiosRaw || !finalAudiosRaw.length) &&
+        !Object.keys(baseMovie.im || {}).some((k) => /^audio[_-]/i.test(k)) &&
+        !AU.del &&
+        AU.cur
+      ) {
+        const a = finalAudio();
+        if (a) {
+          const mp3Bytes = await mp3For(a);
+          if (mp3Bytes && mp3Bytes.length > 0) {
+            imageReplacements['audio_main'] = mp3Bytes;
+            finalAudiosRaw = [];
+          }
+        }
       }
 
       // 3. Handle secondary overlay layers
@@ -4786,8 +5160,16 @@ export function initMotionToolsFixed() {
 
           for (let fi = 0; fi < nFrames; fi++) {
             const tSec = fi / Math.max(1, rt.fps || 25);
+            if (typeof rt.seekToTime === 'function') {
+              try {
+                await rt.seekToTime(tSec);
+              } catch (_) {}
+            }
             sCtx.clearRect(0, 0, lw, lh);
+            sCtx.save();
+            sCtx.translate(lw / 2, lh / 2);
             rt.drawAtTime(sCtx, lw, lh, tSec, layer.alphaMode || 'auto');
+            sCtx.restore();
             const pngBytes = await new Promise<Uint8Array>((resolve) => {
               scratch.toBlob((blob) => {
                 if (!blob) {
@@ -4813,13 +5195,14 @@ export function initMotionToolsFixed() {
       }
 
       // 4. Global scale and mirror options
-      const globalScalePercent = Number(($('#scale') as HTMLInputElement)?.value) || 100;
-      const globalMirror = ((($('#mirror') as HTMLSelectElement)?.value || 'none') as
-        | 'none'
-        | 'horizontal'
-        | 'vertical');
+      const globalScalePercent = exportOpts?.ignoreGlobalPrimaryTransform
+        ? 100
+        : Number(($('#scale') as HTMLInputElement)?.value) || 100;
+      const globalMirror: 'none' | 'horizontal' | 'vertical' = exportOpts?.ignoreGlobalPrimaryTransform
+        ? 'none'
+        : ((($('#mirror') as HTMLSelectElement)?.value || 'none') as 'none' | 'horizontal' | 'vertical');
 
-      // 4b. Collect active replaced / colored VAP mask slots so SVGA export preserves them cleanly without yellow guides
+      // 4b. Collect ALL active VAP mask slots (including unreplaced slots so SVGA replacement keeps exact Z-band & clipPath)
       const maskSprites: Array<{
         id: string;
         x: number;
@@ -4827,19 +5210,27 @@ export function initMotionToolsFixed() {
         w: number;
         h: number;
         z: number;
+        zLayer?: MaskDepthBand;
+        clipPath?: string;
+        motionTransform?: ProjectLayerTransform;
         pngBytes: Uint8Array;
       }> = [];
       if (S) {
-        const effSlots = (window as any).__getEffectiveVapSlots?.(S) || [];
+        const preserveMasksOnExport = S?._preserveMasksOnExport !== false;
+        const effSlots = preserveMasksOnExport ? (window as any).__getEffectiveVapSlots?.(S) || [] : [];
         const reps = S._vapSlotReplacements || {};
         for (const sl of effSlots) {
           const rep = reps[sl.srcId];
+          if (rep && rep.hidden) continue;
           const fillRgb = parseHexColorRgb((sl as any).fillColor);
           const hasRep = Boolean(rep && rep.active && !rep.hidden && rep.source);
-          if (!hasRep && !fillRgb) continue;
           const f = sl.defaultFrame || [0, 0, sl.w || 120, sl.h || 120];
           const sw = Math.max(2, Math.round(f[2]));
           const sh = Math.max(2, Math.round(f[3]));
+          const useMaskClip = rep?.useMask !== false;
+          const clipPath = useMaskClip
+            ? buildSvgClipPathForMaskPreset(sl.shapePreset, sw, sh, sl.isTextSlot)
+            : undefined;
           const mc = mk(sw, sh);
           const mx = mc.getContext('2d', { willReadFrequently: true });
           if (!mx) continue;
@@ -4861,7 +5252,7 @@ export function initMotionToolsFixed() {
             mx.imageSmoothingEnabled = true;
             mx.imageSmoothingQuality = 'high';
             mx.drawImage(srcEl, rect.dx, rect.dy, rect.dw, rect.dh);
-            if (rep.useMask !== false && typeof (window as any).__buildSlotMaskCanvas === 'function') {
+            if (useMaskClip && typeof (window as any).__buildSlotMaskCanvas === 'function') {
               const maskCv = (window as any).__buildSlotMaskCanvas(sl, S, S.vid, sl.defaultMFrame, sw, sh);
               const mCtx = maskCv?.getContext('2d', { willReadFrequently: true });
               if (mCtx) {
@@ -4894,6 +5285,9 @@ export function initMotionToolsFixed() {
               w: sw,
               h: sh,
               z: Number(sl.z ?? 0),
+              zLayer: resolveMaskDepthBand(sl),
+              ...(clipPath ? { clipPath } : {}),
+              ...((sl as any).motionTransform ? { motionTransform: (sl as any).motionTransform as ProjectLayerTransform } : {}),
               pngBytes,
             });
           }
@@ -4940,6 +5334,7 @@ export function initMotionToolsFixed() {
 
       return new Blob([deflated], { type: 'application/octet-stream' });
     };
+    (window as any).__exportDecomposedSvgaProject = exportDecomposedSvgaProject;
 
     const prevS = $('#start').onclick;
     $('#start').onclick = async () => {
@@ -4973,7 +5368,12 @@ export function initMotionToolsFixed() {
             S &&
               ((S._vapSlotReplacements && Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)) ||
                 (S._customVapSlots && S._customVapSlots.length > 0) ||
-                Object.values(S._slotGeometryOverrides || {}).some((ov: any) => Boolean(parseHexColorRgb(ov?.fillColor))) ||
+                Object.values(S._slotGeometryOverrides || {}).some(
+                  (ov: any) =>
+                    Boolean(parseHexColorRgb(ov?.fillColor)) ||
+                    hasAnimatedMotion(ov?.motionTransform as ProjectLayerTransform | undefined)
+                ) ||
+                Boolean((window as any).__anySlotHasAnimatedMotion?.(S)) ||
                 S._hasMaskEdits)
           );
           const hasEdits =
@@ -5075,31 +5475,42 @@ export function initMotionToolsFixed() {
         });
       }
 
-      if (activeExt === 'svga') {
+      if (activeExt === 'svga' || (window.SV && window.SV.m)) {
+        const hasMaskEditsForSvga = Boolean(
+          S &&
+            ((S._vapSlotReplacements && Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)) ||
+              (S._customVapSlots && S._customVapSlots.length > 0) ||
+              Object.values(S._slotGeometryOverrides || {}).some(
+                (ov: any) =>
+                  Boolean(parseHexColorRgb(ov?.fillColor)) ||
+                  hasAnimatedMotion(ov?.motionTransform as ProjectLayerTransform | undefined)
+              ) ||
+              Boolean((window as any).__anySlotHasAnimatedMotion?.(S)) ||
+              S._hasMaskEdits)
+        );
+        const hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState);
         const hasEdits =
           AU.dirty ||
           Object.keys(window.EDIT || {}).length > 0 ||
-          Boolean((window as any).__WATERMARK_LAYERS?.length);
+          Boolean((window as any).__WATERMARK_LAYERS?.length) ||
+          hasMaskEditsForSvga ||
+          hasComposerEdits;
         if (hasEdits && S) {
           try {
-            let audio = null;
-            if (AU.dirty) {
-              if (AU.del) audio = { del: 1 };
-              else if (AU.add || AU.vol !== 1) {
-                const a = finalAudio();
-                audio = a ? { set: await mp3For(a), dur: a.buf.duration } : { del: 1 };
-              }
-            }
-            const eb: Record<string, Blob> = {};
-            for (const k in window.EDIT) eb[k] = await (await fetch(window.EDIT[k])).blob();
-            const patchedBlob = await svgaPatch(activeFile, {
-              edits: eb,
-              comp: false,
-              audio,
-              fps: S.fps,
-              n: S.n,
-            });
-            return new File([patchedBlob], activeFile.name, {
+            const targetW = +$('#w')?.value || S.w || 500;
+            const targetH = +$('#h')?.value || S.h || 500;
+            const targetFps = +$('#fps')?.value || S.fps || 30;
+            const baseMovie =
+              window.SV?.m ||
+              (await parseMovie(await inf(new Uint8Array(await activeFile.arrayBuffer()), 'deflate')));
+            const decomposedBlob = await exportDecomposedSvgaProject(
+              baseMovie,
+              targetW,
+              targetH,
+              targetFps,
+              100
+            );
+            return new File([decomposedBlob], activeFile.name, {
               type: 'application/octet-stream',
               lastModified: Date.now(),
             });
@@ -5986,10 +6397,12 @@ export function initMotionToolsFixed() {
         fallbackIdx++;
         if (ov) {
           const resolvedZ = ov.z !== undefined && Number.isFinite(Number(ov.z)) ? Number(ov.z) : baseZ;
+          const resolvedBand = resolveMaskDepthBand({ z: resolvedZ, zLayer: ov.zLayer ?? sl.zLayer });
           merged.push({
             ...sl,
             ...ov,
             z: resolvedZ,
+            zLayer: resolvedBand,
             defaultFrame: Array.isArray(ov.defaultFrame) ? ov.defaultFrame : sl.defaultFrame,
             w: Number(ov.w || ov.defaultFrame?.[2] || sl.w),
             h: Number(ov.h || ov.defaultFrame?.[3] || sl.h),
@@ -5998,11 +6411,20 @@ export function initMotionToolsFixed() {
             labelEn: (ov.srcType || sl.srcType) === 'txt' ? `Name Mask (${ov.srcTag || sl.srcTag})` : `Image Mask (${ov.srcTag || sl.srcTag})`,
           });
         } else {
-          merged.push({ ...sl, z: baseZ });
+          const resolvedBand = resolveMaskDepthBand({ z: baseZ, zLayer: sl.zLayer });
+          merged.push({ ...sl, z: baseZ, zLayer: resolvedBand });
         }
       }
       return sortSlotsByZ(merged);
     }
+
+    function anySlotHasAnimatedMotion(source: any): boolean {
+      if (!source) return false;
+      return getEffectiveMaskSlots(source).some((sl: any) =>
+        hasAnimatedMotion(sl?.motionTransform as ProjectLayerTransform | undefined)
+      );
+    }
+    (window as any).__anySlotHasAnimatedMotion = anySlotHasAnimatedMotion;
 
     function resolveEffectivePlacementsForSource(source: any, meta: any, frameIdx: number) {
       const baseList = meta ? resolveDynamicFramePlacements(meta, frameIdx) : [];
@@ -6064,13 +6486,14 @@ export function initMotionToolsFixed() {
         return c;
       }
 
+      const validSrcM = isValidExternalMFrame(srcMFrame, source?.meta?.c, source?.meta?.videoW, source?.meta?.videoH);
       if (
         !slot.isCustomAdded &&
-        srcMFrame &&
-        srcMFrame[2] > 0 &&
-        srcMFrame[3] > 0 &&
+        !slot.hasCustomShape &&
+        validSrcM &&
         videoEl &&
-        videoEl.readyState >= 2
+        videoEl.readyState >= 2 &&
+        srcMFrame
       ) {
         x.imageSmoothingEnabled = true;
         x.imageSmoothingQuality = 'high';
@@ -6103,7 +6526,8 @@ export function initMotionToolsFixed() {
         targetCtx.drawImage(customCanvas, 0, 0, dw, dh);
         return;
       }
-      if (!slot.isCustomAdded && srcMFrame && srcMFrame[2] > 0 && srcMFrame[3] > 0 && videoEl && videoEl.readyState >= 2) {
+      const validSrcM = isValidExternalMFrame(srcMFrame, source?.meta?.c, source?.meta?.videoW, source?.meta?.videoH);
+      if (!slot.isCustomAdded && !slot.hasCustomShape && validSrcM && videoEl && videoEl.readyState >= 2 && srcMFrame) {
         targetCtx.drawImage(videoEl, srcMFrame[0], srcMFrame[1], srcMFrame[2], srcMFrame[3], 0, 0, dw, dh);
         return;
       }
@@ -6153,13 +6577,14 @@ export function initMotionToolsFixed() {
       const mf = slot.defaultMFrame;
       const customCanvas = source?._customMaskCanvases?.[slot.srcId];
       const tint: [number, number, number] = slot.isTextSlot ? [56, 189, 248] : [192, 132, 252];
+      const validSrcM = isValidExternalMFrame(mf, source?.meta?.c, source?.meta?.videoW, source?.meta?.videoH);
 
       if (customCanvas) {
         x.drawImage(customCanvas, 0, 0, w, h);
         const raw = x.getImageData(0, 0, w, h);
         const rgba = extractMaskPreviewRgba(raw.data, w, h, tint);
         x.putImageData(new ImageData(rgba, w, h), 0, 0);
-      } else if (!slot.isCustomAdded && mf && mf[2] > 0 && mf[3] > 0 && m && m.readyState >= 2) {
+      } else if (!slot.isCustomAdded && !slot.hasCustomShape && validSrcM && m && m.readyState >= 2) {
         try {
           x.drawImage(m, mf[0], mf[1], mf[2], mf[3], 0, 0, w, h);
           const raw = x.getImageData(0, 0, w, h);
@@ -6222,7 +6647,7 @@ export function initMotionToolsFixed() {
       source: any,
       includeGuides: boolean,
       includeReplacedContent: boolean,
-      passFilter: 'all' | 'below' | 'above' = 'all'
+      passFilter: 'all' | 'below' | 'above' | MaskDepthBand = 'all'
     ) {
       const slots = getEffectiveMaskSlots(source);
       if (!slots.length) return;
@@ -6233,10 +6658,23 @@ export function initMotionToolsFixed() {
       const replacements = source?._vapSlotReplacements || {};
       const selId = String((window as any).__selectedVapMaskId || '');
 
+      const stForMasks: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      const rawPTrans = stForMasks?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+      const { frame: activeFrame, totalFrames: activeTotal } = getActiveComposerPlaybackFrame();
+      const primaryAtFrame = interpolateTransformAtFrame(rawPTrans, activeFrame, activeTotal, baseW, baseH);
+
       for (const slot of slots) {
-        const zVal = Number(slot.z ?? 0);
-        if (passFilter === 'below' && zVal >= 0) continue;
-        if (passFilter === 'above' && zVal < 0) continue;
+        const band = resolveMaskDepthBand(slot);
+        if (passFilter === 'below' && band !== 'belowOverlays' && band !== 'behindPrimary') continue;
+        if (passFilter === 'above' && band !== 'abovePrimary' && band !== 'aboveOverlays') continue;
+        if (
+          passFilter !== 'all' &&
+          passFilter !== 'below' &&
+          passFilter !== 'above' &&
+          band !== passFilter
+        ) {
+          continue;
+        }
 
         const f = slot.defaultFrame || [0, 0, slot.w, slot.h];
         const dx = Math.round(f[0] * sx);
@@ -6247,7 +6685,47 @@ export function initMotionToolsFixed() {
         const isSel = selId === String(slot.srcId);
         const fillRgb = parseHexColorRgb((slot as any).fillColor);
 
-        if (includeReplacedContent && rep && rep.active && !rep.hidden && rep.source) {
+        const effMaskT = resolveLinkedTransformAtFrame(
+          (slot as any).motionTransform as ProjectLayerTransform | undefined,
+          rawPTrans,
+          primaryAtFrame,
+          activeFrame,
+          activeTotal,
+          baseW,
+          baseH
+        );
+        const maskAlpha = Math.max(0, Math.min(1, (Number(effMaskT.opacity ?? 100) || 0) / 100));
+        const isMaskVisibleAtFrame = effMaskT.visible !== false && maskAlpha > 0.001;
+        const offX = (Number(effMaskT.offsetX) || 0) * sx;
+        const offY = (Number(effMaskT.offsetY) || 0) * sy;
+        const mScale = Math.max(0.05, Math.min(5, (Number(effMaskT.scale ?? 100) || 100) / 100));
+        const mRot = ((Number(effMaskT.rotation) || 0) * Math.PI) / 180;
+        const mFlipX = effMaskT.flipH ? -1 : 1;
+        const mFlipY = effMaskT.flipV ? -1 : 1;
+
+        const drawSlotCanvasWithMotion = (srcCanvas: HTMLCanvasElement) => {
+          const isIdentity =
+            Math.abs(offX) < 0.01 &&
+            Math.abs(offY) < 0.01 &&
+            Math.abs(mScale - 1) < 0.001 &&
+            Math.abs(mRot) < 0.0001 &&
+            mFlipX === 1 &&
+            mFlipY === 1 &&
+            maskAlpha > 0.999;
+          if (isIdentity) {
+            x.drawImage(srcCanvas, dx, dy, dw, dh);
+            return;
+          }
+          x.save();
+          x.globalAlpha *= maskAlpha;
+          x.translate(dx + dw / 2 + offX, dy + dh / 2 + offY);
+          if (Math.abs(mRot) > 0.0001) x.rotate(mRot);
+          if (mScale !== 1 || mFlipX !== 1 || mFlipY !== 1) x.scale(mScale * mFlipX, mScale * mFlipY);
+          x.drawImage(srcCanvas, -dw / 2, -dh / 2, dw, dh);
+          x.restore();
+        };
+
+        if (isMaskVisibleAtFrame && includeReplacedContent && rep && rep.active && !rep.hidden && rep.source) {
           const lc = mk(dw, dh);
           const lx = lc.getContext('2d', { willReadFrequently: true })!;
           const srcEl = rep.source;
@@ -6275,21 +6753,22 @@ export function initMotionToolsFixed() {
             applyLuminanceMaskToRgba(layerData.data, maskData.data, dw, dh);
             lx.putImageData(layerData, 0, 0);
           }
-          x.drawImage(lc, dx, dy, dw, dh);
-        } else if (includeReplacedContent && fillRgb) {
+          drawSlotCanvasWithMotion(lc);
+        } else if (isMaskVisibleAtFrame && includeReplacedContent && fillRgb) {
           const mc = buildMaskCanvasFromPresetOrSource(slot, source, source.vid, slot.defaultMFrame, dw, dh);
           const mCtx = mc.getContext('2d', { willReadFrequently: true })!;
           const maskData = mCtx.getImageData(0, 0, dw, dh);
           const coloredRgba = extractMaskPreviewRgba(maskData.data, dw, dh, fillRgb);
           mCtx.putImageData(new ImageData(coloredRgba, dw, dh), 0, 0);
-          x.drawImage(mc, dx, dy, dw, dh);
+          drawSlotCanvasWithMotion(mc);
         }
 
         if (includeGuides) {
           x.save();
+          if (!isMaskVisibleAtFrame) x.globalAlpha = 0.35;
           x.strokeStyle = isSel ? '#fbbf24' : slot.isTextSlot ? '#38bdf8' : '#c084fc';
           x.lineWidth = Math.max(isSel ? 3 : 2, Math.round(W / (isSel ? 180 : 240)));
-          x.setLineDash(isSel ? [] : [6, 4]);
+          x.setLineDash(isSel && isMaskVisibleAtFrame ? [] : [6, 4]);
           x.strokeRect(dx + 1, dy + 1, Math.max(2, dw - 2), Math.max(2, dh - 2));
           x.setLineDash([]);
 
@@ -6324,11 +6803,17 @@ export function initMotionToolsFixed() {
 
     function syncNonVapMaskStageOverlay(source: any) {
       const viewEl = document.getElementById('view');
-      let overlay = document.getElementById('vapDynamicMaskOverlay') as HTMLCanvasElement | null;
-      let underlay = document.getElementById('vapDynamicMaskUnderlay') as HTMLCanvasElement | null;
+      const ids = [
+        'vapDynamicMaskBelowAll',
+        'vapDynamicMaskUnderlay',
+        'vapDynamicMaskOverlay',
+        'vapDynamicMaskAboveAll',
+        'vapDynamicMaskGuides',
+      ];
       if (!viewEl || !source || source.meta) {
-        if (overlay) overlay.remove();
-        if (underlay) underlay.remove();
+        if (!source || !viewEl) {
+          ids.forEach((id) => document.getElementById(id)?.remove());
+        }
         return;
       }
       const slots = getEffectiveMaskSlots(source);
@@ -6336,28 +6821,39 @@ export function initMotionToolsFixed() {
       const showGuides = !isExporting && Boolean((window as any).__vapShowMaskGuides);
       const hasRep = Object.values(source._vapSlotReplacements || {}).some((r: any) => r && r.active && !r.hidden);
       const hasColoredFill = slots.some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor)));
-      if (!slots.length || (!showGuides && !hasRep && !hasColoredFill)) {
-        if (overlay) overlay.style.display = 'none';
-        if (underlay) underlay.style.display = 'none';
+      const hasMotion = anySlotHasAnimatedMotion(source);
+      if (!slots.length || (!showGuides && !hasRep && !hasColoredFill && !hasMotion)) {
+        ids.forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.style.display = 'none';
+        });
         return;
       }
       const W = Math.max(2, Math.round(source.w || 300));
       const H = Math.max(2, Math.round(source.h || 300));
 
-      const ensureLayerCanvas = (existing: HTMLCanvasElement | null, id: string, zIndex: string) => {
-        let cv = existing;
+      const ensureLayerCanvas = (id: string, zIndex: string, visible: boolean) => {
+        let cv = document.getElementById(id) as HTMLCanvasElement | null;
+        if (!visible) {
+          if (cv) cv.style.display = 'none';
+          return null;
+        }
         if (!cv) {
           cv = document.createElement('canvas');
           cv.id = id;
-          cv.style.cssText = `position:absolute;left:0;top:0;pointer-events:none;z-index:${zIndex};background:transparent;`;
           viewEl.appendChild(cv);
         }
         cv.style.display = 'block';
         cv.style.position = 'absolute';
+        cv.style.inset = '0';
         cv.style.left = '0px';
         cv.style.top = '0px';
+        cv.style.width = '100%';
+        cv.style.height = '100%';
+        cv.style.transform = 'none';
         cv.style.zIndex = zIndex;
         cv.style.pointerEvents = 'none';
+        cv.style.background = 'transparent';
         if (cv.width !== W || cv.height !== H) {
           cv.width = W;
           cv.height = H;
@@ -6365,27 +6861,32 @@ export function initMotionToolsFixed() {
         return cv;
       };
 
-      const hasBelow = slots.some((s) => (s.z ?? 0) < 0);
-      if (hasBelow) {
-        underlay = ensureLayerCanvas(underlay, 'vapDynamicMaskUnderlay', '1');
-        const ux = underlay.getContext('2d');
-        if (ux) {
-          ux.clearRect(0, 0, W, H);
-          renderMaskOverlaySlotsIntoCtx(ux, W, H, source, false, true, 'below');
+      const renderBand = (id: string, zIndex: string, band: MaskDepthBand) => {
+        const active = slots.some((s) => resolveMaskDepthBand(s) === band);
+        const cv = ensureLayerCanvas(id, zIndex, active);
+        if (cv) {
+          const cx = cv.getContext('2d');
+          if (cx) {
+            cx.clearRect(0, 0, W, H);
+            renderMaskOverlaySlotsIntoCtx(cx, W, H, source, false, true, band);
+          }
         }
-      } else if (underlay) {
-        underlay.style.display = 'none';
-      }
+      };
 
-      overlay = ensureLayerCanvas(overlay, 'vapDynamicMaskOverlay', '6');
-      const ox = overlay.getContext('2d');
-      if (ox) {
-        ox.clearRect(0, 0, W, H);
-        // Paint guide outlines for below-project slots above main canvas if guides are enabled so they remain grabbable & visible,
-        // while their content stays cleanly behind the main layer.
-        renderMaskOverlaySlotsIntoCtx(ox, W, H, source, showGuides, true, 'above');
-        if (hasBelow && showGuides) {
-          renderMaskOverlaySlotsIntoCtx(ox, W, H, source, true, false, 'below');
+      // Exact 9-tier z-stack:
+      // 1: belowOverlays | 2: composer underlay | 3: behindPrimary | 4: primary
+      // 5: abovePrimary  | 6: composer overlay  | 7: aboveOverlays | 8: watermark | 9: guides
+      renderBand('vapDynamicMaskBelowAll', '1', 'belowOverlays');
+      renderBand('vapDynamicMaskUnderlay', '3', 'behindPrimary');
+      renderBand('vapDynamicMaskOverlay', '5', 'abovePrimary');
+      renderBand('vapDynamicMaskAboveAll', '7', 'aboveOverlays');
+
+      const guidesCv = ensureLayerCanvas('vapDynamicMaskGuides', '9', showGuides && slots.length > 0);
+      if (guidesCv) {
+        const gx = guidesCv.getContext('2d');
+        if (gx) {
+          gx.clearRect(0, 0, W, H);
+          renderMaskOverlaySlotsIntoCtx(gx, W, H, source, true, false, 'all');
         }
       }
       syncPreviewSize(source.w, source.h);
@@ -6434,31 +6935,292 @@ export function initMotionToolsFixed() {
       }
     }
 
-    function emitVapMasksChange(source: any) {
-      const slots = getEffectiveMaskSlots(source);
-      window.dispatchEvent(
-        new CustomEvent('vapmaskschange', {
-          detail: {
-            slots,
-            selectedSrcId: (window as any).__selectedVapMaskId || null,
-            guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
-          },
-        })
-      );
-    }
-
-    (window as any).__getVapMasksSnapshot = () => {
-      const source = S;
+    function buildVapMasksSnapshotObj(source: any) {
+      const slots = source ? getEffectiveMaskSlots(source) : [];
+      const dummies = Array.isArray(source?._detectedDummyMasks)
+        ? source._detectedDummyMasks.map((dm: VapDetectedDummyMask) => ({
+            id: dm.id,
+            kind: dm.kind,
+            labelAr: dm.labelAr,
+            frame: dm.frame,
+            fillRgb: dm.fillRgb,
+            thumbUrl: source?._detectedDummyThumbs?.[dm.id] || '',
+          }))
+        : [];
       return {
         hasSource: Boolean(source),
+        isVapVideo: Boolean(source?.meta),
         baseW: Math.max(1, source?.w || 300),
         baseH: Math.max(1, source?.h || 300),
-        slots: source ? getEffectiveMaskSlots(source) : [],
+        slots,
+        detectedDummies: dummies,
+        silhouettes: source?._vapOrigSilhouettes || {},
+        bakeReplacedSlots: source?._bakeReplacedSlots !== false,
         selectedSrcId: (window as any).__selectedVapMaskId || null,
         guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
         replacements: source?._vapSlotReplacements || {},
       };
-    };
+    }
+
+    const sessionMaskVault: SessionMaskVaultState =
+      ((window as any).__sessionMaskVault as SessionMaskVaultState) || createEmptySessionMaskVault();
+    (window as any).__sessionMaskVault = sessionMaskVault;
+    let isRehydratingSessionMasks = false;
+
+    function saveSessionMasksFromSource(source: any) {
+      if (!source || isRehydratingSessionMasks) return;
+      if (source._bakeReplacedSlots !== undefined) {
+        sessionMaskVault.bakeReplacedSlots = source._bakeReplacedSlots !== false;
+      }
+      if (source._preserveMasksOnExport !== undefined) {
+        sessionMaskVault.preserveMasksOnExport = source._preserveMasksOnExport !== false;
+      }
+      sessionMaskVault.guidesEnabled = Boolean((window as any).__vapShowMaskGuides);
+
+      const customSlots: CustomEditableVapSlot[] = Array.isArray(source._customVapSlots)
+        ? source._customVapSlots
+        : [];
+      const customIds = new Set(customSlots.map((c) => String(c.srcId)));
+      const deletedIds: Set<string> =
+        source._deletedSlotIds instanceof Set ? source._deletedSlotIds : new Set();
+
+      const nextCustom: CustomEditableVapSlot[] = [];
+      const nextEditedNative: Record<string, SessionEditedSlotSnapshot> = {
+        ...(sessionMaskVault.editedNativeSlotsByTag || {}),
+      };
+      const nextReplacements: Record<string, PersistedSlotReplacementData> = {};
+      const nextCustomUrls: Record<string, string> = {};
+      const nextOverrides: Record<string, Record<string, any>> = {};
+
+      const toPlainReplacement = (rawRep: any): PersistedSlotReplacementData | undefined => {
+        if (!rawRep) return undefined;
+        const out: PersistedSlotReplacementData = {};
+        if (rawRep.active !== undefined) out.active = Boolean(rawRep.active);
+        if (rawRep.hidden !== undefined) out.hidden = Boolean(rawRep.hidden);
+        if (rawRep.customImg !== undefined) out.customImg = Boolean(rawRep.customImg);
+        if (rawRep.dataUrl) out.dataUrl = String(rawRep.dataUrl);
+        if (rawRep.text) out.text = String(rawRep.text);
+        if (rawRep.textColor) out.textColor = String(rawRep.textColor);
+        if (rawRep.fitMode) out.fitMode = String(rawRep.fitMode);
+        if (rawRep.useMask !== undefined) out.useMask = rawRep.useMask !== false;
+        if (rawRep.scale !== undefined) out.scale = Number(rawRep.scale);
+        if (rawRep.offsetX !== undefined) out.offsetX = Number(rawRep.offsetX);
+        if (rawRep.offsetY !== undefined) out.offsetY = Number(rawRep.offsetY);
+        return out;
+      };
+
+      const allEff = getEffectiveMaskSlots(source);
+      for (const sl of allEff) {
+        const sid = String(sl.srcId);
+        if (deletedIds.has(sid)) continue;
+        const rep = toPlainReplacement(source._vapSlotReplacements?.[sid]);
+        const customUrl = source._customMaskDataUrls?.[sid];
+        const rawOv = source._slotGeometryOverrides?.[sid]
+          ? { ...source._slotGeometryOverrides[sid] }
+          : undefined;
+
+        if (customIds.has(sid) || sl.isCustomAdded) {
+          const origCs = customSlots.find((c) => String(c.srcId) === sid) || sl;
+          nextCustom.push({ ...origCs, isCustomAdded: true });
+          if (rep) nextReplacements[sid] = rep;
+          if (customUrl) nextCustomUrls[sid] = String(customUrl);
+          if (rawOv) nextOverrides[sid] = rawOv;
+        } else {
+          // Only persist native slots that the user explicitly customized
+          const isModified = Boolean(
+            (rep && (rep.active || rep.text || rep.fitMode || rep.useMask === false)) ||
+              customUrl ||
+              (rawOv &&
+                (rawOv.hasCustomFrame ||
+                  rawOv.hasCustomShape ||
+                  rawOv.fillColor ||
+                  rawOv.zLayer !== undefined ||
+                  rawOv.z !== undefined ||
+                  rawOv.srcTag ||
+                  hasAnimatedMotion(rawOv.motionTransform as ProjectLayerTransform | undefined)))
+          );
+          if (isModified) {
+            const tagKey = String(sl.srcTag || sid).trim().toLowerCase();
+            nextEditedNative[tagKey] = {
+              slot: { ...sl },
+              replacement: rep,
+              geometryOverride: rawOv,
+              customMaskDataUrl: customUrl ? String(customUrl) : undefined,
+            };
+          }
+        }
+      }
+
+      sessionMaskVault.customSlots = nextCustom;
+      sessionMaskVault.editedNativeSlotsByTag = nextEditedNative;
+      sessionMaskVault.replacements = nextReplacements;
+      sessionMaskVault.customMaskDataUrls = nextCustomUrls;
+      sessionMaskVault.slotGeometryOverrides = nextOverrides;
+    }
+
+    function removeSlotFromSessionVault(srcId: string, srcTag?: string, photoOnly = false) {
+      const sid = String(srcId);
+      const tagKey = srcTag ? String(srcTag).trim().toLowerCase() : '';
+      if (photoOnly) {
+        if (sessionMaskVault.replacements) delete sessionMaskVault.replacements[sid];
+        if (tagKey && sessionMaskVault.editedNativeSlotsByTag?.[tagKey]) {
+          delete sessionMaskVault.editedNativeSlotsByTag[tagKey].replacement;
+        }
+        return;
+      }
+      sessionMaskVault.customSlots = (sessionMaskVault.customSlots || []).filter(
+        (s) => String(s.srcId) !== sid
+      );
+      if (sessionMaskVault.replacements) delete sessionMaskVault.replacements[sid];
+      if (sessionMaskVault.customMaskDataUrls) delete sessionMaskVault.customMaskDataUrls[sid];
+      if (sessionMaskVault.slotGeometryOverrides) delete sessionMaskVault.slotGeometryOverrides[sid];
+      if (tagKey && sessionMaskVault.editedNativeSlotsByTag) {
+        delete sessionMaskVault.editedNativeSlotsByTag[tagKey];
+      }
+      for (const k of Object.keys(sessionMaskVault.editedNativeSlotsByTag || {})) {
+        if (String(sessionMaskVault.editedNativeSlotsByTag[k]?.slot?.srcId) === sid) {
+          delete sessionMaskVault.editedNativeSlotsByTag[k];
+        }
+      }
+    }
+
+    async function rehydrateSessionMasksOnSource(source: any) {
+      if (!source) return;
+      const nativeSlots: any[] = Array.isArray(source?.meta?.dynamicSlots)
+        ? source.meta.dynamicSlots
+        : [];
+      const nativeSig = nativeSlots.map((s) => `${s.srcId}:${s.srcTag}`).join('|');
+      if (source._sessionMasksNativeSig === nativeSig && source._sessionVisualsRehydrated) {
+        return;
+      }
+
+      isRehydratingSessionMasks = true;
+      try {
+        source._sessionMasksNativeSig = nativeSig;
+        source._sessionVisualsRehydrated = true;
+
+        source._vapSlotReplacements = source._vapSlotReplacements || {};
+        source._vapOrigSilhouettes = source._vapOrigSilhouettes || {};
+        source._customVapSlots = [];
+        source._customMaskCanvases = {};
+        source._customMaskDataUrls = {};
+        source._slotGeometryOverrides = {};
+
+        const rec = reconcileSessionMasksOntoSource(sessionMaskVault, nativeSlots);
+        if (rec.hasAnyRestoredEdits) {
+          if (sessionMaskVault.bakeReplacedSlots !== undefined) {
+            source._bakeReplacedSlots = sessionMaskVault.bakeReplacedSlots !== false;
+          }
+          if (sessionMaskVault.preserveMasksOnExport !== undefined) {
+            source._preserveMasksOnExport = sessionMaskVault.preserveMasksOnExport !== false;
+          }
+          if (sessionMaskVault.guidesEnabled) {
+            (window as any).__vapShowMaskGuides = true;
+          }
+          source._customVapSlots = rec.customSlots;
+          source._slotGeometryOverrides = rec.slotGeometryOverrides;
+          source._hasMaskEdits = true;
+
+          // Hydrate custom silhouette canvases
+          for (const [sid, dataUrl] of Object.entries(rec.customMaskDataUrls || {})) {
+            if (!dataUrl) continue;
+            source._customMaskDataUrls[sid] = dataUrl;
+            const im = await imgOf(dataUrl);
+            if (im) {
+              const cw = Math.max(8, im.naturalWidth || 160);
+              const ch = Math.max(8, im.naturalHeight || 160);
+              const cv = mk(cw, ch);
+              cv.getContext('2d')?.drawImage(im, 0, 0, cw, ch);
+              source._customMaskCanvases[sid] = cv;
+            }
+          }
+
+          // Hydrate active replacement photos/texts onto S & asset map A & window.EDIT
+          const allEff = getEffectiveMaskSlots(source);
+          for (const [sid, rep] of Object.entries(rec.replacements || {})) {
+            if (!rep) continue;
+            const hydrated: any = { ...rep };
+            const matchingSlot = allEff.find((s) => String(s.srcId) === String(sid));
+            if (rep.dataUrl) {
+              const im = await imgOf(rep.dataUrl);
+              if (im) hydrated.source = im;
+              if (matchingSlot?.assetKey) {
+                A[matchingSlot.assetKey] = rep.dataUrl;
+                (window.EDIT = window.EDIT || {})[matchingSlot.assetKey] = rep.dataUrl;
+              }
+            }
+            source._vapSlotReplacements[sid] = hydrated;
+          }
+
+          // Update any composer layer links whose slotId remapped due to collision with new primary native slots
+          const remapEntries = Object.entries(rec.composerLinkRemaps || {});
+          if (remapEntries.length > 0) {
+            const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+            if (st && Array.isArray(st.overlays) && typeof (window as any).__setProjectComposerState === 'function') {
+              let linkChanged = false;
+              const nextOverlays = st.overlays.map((ov) => {
+                if (ov.isVapMask && ov.linkedMaskSlotId && rec.composerLinkRemaps[String(ov.linkedMaskSlotId)]) {
+                  linkChanged = true;
+                  return { ...ov, linkedMaskSlotId: rec.composerLinkRemaps[String(ov.linkedMaskSlotId)] };
+                }
+                return ov;
+              });
+              if (linkChanged) {
+                (window as any).__setProjectComposerState({ ...st, overlays: nextOverlays });
+              }
+            }
+          }
+        }
+      } finally {
+        isRehydratingSessionMasks = false;
+      }
+    }
+
+    async function rehydrateSessionVisualsOnSource(source: any) {
+      if (!source || S !== source) return;
+      await rehydrateSessionMasksOnSource(source);
+
+      // Re-apply gift background & stage edge feather
+      const curB = (window as any).__getGiftBg?.();
+      if (curB) (window as any).__applyGiftBg?.(curB.val, curB.type === 'image');
+      (window as any).__reapplyStageEdgeFeather?.();
+
+      // Re-inject persisted watermarks into A, window.EDIT, window.SV.bm and stage DOM
+      const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
+      if (wmLayers.length > 0) {
+        for (const wm of wmLayers) {
+          if (!wm?.imageKey || !wm?.dataUrl) continue;
+          A[wm.imageKey] = wm.dataUrl;
+          (window.EDIT = window.EDIT || {})[wm.imageKey] = wm.dataUrl;
+          if (window.SV?.bm && wm._bmp) {
+            window.SV.bm[wm.imageKey] = wm._bmp;
+          }
+        }
+        syncStageWatermarks();
+      }
+
+      // Sync composer stage canvases (primary transform & secondary layers)
+      if (typeof (window as any).__syncComposerStagePreview === 'function') {
+        (window as any).__syncComposerStagePreview();
+      }
+
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+      if (wmLayers.length > 0 || (source?._customVapSlots?.length || 0) > 0) {
+        renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
+      }
+    }
+    (window as any).__rehydrateSessionVisualsOnSource = rehydrateSessionVisualsOnSource;
+
+    function emitVapMasksChange(source: any) {
+      saveSessionMasksFromSource(source);
+      const snap = buildVapMasksSnapshotObj(source);
+      window.dispatchEvent(new CustomEvent('vapmaskschange', { detail: snap }));
+    }
+    (window as any).__emitVapMasksChange = emitVapMasksChange;
+
+    (window as any).__getVapMasksSnapshot = () => buildVapMasksSnapshotObj(S);
 
     (window as any).__toggleVapMaskGuides = (force?: boolean) => {
       (window as any).__vapShowMaskGuides =
@@ -6480,9 +7242,60 @@ export function initMotionToolsFixed() {
       }
     };
 
+    (window as any).__setVapMaskDepthBand = (srcId: string, band: MaskDepthBand) => {
+      const source = S;
+      if (!source) return;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      const slots = getEffectiveMaskSlots(source);
+      const bMap = setSlotDepthBand(slots, srcId, band);
+      for (const [id, vals] of Object.entries(bMap)) {
+        source._slotGeometryOverrides[id] = {
+          ...(source._slotGeometryOverrides[id] || {}),
+          z: vals.z,
+          zLayer: vals.zLayer,
+        };
+      }
+      source._hasMaskEdits = true;
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+    };
+
+    (window as any).__ensureMasksBehindAddedFrames = (targetBand: 'behindPrimary' | 'abovePrimary' = 'abovePrimary') => {
+      const source = S;
+      if (!source) return 0;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      let movedCount = 0;
+      let curSlots = getEffectiveMaskSlots(source);
+      const toDemote = curSlots.filter((sl) => {
+        const b = resolveMaskDepthBand(sl);
+        if (targetBand === 'behindPrimary') return b !== 'belowOverlays' && b !== 'behindPrimary';
+        return b === 'aboveOverlays';
+      });
+      for (const sl of toDemote) {
+        curSlots = getEffectiveMaskSlots(source);
+        const bMap = setSlotDepthBand(curSlots, sl.srcId, targetBand);
+        for (const [id, vals] of Object.entries(bMap)) {
+          source._slotGeometryOverrides[id] = {
+            ...(source._slotGeometryOverrides[id] || {}),
+            z: vals.z,
+            zLayer: vals.zLayer,
+          };
+        }
+        movedCount++;
+      }
+      if (movedCount > 0) {
+        source._hasMaskEdits = true;
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        emitVapMasksChange(source);
+      }
+      return movedCount;
+    };
+
     (window as any).__reorderVapMaskSlot = (
       srcId: string,
-      direction: 'up' | 'down' | 'top' | 'bottom' | 'toggleBehind'
+      direction: 'up' | 'down' | 'top' | 'bottom' | 'toggleBehind' | 'toFront' | 'toBack' | 'belowAll' | 'aboveAll'
     ) => {
       const source = S;
       if (!source) return;
@@ -6491,23 +7304,20 @@ export function initMotionToolsFixed() {
       const target = slots.find((s) => String(s.srcId) === String(srcId));
       if (!target) return;
 
-      if (direction === 'toggleBehind') {
-        const curZ = Number(target.z ?? 0);
-        const minZ = Math.min(0, ...slots.map((s) => Number(s.z ?? 0)));
-        const maxZ = Math.max(0, ...slots.map((s) => Number(s.z ?? 0)));
-        const nextZ = curZ < 0 ? maxZ + 1 : minZ - 1;
-        source._slotGeometryOverrides[target.srcId] = {
-          ...(source._slotGeometryOverrides[target.srcId] || {}),
-          z: nextZ,
+      const curBand = resolveMaskDepthBand(target);
+      const mappedDir: 'up' | 'down' | 'top' | 'bottom' | 'toFront' | 'toBack' | 'belowAll' | 'aboveAll' =
+        direction === 'toggleBehind'
+          ? curBand === 'belowOverlays' || curBand === 'behindPrimary'
+            ? 'toFront'
+            : 'toBack'
+          : direction;
+      const bMap = reorderMaskSlotsWithBands(slots, srcId, mappedDir);
+      for (const [id, vals] of Object.entries(bMap)) {
+        source._slotGeometryOverrides[id] = {
+          ...(source._slotGeometryOverrides[id] || {}),
+          z: vals.z,
+          zLayer: vals.zLayer,
         };
-      } else {
-        const zMap = reorderMaskSlotsZ(slots, srcId, direction);
-        for (const [id, nextZ] of Object.entries(zMap)) {
-          source._slotGeometryOverrides[id] = {
-            ...(source._slotGeometryOverrides[id] || {}),
-            z: nextZ,
-          };
-        }
       }
       source._hasMaskEdits = true;
       setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
@@ -6515,11 +7325,552 @@ export function initMotionToolsFixed() {
       emitVapMasksChange(source);
     };
 
+    (window as any).__createQuickVapMask = (opts?: {
+      srcType?: 'img' | 'txt';
+      srcTag?: string;
+      shapePreset?: VapMaskShapePreset;
+      band?: MaskDepthBand;
+      fillColor?: string;
+    }) => {
+      const source = S;
+      if (!source) {
+        toast('يرجى فتح ملف مشروع أولاً');
+        return null;
+      }
+      source._customVapSlots = source._customVapSlots || [];
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      const srcType: 'img' | 'txt' = opts?.srcType === 'txt' ? 'txt' : 'img';
+      const slots = getEffectiveMaskSlots(source);
+      const existingTags = new Set(slots.map((s) => s.srcTag));
+      const prefix = srcType === 'txt' ? 'textName' : 'avatar';
+      let idx = 1;
+      while (existingTags.has(`${prefix}${idx}`)) idx++;
+      const srcTag = (opts?.srcTag || `${prefix}${idx}`).trim();
+      const nextId = buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...(source._customVapSlots || [])]);
+      const sw = Math.max(40, source.w || 300);
+      const sh = Math.max(40, source.h || 300);
+      const mw = srcType === 'txt' ? Math.max(60, Math.round(sw * 0.68)) : Math.max(40, Math.round(sw * 0.42));
+      const mh = srcType === 'txt' ? Math.max(24, Math.round(sh * 0.12)) : mw;
+      const mx = Math.round((sw - mw) / 2);
+      const my = srcType === 'txt' ? Math.round(sh * 0.72) : Math.round((sh - mh) * 0.3);
+      const band: MaskDepthBand = opts?.band || 'behindPrimary';
+      const maxZ = slots.length ? Math.max(...slots.map((s) => Number(s.z ?? 0))) : -1;
+
+      const slot = makeCustomVapSlot({
+        srcId: nextId,
+        srcType,
+        srcTag,
+        x: mx,
+        y: my,
+        w: mw,
+        h: mh,
+        shapePreset: opts?.shapePreset || (srcType === 'txt' ? 'roundedRect' : 'circle'),
+        z: band === 'belowOverlays' || band === 'behindPrimary' ? -1 : maxZ + 1,
+      });
+      slot.zLayer = band;
+      if (opts?.fillColor) slot.fillColor = opts.fillColor;
+      source._customVapSlots.push(slot);
+
+      const bMap = setSlotDepthBand(getEffectiveMaskSlots(source), slot.srcId, band);
+      for (const [id, vals] of Object.entries(bMap)) {
+        source._slotGeometryOverrides[id] = {
+          ...(source._slotGeometryOverrides[id] || {}),
+          z: vals.z,
+          zLayer: vals.zLayer,
+          defaultFrame: id === String(slot.srcId) ? [mx, my, mw, mh] : source._slotGeometryOverrides[id]?.defaultFrame,
+        };
+      }
+      source._hasMaskEdits = true;
+      (window as any).__selectedVapMaskId = slot.srcId;
+      (window as any).__vapShowMaskGuides = true;
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+      toast(`✅ تمت إضافة القناع "${srcTag}"`);
+      return slot;
+    };
+
+    (window as any).__updateVapMaskSlotProps = async (
+      srcId: string,
+      patch: {
+        srcTag?: string;
+        fillColor?: string;
+        shapePreset?: VapMaskShapePreset;
+        fitMode?: string;
+        useMask?: boolean;
+        frame?: [number, number, number, number];
+        zLayer?: MaskDepthBand;
+        text?: string;
+        textColor?: string;
+        reset?: boolean;
+      }
+    ) => {
+      const source = S;
+      if (!source) return;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      source._vapSlotReplacements = source._vapSlotReplacements || {};
+      source._customMaskCanvases = source._customMaskCanvases || {};
+      source._customMaskDataUrls = source._customMaskDataUrls || {};
+
+      const slots = getEffectiveMaskSlots(source);
+      const slot = slots.find((s) => String(s.srcId) === String(srcId));
+      if (!slot) return;
+
+      if (patch.reset) {
+        removeSlotFromSessionVault(srcId, slot.srcTag, false);
+        delete source._vapSlotReplacements[srcId];
+        if (window.EDIT) delete window.EDIT[slot.assetKey];
+        delete source._slotGeometryOverrides[srcId];
+        delete source._customMaskCanvases[srcId];
+        delete source._customMaskDataUrls[srcId];
+        const fresh = getEffectiveMaskSlots(source).find((s) => String(s.srcId) === String(srcId)) || slot;
+        const silUrl = buildVapMaskSilhouetteDataUrl(source.vid, fresh, source);
+        source._vapOrigSilhouettes[srcId] = silUrl;
+        if (source.meta) A[fresh.assetKey] = silUrl;
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        emitVapMasksChange(source);
+        return;
+      }
+
+      const ov = { ...(source._slotGeometryOverrides[srcId] || {}) };
+      if (patch.srcTag !== undefined && patch.srcTag.trim()) ov.srcTag = patch.srcTag.trim();
+      if (patch.fillColor !== undefined) ov.fillColor = patch.fillColor;
+      if (patch.shapePreset !== undefined) {
+        if (patch.shapePreset !== 'customImage') {
+          delete source._customMaskCanvases[srcId];
+          delete source._customMaskDataUrls[srcId];
+        }
+        ov.shapePreset = patch.shapePreset;
+        ov.hasCustomShape = true;
+      }
+      if (Array.isArray(patch.frame)) {
+        const sw = Math.max(16, source.w || 300);
+        const sh = Math.max(16, source.h || 300);
+        const nw = Math.max(8, Math.min(sw, Math.round(patch.frame[2])));
+        const nh = Math.max(8, Math.min(sh, Math.round(patch.frame[3])));
+        const nx = Math.max(0, Math.min(sw - nw, Math.round(patch.frame[0])));
+        const ny = Math.max(0, Math.min(sh - nh, Math.round(patch.frame[1])));
+        ov.w = nw;
+        ov.h = nh;
+        ov.defaultFrame = [nx, ny, nw, nh];
+        ov.hasCustomFrame = true;
+      }
+      source._slotGeometryOverrides[srcId] = ov;
+
+      if (patch.zLayer) {
+        const bMap = setSlotDepthBand(getEffectiveMaskSlots(source), srcId, patch.zLayer);
+        for (const [id, vals] of Object.entries(bMap)) {
+          source._slotGeometryOverrides[id] = {
+            ...(source._slotGeometryOverrides[id] || {}),
+            z: vals.z,
+            zLayer: vals.zLayer,
+          };
+        }
+      }
+
+      if (patch.fitMode !== undefined || patch.useMask !== undefined) {
+        const rep = { ...(source._vapSlotReplacements[srcId] || {}) };
+        if (patch.fitMode !== undefined) rep.fitMode = patch.fitMode;
+        if (patch.useMask !== undefined) rep.useMask = patch.useMask;
+        source._vapSlotReplacements[srcId] = rep;
+      }
+
+      if (patch.text !== undefined) {
+        const val = patch.text.trim();
+        if (val) {
+          const col = patch.textColor || source._vapSlotReplacements[srcId]?.textColor || slot.color || '#ffffff';
+          const c = renderTextSlotCanvas(slot, val, col);
+          const dataUrl = c.toDataURL('image/png');
+          const prev = source._vapSlotReplacements[srcId] || {};
+          source._vapSlotReplacements[srcId] = {
+            ...prev,
+            text: val,
+            textColor: col,
+            fitMode: prev.fitMode || 'contain',
+            useMask: prev.useMask !== false,
+          };
+          A[slot.assetKey] = dataUrl;
+          await applyEdit(dataUrl, slot.assetKey);
+        }
+      }
+
+      source._hasMaskEdits = true;
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+    };
+
+    (window as any).__uploadVapMaskPhoto = (srcId: string) => {
+      const source = S;
+      if (!source) return;
+      const slot = getEffectiveMaskSlots(source).find((s) => String(s.srcId) === String(srcId));
+      if (!slot) return;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      const curBand = resolveMaskDepthBand(slot);
+      const targetBand = curBand === 'abovePrimary' || !curBand ? 'behindPrimary' : curBand;
+      const bMap = setSlotDepthBand(getEffectiveMaskSlots(source), slot.srcId, targetBand);
+      for (const [id, vals] of Object.entries(bMap)) {
+        source._slotGeometryOverrides[id] = {
+          ...(source._slotGeometryOverrides[id] || {}),
+          z: vals.z,
+          zLayer: vals.zLayer,
+        };
+      }
+      source._slotGeometryOverrides[slot.srcId] = {
+        ...(source._slotGeometryOverrides[slot.srcId] || {}),
+        defaultFrame: slot.defaultFrame || [0, 0, slot.w, slot.h],
+      };
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = 'image/*';
+      inp.onchange = () => {
+        const file = inp.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const dataUrl = String(reader.result || '');
+          if (!dataUrl) return;
+          A[slot.assetKey] = dataUrl;
+          const prev = source._vapSlotReplacements[slot.srcId] || {};
+          source._vapSlotReplacements[slot.srcId] = {
+            ...prev,
+            dataUrl,
+            active: true,
+            fitMode: prev.fitMode || 'cover',
+            useMask: prev.useMask !== false,
+          };
+          source._bakeReplacedSlots = true;
+          source._hasMaskEdits = true;
+          await applyEdit(dataUrl, slot.assetKey);
+          saveSessionMasksFromSource(source);
+          setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+          repaintVapStageNow(source);
+          emitVapMasksChange(source);
+          toast(`✅ تم رفع وحفظ الصورة داخل القناع "${slot.srcTag}"`);
+        };
+        reader.readAsDataURL(file);
+      };
+      inp.click();
+    };
+
+    (window as any).__clearVapMaskPhoto = (srcId: string) => {
+      const source = S;
+      if (!source) return;
+      const slot = getEffectiveMaskSlots(source).find((s) => String(s.srcId) === String(srcId));
+      if (!slot) return;
+      removeSlotFromSessionVault(srcId, slot.srcTag, true);
+      delete source._vapSlotReplacements?.[srcId];
+      if (window.EDIT) delete window.EDIT[slot.assetKey];
+      const silUrl = buildVapMaskSilhouetteDataUrl(source.vid, slot, source);
+      source._vapOrigSilhouettes[srcId] = silUrl;
+      if (source.meta) A[slot.assetKey] = silUrl;
+      else delete A[slot.assetKey];
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+      toast(`🧹 تم مسح الصورة من القناع "${slot.srcTag}"`);
+    };
+
+    (window as any).__uploadVapMaskShapePng = (srcId: string) => {
+      const source = S;
+      if (!source) return;
+      const slot = getEffectiveMaskSlots(source).find((s) => String(s.srcId) === String(srcId));
+      if (!slot) return;
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = 'image/*';
+      inp.onchange = async () => {
+        const file = inp.files?.[0];
+        if (!file) return;
+        const res = await convertUploadedMaskFileToWhiteOnBlack(file);
+        if (!res) return toast('تعذر قراءة صورة القناع');
+        source._customMaskCanvases[srcId] = res.canvas;
+        source._customMaskDataUrls[srcId] = res.dataUrl;
+        source._slotGeometryOverrides[srcId] = {
+          ...(source._slotGeometryOverrides[srcId] || {}),
+          shapePreset: 'customImage',
+          hasCustomShape: true,
+          maskSilhouetteDataUrl: res.dataUrl,
+        };
+        source._hasMaskEdits = true;
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        emitVapMasksChange(source);
+        toast(`🎭 تم تحديث شكل القناع "${slot.srcTag}"`);
+      };
+      inp.click();
+    };
+
+    (window as any).__convertVapDummyMask = (
+      dummyId: string,
+      mode: 'convert' | 'convertAndReplace' | 'eraseOnly'
+    ) => {
+      const source = S;
+      if (!source) return;
+      const dm = (source._detectedDummyMasks || []).find((d: any) => String(d.id) === String(dummyId));
+      if (dm) convertDetectedDummyMask(source, dm, mode);
+    };
+
+    (window as any).__setVapBakeReplaced = (val: boolean) => {
+      if (!S) return;
+      S._bakeReplacedSlots = Boolean(val);
+      repaintVapStageNow(S);
+      emitVapMasksChange(S);
+    };
+
+    (window as any).__openComposerMasksTab = () => {
+      (window as any).__pendingComposerTab = 'masks';
+      (window as any).__openComposerMenu?.();
+      window.dispatchEvent(new CustomEvent('opencomposermaskstab'));
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('opencomposermaskstab'));
+      }, 40);
+    };
+
+    (window as any).__openComposerAllLayersTab = () => {
+      (window as any).__pendingComposerTab = 'all';
+      (window as any).__openComposerMenu?.();
+      window.dispatchEvent(new CustomEvent('opencomposeralllayerstab'));
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('opencomposeralllayerstab'));
+      }, 40);
+    };
+
+    (window as any).__getPrimaryProjectInfo = () => {
+      const f = cur || (window as any).__currentMotionFile || null;
+      return {
+        hasSource: Boolean(S || f),
+        name: f?.name || (S ? 'المشروع الأساسي' : ''),
+        format: S?.meta?.kind || (f?.name?.split('.').pop() || 'PROJECT').toUpperCase(),
+        width: Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 400),
+        height: Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 400),
+        fps: Math.max(1, (S && S.fps) || +($('#fps') as HTMLInputElement)?.value || 24),
+        frames: Math.max(1, (S && S.n) || 30),
+      };
+    };
+
+    (window as any).__getPrimaryLayerPreviewThumb = (): string => {
+      try {
+        const w = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 400);
+        const h = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 400);
+        const maxSide = 128;
+        const sc = Math.min(1, maxSide / Math.max(w, h));
+        const tw = Math.max(32, Math.round(w * sc));
+        const th = Math.max(32, Math.round(h * sc));
+        const tc = mk(tw, th);
+        const tx = tc.getContext('2d', { willReadFrequently: true });
+        if (tx) {
+          let drew = false;
+          const rawDraw = S?._rawDraw || S?.draw;
+          if (typeof rawDraw === 'function') {
+            try {
+              rawDraw(tx, tw, th);
+              const px = tx.getImageData(0, 0, tw, th).data;
+              for (let i = 3; i < px.length; i += 16) {
+                if (px[i] > 8) {
+                  drew = true;
+                  break;
+                }
+              }
+            } catch (_) {}
+          }
+          if (!drew) {
+            const liveCanvas = document.querySelector(
+              '#view canvas:not(#projectComposerUnderlayCanvas):not(#projectComposerOverlayCanvas):not(#vapDynamicMaskGuides)'
+            ) as HTMLCanvasElement | null;
+            if (liveCanvas && liveCanvas.width > 0 && liveCanvas.height > 0) {
+              tx.clearRect(0, 0, tw, th);
+              tx.drawImage(liveCanvas, 0, 0, tw, th);
+              drew = true;
+            } else {
+              const liveVid = document.querySelector('#view video') as HTMLVideoElement | null;
+              if (liveVid && liveVid.readyState >= 2) {
+                tx.clearRect(0, 0, tw, th);
+                tx.drawImage(liveVid, 0, 0, tw, th);
+                drew = true;
+              }
+            }
+          }
+          if (drew) {
+            return tc.toDataURL('image/png');
+          }
+        }
+      } catch (_) {}
+      const firstKey = Object.keys(A)[0];
+      return firstKey ? A[firstKey] : '';
+    };
+
+    (window as any).__openAssetEditModal = (k: string) => openEdit(k);
+    (window as any).__openAssetPreviewModal = (k: string) => openAssetPreviewModal(k);
+    (window as any).__copyAssetImage = (k: string) => copyImg(k);
+    (window as any).__downloadSingleAsset = async (k: string) => {
+      const url = A[k];
+      if (!url) return;
+      try {
+        const blob = await (await fetch(url)).blob();
+        const fileName = /\.(png|jpe?g|webp|gif)$/i.test(k) ? k : `${k}.png`;
+        await dl(blob, fileName);
+      } catch (e: any) {
+        toast(e?.message || 'تعذر تحميل الصورة');
+      }
+    };
+
+    (window as any).__isStaticAssetHidden = (k: string) => Boolean(S?._hiddenAssetOriginals?.[k]);
+
+    (window as any).__toggleStaticAssetVisibility = async (k: string) => {
+      if (!S) return;
+      S._hiddenAssetOriginals = S._hiddenAssetOriginals || {};
+      const blankUrl =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH5AoFEhQY42k7UQAAAB1pVFh0Q29tbWVudAAAAAAAQ3JlYXRlZCB3aXRoIEdJTVBkLmUHAAAADElEQVQI12NgYGBgAAAABQABXvMqOgAAAABJRU5ErkJggg==';
+      if (S._hiddenAssetOriginals[k]) {
+        const orig = S._hiddenAssetOriginals[k];
+        delete S._hiddenAssetOriginals[k];
+        A[k] = orig;
+        if (window.EDIT) window.EDIT[k] = orig;
+        await applyEdit(orig, k);
+        const thImg = document.querySelector(`.th[data-k="${k}"] img`) as HTMLImageElement | null;
+        if (thImg) thImg.src = orig;
+        toast(`👁️ تم إظهار العنصر الأصلي (${k})`);
+      } else {
+        const origUrl = A[k];
+        if (!origUrl) return;
+        S._hiddenAssetOriginals[k] = origUrl;
+        if (window.EDIT) window.EDIT[k] = blankUrl;
+        await applyEdit(blankUrl, k);
+        toast(`🚫 تم إخفاء النسخة الثابتة (${k}) داخل المشروع`);
+      }
+      try {
+        window.dispatchEvent(new CustomEvent('motionassetschange', { detail: { ...A } }));
+      } catch (_) {}
+    };
+
+    (window as any).__promoteAssetToComposerLayer = async (
+      k: string,
+      hideOriginal = true
+    ): Promise<SecondaryOverlayLayer | null> => {
+      const origUrl = S?._hiddenAssetOriginals?.[k] || A[k];
+      if (!origUrl) return null;
+      try {
+        const blob = await (await fetch(origUrl)).blob();
+        const fileName = /\.(png|jpe?g|webp|gif)$/i.test(k) ? k : `${k}.png`;
+        const file = new File([blob], fileName, { type: blob.type || 'image/png' });
+        const created = await (window as any).__loadSecondaryOverlayFile?.(file);
+        if (created && hideOriginal && S && !S._hiddenAssetOriginals?.[k]) {
+          await (window as any).__toggleStaticAssetVisibility?.(k);
+        }
+        return created || null;
+      } catch (err: any) {
+        toast(`❌ تعذر تحويل العنصر لطبقة: ${err?.message || err}`);
+        return null;
+      }
+    };
+
+    (window as any).__convertAssetToVapMask = async (k: string) => {
+      const source = S;
+      const origUrl = source?._hiddenAssetOriginals?.[k] || A[k];
+      if (!source || !origUrl) return;
+      try {
+        const created = await (window as any).__createQuickVapMask?.({
+          srcType: 'img',
+          band: 'behindPrimary',
+        });
+        const slots = getEffectiveMaskSlots(source);
+        const target = created || slots[slots.length - 1];
+        if (!target) return;
+        A[target.assetKey] = origUrl;
+        source._vapSlotReplacements = source._vapSlotReplacements || {};
+        source._vapSlotReplacements[target.srcId] = {
+          ...(source._vapSlotReplacements[target.srcId] || {}),
+          dataUrl: origUrl,
+          active: true,
+          fitMode: 'contain',
+          useMask: true,
+        };
+        source._bakeReplacedSlots = true;
+        source._hasMaskEdits = true;
+        await applyEdit(origUrl, target.assetKey);
+        saveSessionMasksFromSource(source);
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        emitVapMasksChange(source);
+        toast(`🎭 تم تحويل "${k}" إلى قناع قابل للتحريك`);
+      } catch (err: any) {
+        toast(`❌ تعذر التحويل لقناع: ${err?.message || err}`);
+      }
+    };
+
+    (window as any).__promoteWatermarkToComposerLayer = async (
+      imageKey: string,
+      removeWatermark = true
+    ): Promise<SecondaryOverlayLayer | null> => {
+      const layers: AppliedWatermarkLayer[] = (window as any).__WATERMARK_LAYERS || [];
+      const wm = layers.find((ly) => ly.imageKey === imageKey);
+      if (!wm || !wm.dataUrl) return null;
+      try {
+        const blob = await (await fetch(wm.dataUrl)).blob();
+        const fileName = `${wm.text ? wm.text.slice(0, 18) : wm.imageKey}.png`;
+        const file = new File([blob], fileName, { type: blob.type || 'image/png' });
+        const created = await (window as any).__loadSecondaryOverlayFile?.(file);
+        if (created && removeWatermark) {
+          (window as any).__removeWatermarkLayerByKey?.(imageKey);
+        }
+        return created || null;
+      } catch (err: any) {
+        toast(`❌ تعذر تحويل العلامة المائية لطبقة: ${err?.message || err}`);
+        return null;
+      }
+    };
+
+    (window as any).__setVapMaskMotionTransform = (
+      srcId: string,
+      motionTransform: ProjectLayerTransform
+    ) => {
+      const source = S;
+      if (!source) return;
+      const slot = getEffectiveMaskSlots(source).find((s) => String(s.srcId) === String(srcId));
+      if (!slot) return;
+      source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+      const sw = Math.max(16, source.w || 300);
+      const sh = Math.max(16, source.h || 300);
+      const clamped = clampTransformValues(motionTransform, sw, sh);
+      source._slotGeometryOverrides[srcId] = {
+        ...(source._slotGeometryOverrides[srcId] || {}),
+        motionTransform: clamped,
+      };
+      source._hasMaskEdits = true;
+      repaintVapStageNow(source);
+      if (typeof (window as any).__syncComposerStagePreview === 'function') {
+        (window as any).__syncComposerStagePreview();
+      }
+      emitVapMasksChange(source);
+    };
+
+    (window as any).__openComposerMotionForMask = (srcId: string) => {
+      (window as any).__selectedVapMaskId = srcId ? String(srcId) : null;
+      (window as any).__openComposerMenu?.();
+      window.dispatchEvent(new CustomEvent('opencomposermotionformask', { detail: { srcId } }));
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('opencomposermotionformask', { detail: { srcId } }));
+      }, 40);
+    };
+
+    (window as any).__getProjectTimelineInfo = () => {
+      const fps = Math.max(1, (S && S.fps) || Number(($('#fps') as HTMLInputElement)?.value) || 24);
+      const totalFrames = Math.max(1, (S && S.n) || 30);
+      return {
+        totalFrames,
+        fps,
+        durationSec: totalFrames / fps,
+      };
+    };
+
     (window as any).__deleteVapMaskSlot = (srcId: string) => {
       const source = S;
       if (!source) return;
       const slots = getEffectiveMaskSlots(source);
       const target = slots.find((s) => String(s.srcId) === String(srcId));
+      removeSlotFromSessionVault(srcId, target?.srcTag, false);
       source._deletedSlotIds = source._deletedSlotIds instanceof Set ? source._deletedSlotIds : new Set();
       source._deletedSlotIds.add(String(srcId));
       source._customVapSlots = (source._customVapSlots || []).filter((s: any) => String(s.srcId) !== String(srcId));
@@ -6527,7 +7878,16 @@ export function initMotionToolsFixed() {
       if (source._customMaskCanvases) delete source._customMaskCanvases[srcId];
       if (source._customMaskDataUrls) delete source._customMaskDataUrls[srcId];
       if (source._slotGeometryOverrides) delete source._slotGeometryOverrides[srcId];
-      if (target?.assetKey && A[target.assetKey]) delete A[target.assetKey];
+      if (source._vapOrigSilhouettes) delete source._vapOrigSilhouettes[srcId];
+      if (target?.assetKey) {
+        if (A[target.assetKey]) delete A[target.assetKey];
+        if (window.EDIT && window.EDIT[target.assetKey]) delete window.EDIT[target.assetKey];
+      }
+      if (Array.isArray(source._detectedEmbeddedFrames)) {
+        source._detectedEmbeddedFrames = source._detectedEmbeddedFrames.map((df: any) =>
+          String(df.linkedSlotId || '') === String(srcId) ? { ...df, linkedSlotId: undefined } : df
+        );
+      }
       if (String((window as any).__selectedVapMaskId || '') === String(srcId)) {
         (window as any).__selectedVapMaskId = null;
       }
@@ -6549,6 +7909,7 @@ export function initMotionToolsFixed() {
         }
       }
 
+      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
       setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
       repaintVapStageNow(source);
       emitVapMasksChange(source);
@@ -6572,6 +7933,7 @@ export function initMotionToolsFixed() {
         w: nw,
         h: nh,
         defaultFrame: [nx, ny, nw, nh],
+        hasCustomFrame: true,
       };
       source._hasMaskEdits = true;
       repaintVapStageNow(source);
@@ -6606,6 +7968,130 @@ export function initMotionToolsFixed() {
       repaintVapStageNow(source);
     };
 
+    function buildDummyPreviewThumbUrl(dm: VapDetectedDummyMask): string {
+      const [_, __, dw, dh] = dm.frame;
+      const cv = mk(Math.max(2, dw), Math.max(2, dh));
+      const cx2 = cv.getContext('2d')!;
+      const idata = cx2.createImageData(Math.max(2, dw), Math.max(2, dh));
+      const src = dm.silhouetteRgba;
+      const rgb = dm.fillRgb || [192, 132, 252];
+      const d = idata.data;
+      const len = Math.min(d.length, src.length);
+      for (let i = 0; i < len; i += 4) {
+        if (src[i] > 128) {
+          d[i] = rgb[0];
+          d[i + 1] = rgb[1];
+          d[i + 2] = rgb[2];
+          d[i + 3] = 235;
+        }
+      }
+      cx2.putImageData(idata, 0, 0);
+      return cv.toDataURL('image/png');
+    }
+
+    function convertDetectedDummyMask(
+      source: any,
+      dm: VapDetectedDummyMask,
+      mode: 'convert' | 'convertAndReplace' | 'eraseOnly'
+    ) {
+      if (!source || !dm) return;
+      source._dummyMaskErasures = Array.isArray(source._dummyMaskErasures) ? source._dummyMaskErasures : [];
+      source._convertedDummyIds = source._convertedDummyIds instanceof Set ? source._convertedDummyIds : new Set();
+      source._customVapSlots = Array.isArray(source._customVapSlots) ? source._customVapSlots : [];
+      source._customMaskCanvases = source._customMaskCanvases || {};
+      source._customMaskDataUrls = source._customMaskDataUrls || {};
+
+      const erasure: VapDummyErasureRegion = {
+        id: dm.id,
+        kind: dm.kind,
+        frame: dm.frame,
+        fillRgb: dm.fillRgb,
+        silhouetteRgba: dm.silhouetteRgba,
+      };
+      source._dummyMaskErasures = source._dummyMaskErasures.filter((e: any) => e.id !== dm.id);
+      source._dummyMaskErasures.push(erasure);
+      source._convertedDummyIds.add(dm.id);
+      source._detectedDummyMasks = (source._detectedDummyMasks || []).filter((x: any) => x.id !== dm.id);
+      source._hasMaskEdits = true;
+
+      if (mode === 'eraseOnly') {
+        setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+        repaintVapStageNow(source);
+        emitVapMasksChange(source);
+        toast(`🧹 تم مسح "${dm.labelAr}" نظيفاً من الفيديو`);
+        return;
+      }
+
+      const [fx, fy, fw, fh] = dm.frame;
+      const silCanvas = mk(Math.max(2, fw), Math.max(2, fh));
+      const silCtx = silCanvas.getContext('2d')!;
+      silCtx.putImageData(new ImageData(new Uint8ClampedArray(dm.silhouetteRgba), Math.max(2, fw), Math.max(2, fh)), 0, 0);
+      const silDataUrl = silCanvas.toDataURL('image/png');
+
+      const existingSlots = getEffectiveMaskSlots(source);
+      const existingTags = new Set(existingSlots.map((s) => s.srcTag));
+      let idx = 1;
+      while (existingTags.has(`avatar${idx}`)) idx++;
+      const srcTag = `avatar${idx}`;
+      const nextId = buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...(source._customVapSlots || [])]);
+      const maxZ = existingSlots.length ? Math.max(...existingSlots.map((s) => Number(s.z ?? 0))) : -1;
+
+      const newSlot = makeCustomVapSlot({
+        srcId: nextId,
+        srcType: 'img',
+        srcTag,
+        x: fx,
+        y: fy,
+        w: fw,
+        h: fh,
+        fitType: 'cover',
+        shapePreset: 'customImage',
+        maskSilhouetteDataUrl: silDataUrl,
+        z: maxZ + 1,
+      });
+      newSlot.hasCustomFrame = true;
+      newSlot.hasCustomShape = true;
+      newSlot.fillColor = 'transparent';
+
+      source._customVapSlots.push(newSlot);
+      source._customMaskCanvases[newSlot.srcId] = silCanvas;
+      source._customMaskDataUrls[newSlot.srcId] = silDataUrl;
+      (window as any).__selectedVapMaskId = newSlot.srcId;
+      (window as any).__vapShowMaskGuides = true;
+
+      setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+      repaintVapStageNow(source);
+      emitVapMasksChange(source);
+      toast(`🎭 تم تحويل "${dm.labelAr}" إلى قناع نظيف (${srcTag})`);
+
+      if (mode === 'convertAndReplace') {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = 'image/*';
+        inp.onchange = () => {
+          const file = inp.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const dataUrl = String(reader.result || '');
+            if (!dataUrl) return;
+            A[newSlot.assetKey] = dataUrl;
+            const prev = source._vapSlotReplacements?.[newSlot.srcId] || {};
+            if (!prev.fitMode) prev.fitMode = 'cover';
+            source._vapSlotReplacements[newSlot.srcId] = prev;
+            source._bakeReplacedSlots = true;
+            source._hasMaskEdits = true;
+            await applyEdit(dataUrl, newSlot.assetKey);
+            setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
+            repaintVapStageNow(source);
+            toast(`✅ تم وضع الصورة داخل القناع النظيف "${srcTag}"`);
+          };
+          reader.readAsDataURL(file);
+        };
+        inp.click();
+      }
+    }
+
     function ingestDetectedVapEmbeddedFramesFromRgba(
       source: any,
       rgba: Uint8ClampedArray | Uint8Array,
@@ -6614,42 +8100,75 @@ export function initMotionToolsFixed() {
       slots: any[]
     ): VapDetectedEmbeddedFrame[] {
       if (!source || !rgba || cw < 16 || ch < 16) return [];
-      const detected = detectVapEmbeddedFramesFromRgba(rgba, cw, ch, slots || []);
-      if (!detected.length) return [];
-
-      source._detectedEmbeddedFrames = detected;
-      source._embeddedFrameThumbnails = source._embeddedFrameThumbnails || {};
-      source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
-
+      source._detectedEmbeddedFrames = [];
       for (const k of Object.keys(A)) {
         if (k.startsWith('vap_frame_')) delete A[k];
       }
 
-      for (const df of detected) {
-        const crop = extractEmbeddedFrameRgbaCrop(rgba, cw, ch, df.frame);
-        const cv = mk(crop.width, crop.height);
-        const ctx = cv.getContext('2d')!;
-        ctx.putImageData(new ImageData(crop.rgba, crop.width, crop.height), 0, 0);
-        const cropUrl = cv.toDataURL('image/png');
-        source._embeddedFrameThumbnails[df.id] = cropUrl;
-        const ov = source._embeddedFrameOverrides[df.id];
-        A[df.assetKey] = ov?.replacementDataUrl || cropUrl;
+      // Auto-detect cutout holes and solid-color dummy placeholder masks
+      const erasures: VapDummyErasureRegion[] = Array.isArray(source._dummyMaskErasures) ? source._dummyMaskErasures : [];
+      const convertedSet: Set<string> = source._convertedDummyIds instanceof Set ? source._convertedDummyIds : new Set();
+      const rawDummies = detectDummyMasksFromRgba(rgba, cw, ch, slots || []);
+      const filteredDummies = rawDummies.filter((dm) => {
+        if (convertedSet.has(dm.id)) return false;
+        const [dx, dy, dw, dh] = dm.frame;
+        const cx = dx + dw / 2;
+        const cy = dy + dh / 2;
+        for (const er of erasures) {
+          const [ex, ey, ew, eh] = er.frame;
+          if (cx >= ex && cx <= ex + ew && cy >= ey && cy <= ey + eh) return false;
+        }
+        return true;
+      });
+      source._detectedDummyMasks = filteredDummies;
+      source._detectedDummyThumbs = source._detectedDummyThumbs || {};
+      for (const dm of filteredDummies) {
+        source._detectedDummyThumbs[dm.id] = buildDummyPreviewThumbUrl(dm);
       }
 
-      renderAssetCards(($('#q') as HTMLInputElement)?.value || '');
       updateInfoDynamicMasksSummary(source);
-      if (!source._refreshingEmbeddedFramesUI) {
-        source._refreshingEmbeddedFramesUI = true;
-        requestAnimationFrame(() => {
-          source._refreshingEmbeddedFramesUI = false;
-          if (source === S) {
-            setupVapDynamicMasksUI(source, source.vid || null, source.meta || null);
-          }
-        });
-      }
-      return detected;
+      return [];
     }
     (window as any).__ingestDetectedVapEmbeddedFramesFromRgba = ingestDetectedVapEmbeddedFramesFromRgba;
+
+    (window as any).__uploadSvgaFrameInMasksBundle = () => {
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = '.svga,application/octet-stream';
+      inp.onchange = async () => {
+        const file = inp.files?.[0];
+        if (!file) return;
+        if (!S) {
+          await load(file);
+          toast('✅ تم تحميل ملف SVGA الأساسي للمشروع');
+          return;
+        }
+        const loader = (window as any).__loadSecondaryOverlayFile;
+        if (typeof loader !== 'function') {
+          toast('❌ محرك الطبقات الإضافية غير جاهز بعد');
+          return;
+        }
+        const addedLayer = await loader(file, undefined, {
+          zOrder: 'above',
+          fitMode: 'contain',
+          keepActiveTarget: true,
+        });
+        if (addedLayer) {
+          const moved = (window as any).__ensureMasksBehindAddedFrames?.('abovePrimary') || 0;
+          if (S) {
+            setupVapDynamicMasksUI(S, S.vid || null, S.meta || null);
+            repaintVapStageNow(S);
+            emitVapMasksChange(S);
+          }
+          toast(
+            moved > 0
+              ? `✅ تمت إضافة ملف SVGA "${addedLayer.name}" وتثبيت الأقنعة خلفه`
+              : `✅ تمت إضافة ملف SVGA "${addedLayer.name}" فوق الأقنعة`
+          );
+        }
+      };
+      inp.click();
+    };
 
     async function scanVapEmbeddedVideoFrames(
       source: any,
@@ -6721,10 +8240,11 @@ export function initMotionToolsFixed() {
       const detected = ingestDetectedVapEmbeddedFramesFromRgba(source, snap.rgba, cw, ch, slots);
       if (forceToast) {
         const isolatedCount = detected.filter((d) => d.isIsolatedFrame).length;
+        const dummyCount = (source._detectedDummyMasks || []).length;
         toast(
-          detected.length > 0
-            ? `✅ تم التعرف على ${detected.length} من إطارات وطبقات الفيديو (${isolatedCount} إطار منفصل)`
-            : 'لم يتم العثور على إطارات منفصلة في هذه اللقطة'
+          detected.length > 0 || dummyCount > 0
+            ? `✅ تم التعرف على ${detected.length} إطار/مشهد (${isolatedCount} إطار منفصل) و ${dummyCount} قناع وهمي`
+            : 'لم يتم العثور على إطارات أو أقنعة وهمية في هذه اللقطة'
         );
       }
       return detected;
@@ -6749,12 +8269,16 @@ export function initMotionToolsFixed() {
       source._detectedEmbeddedFrames = source._detectedEmbeddedFrames || [];
       source._embeddedFrameThumbnails = source._embeddedFrameThumbnails || {};
       source._embeddedFrameOverrides = source._embeddedFrameOverrides || {};
+      source._detectedDummyMasks = source._detectedDummyMasks || [];
+      source._dummyMaskErasures = source._dummyMaskErasures || [];
+      if (!(source._convertedDummyIds instanceof Set)) source._convertedDummyIds = new Set();
       if (!(source._deletedSlotIds instanceof Set)) source._deletedSlotIds = new Set();
       if (source._preserveMasksOnExport === undefined) source._preserveMasksOnExport = true;
       if (source._bakeReplacedSlots === undefined) source._bakeReplacedSlots = true;
 
       const slots = getEffectiveMaskSlots(source);
       const detectedFrames: VapDetectedEmbeddedFrame[] = source._detectedEmbeddedFrames || [];
+      const detectedDummies: VapDetectedDummyMask[] = source._detectedDummyMasks || [];
       const isVapVideo = Boolean(clamped || source.meta);
 
       if (isVapVideo) {
@@ -6768,6 +8292,7 @@ export function initMotionToolsFixed() {
           A[slot.assetKey] = rep && rep.active && rep.dataUrl ? rep.dataUrl : silUrl;
         }
         for (const df of detectedFrames) {
+          if (!df.isIsolatedFrame) continue;
           const ov = source._embeddedFrameOverrides[df.id];
           const thumbUrl = ov?.replacementDataUrl || source._embeddedFrameThumbnails[df.id];
           if (thumbUrl) A[df.assetKey] = thumbUrl;
@@ -6866,6 +8391,17 @@ export function initMotionToolsFixed() {
                     " title="التعرف على الإطارات والطبقات المحطوطة داخل الفيديو في هذه اللقطة">🔍 فحص الإطارات</button>`
                   : ''
               }
+              <button type="button" id="vapOpenComposerMasksBtn" style="
+                padding: 3px 7px;
+                font-size: 10px;
+                font-weight: 700;
+                border-radius: 7px;
+                cursor: pointer;
+                border: 1px solid rgba(56, 189, 248, 0.5);
+                background: rgba(14, 165, 233, 0.16);
+                color: #bae6fd;
+                white-space: nowrap;
+              " title="فتح حزمة التحكم الموحدة في الأقنعة داخل قائمة تحريك المشروع">🎛️ حزمة الأقنعة</button>
               <button type="button" id="vapToggleAddMaskBtn" style="
                 padding: 3px 7px;
                 font-size: 10px;
@@ -6949,6 +8485,61 @@ export function initMotionToolsFixed() {
               cursor:pointer;
             ">✅ إضافة القناع</button>
           </div>
+
+          ${
+            detectedDummies.length > 0
+              ? `
+            <div style="
+              display:flex;
+              flex-direction:column;
+              gap:5px;
+              background:rgba(48, 12, 34, 0.55);
+              border:1px solid rgba(244, 114, 182, 0.42);
+              border-radius:9px;
+              padding:7px;
+            ">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+                <span style="font-size:10.5px;font-weight:800;color:#f9a8d4;display:flex;align-items:center;gap:4px;">
+                  <span>🎯 أقنعة وهمية مكتشفة تلقائياً</span>
+                  <span style="background:rgba(244,114,182,0.22);color:#fbcfe8;padding:0 5px;border-radius:5px;font-size:9.5px;">${detectedDummies.length}</span>
+                </span>
+              </div>
+              ${detectedDummies
+                .map((dm) => {
+                  const dmThumb = source._detectedDummyThumbs?.[dm.id] || '';
+                  const dmKind = dm.kind === 'chroma_dummy' ? 'قناع لوني وهمي' : 'فراغ مفرغ داخل الإطار';
+                  return `
+                    <div data-vap-dummy-card="${dm.id}" style="
+                      background:rgba(15, 11, 20, 0.92);
+                      border:1px solid rgba(244, 114, 182, 0.35);
+                      border-radius:8px;
+                      padding:6px;
+                      display:flex;
+                      flex-direction:column;
+                      gap:5px;
+                    ">
+                      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                        <div style="width:30px;height:30px;border-radius:6px;overflow:hidden;flex-shrink:0;border:1px solid rgba(244,114,182,0.45);background:repeating-conic-gradient(#232334 0 25%, #171723 0 50%) 0 0 / 8px 8px;display:grid;place-items:center;">
+                          ${dmThumb ? `<img src="${dmThumb}" alt="${dm.labelAr}" style="max-width:100%;max-height:100%;object-fit:contain;" />` : ''}
+                        </div>
+                        <div style="flex:1;min-width:0;">
+                          <div style="font-size:10.5px;font-weight:800;color:#fce7f3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${dm.labelAr}</div>
+                          <div style="font-size:9px;color:#f472b6;font-variant-numeric:tabular-nums;">${dmKind} · ${dm.frame[2]}×${dm.frame[3]} · (${dm.frame[0]},${dm.frame[1]})</div>
+                        </div>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;">
+                        <button type="button" data-vap-dummy-convert="${dm.id}" style="flex:1;height:21px;padding:0 5px;border-radius:5px;border:1px solid rgba(168,85,247,0.5);background:rgba(139,92,246,0.22);color:#e9d5ff;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">🎭 تحويل لقناع نظيف</button>
+                        <button type="button" data-vap-dummy-replace="${dm.id}" style="flex:1;height:21px;padding:0 5px;border-radius:5px;border:1px solid rgba(16,185,129,0.45);background:rgba(16,185,129,0.18);color:#a7f3d0;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">📁 إزالة + صورة</button>
+                        <button type="button" data-vap-dummy-erase="${dm.id}" title="مسح القناع الوهمي من الفيديو فقط" style="height:21px;padding:0 6px;border-radius:5px;border:1px solid rgba(239,68,68,0.4);background:rgba(239,68,68,0.14);color:#fca5a5;font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap;">🧹 مسح الوهمي</button>
+                      </div>
+                    </div>
+                  `;
+                })
+                .join('')}
+            </div>
+          `
+              : ''
+          }
 
           ${
             showFramesSection
@@ -7100,6 +8691,14 @@ export function initMotionToolsFixed() {
                   : ''
               }
               ${
+                isVapVideo && slots.length > 0
+                  ? `<label style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 7px;border-radius:7px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);font-size:10px;color:#cbd5e1;cursor:pointer;">
+                      <span>تضمين الصور المستبدلة داخل الفيديو (Bake)</span>
+                      <input type="checkbox" id="vapBakeReplacedToggle" ${source._bakeReplacedSlots !== false ? 'checked' : ''} />
+                    </label>`
+                  : ''
+              }
+              ${
                 slots.length === 0
                   ? `<div style="font-size:10px;color:#94a3b8;padding:2px;">لا توجد أقنعة مضافة حالياً — اضغط <b>+ قناع</b> أو <b>+🎭 قناع</b> من أي إطار أعلاه.</div>`
                   : ''
@@ -7121,14 +8720,27 @@ export function initMotionToolsFixed() {
                   const fRect = slot.defaultFrame || [0, 0, slot.w, slot.h];
                   const geomOpen = Boolean(source._openGeomSlotIds?.[slot.srcId]);
                   const currentShape = slot.shapePreset || (source._customMaskCanvases?.[slot.srcId] ? 'customImage' : isTxt ? 'roundedRect' : 'circle');
-                  const zVal = Number(slot.z ?? 0);
-                  const isBehindProj = zVal < 0;
+                  const depthBand = resolveMaskDepthBand(slot);
+                  const prevBand = visIdx > 0 ? resolveMaskDepthBand(displaySlots[visIdx - 1]) : null;
+                  const showGiftDividerBefore =
+                    (depthBand === 'behindPrimary' || depthBand === 'belowOverlays') &&
+                    (visIdx === 0 || (prevBand !== 'behindPrimary' && prevBand !== 'belowOverlays'));
+                  const isBehindProj = depthBand === 'behindPrimary' || depthBand === 'belowOverlays';
                   const canMoveUp = visIdx > 0;
                   const canMoveDown = visIdx < displaySlots.length - 1;
                   const currentFill = String((slot as any).fillColor || 'transparent');
                   const isColored = Boolean(parseHexColorRgb(currentFill));
 
                   return `
+                    ${
+                      showGiftDividerBefore
+                        ? `<div data-vap-gift-divider="1" style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:9.5px;font-weight:800;color:#fbbf24;opacity:0.9;">
+                            <span style="flex:1;height:1px;background:rgba(251,191,36,0.35);"></span>
+                            <span>🎁 جسم الهدية الأساسية</span>
+                            <span style="flex:1;height:1px;background:rgba(251,191,36,0.35);"></span>
+                          </div>`
+                        : ''
+                    }
                     <div data-vap-slot-card="${slot.srcId}" style="
                       background: ${isSelected ? 'rgba(251, 191, 36, 0.08)' : 'rgba(13, 13, 21, 0.92)'};
                       border: 1px solid ${isSelected ? 'rgba(251, 191, 36, 0.7)' : isTxt ? 'rgba(56, 189, 248, 0.25)' : 'rgba(192, 132, 252, 0.25)'};
@@ -7173,7 +8785,12 @@ export function initMotionToolsFixed() {
                           <button type="button" data-vap-zup-btn="${slot.srcId}" title="تقديم القناع للأمام" aria-label="تقديم القناع ${slot.srcTag}" ${!canMoveUp ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveUp ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveUp ? 'pointer' : 'default'};display:grid;place-items:center;">↑</button>
                           <button type="button" data-vap-zdown-btn="${slot.srcId}" title="إنزال القناع للخلف" aria-label="إنزال القناع ${slot.srcTag}" ${!canMoveDown ? 'disabled' : ''} style="width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:#1b1b2b;color:${canMoveDown ? '#e2e8f0' : '#4b5563'};font-size:10px;cursor:${canMoveDown ? 'pointer' : 'default'};display:grid;place-items:center;">↓</button>
                         </div>
-                        <button type="button" data-vap-behind-btn="${slot.srcId}" title="نقل خلف أو أمام المشروع الرئيسي" style="flex:1;min-width:0;height:20px;padding:0 4px;border-radius:5px;border:1px solid ${isBehindProj ? 'rgba(251,191,36,0.45)' : 'rgba(255,255,255,0.1)'};background:${isBehindProj ? 'rgba(251,191,36,0.16)' : '#1b1b2b'};color:${isBehindProj ? '#fde68a' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${isBehindProj ? '⬇️ خلف' : '⬆️ فوق'}</button>
+                        <select data-vap-depth-select="${slot.srcId}" title="تحديد موضع القناع بالنسبة للهدية والإطارات المضافة" aria-label="عمق القناع ${slot.srcTag}" style="flex:1;min-width:0;height:20px;padding:0 3px;border-radius:5px;border:1px solid ${isBehindProj ? 'rgba(251,191,36,0.45)' : 'rgba(139,92,246,0.35)'};background:${isBehindProj ? 'rgba(251,191,36,0.16)' : '#1b1b2b'};color:${isBehindProj ? '#fde68a' : '#e2e8f0'};font-size:9px;font-weight:700;cursor:pointer;">
+                          <option value="belowOverlays" ${depthBand === 'belowOverlays' ? 'selected' : ''}>⬇️⬇️ خلف الكل والإطارات</option>
+                          <option value="behindPrimary" ${depthBand === 'behindPrimary' ? 'selected' : ''}>⬇️ خلف الهدية</option>
+                          <option value="abovePrimary" ${depthBand === 'abovePrimary' ? 'selected' : ''}>⬆️ أمام الهدية (خلف الإطار)</option>
+                          <option value="aboveOverlays" ${depthBand === 'aboveOverlays' ? 'selected' : ''}>🔝 فوق كل الإطارات</option>
+                        </select>
                         <button type="button" data-vap-fill-toggle="${slot.srcId}" title="${isColored ? 'تحويل الطبقة إلى شفاف (بدون لون)' : 'لون الطبقة الآن: شفاف — اضغط لتلوينها بمبي'}" style="height:20px;padding:0 5px;border-radius:5px;border:1px solid ${isColored ? currentFill : 'rgba(255,255,255,0.14)'};background:${isColored ? currentFill : 'repeating-conic-gradient(#2d2d40 0 25%, #191926 0 50%) 0 0 / 6px 6px'};color:${isColored ? '#fff' : '#cbd5e1'};font-size:9px;font-weight:700;cursor:pointer;white-space:nowrap;text-shadow:${isColored ? '0 1px 2px #000' : 'none'};">${isColored ? 'لون' : 'شفاف'}</button>
                         <input type="color" data-vap-fill-picker="${slot.srcId}" value="${isColored ? currentFill : '#ec4899'}" title="اختر لون مخصص للطبقة (بمبي أو أي لون)" aria-label="لون الطبقة ${slot.srcTag}" style="width:20px;height:20px;padding:0;border:1px solid rgba(255,255,255,0.18);border-radius:5px;background:transparent;cursor:pointer;flex-shrink:0;" />
                         <button type="button" data-vap-geom-toggle="${slot.srcId}" title="خيارات الشكل والمقاس والاستبدال" aria-label="إعدادات القناع ${slot.srcTag}" style="width:20px;height:20px;flex-shrink:0;border-radius:5px;border:1px solid ${geomOpen ? '#8b5cf6' : 'rgba(255,255,255,0.1)'};background:${geomOpen ? 'rgba(139,92,246,0.28)' : '#1b1b2b'};color:#e2e8f0;font-size:11px;cursor:pointer;display:grid;place-items:center;">⚙</button>
@@ -7258,6 +8875,38 @@ export function initMotionToolsFixed() {
           }
         </div>
       `;
+
+      const bakeToggleEl = document.getElementById('vapBakeReplacedToggle') as HTMLInputElement | null;
+      if (bakeToggleEl) {
+        bakeToggleEl.onchange = () => {
+          source._bakeReplacedSlots = bakeToggleEl.checked;
+        };
+      }
+
+      // Wire Detected Dummy Placeholder Mask action buttons
+      detectedDummies.forEach((dm) => {
+        const convertBtn = panel.querySelector(`[data-vap-dummy-convert="${dm.id}"]`) as HTMLButtonElement | null;
+        if (convertBtn) {
+          convertBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            convertDetectedDummyMask(source, dm, 'convert');
+          };
+        }
+        const replaceBtn = panel.querySelector(`[data-vap-dummy-replace="${dm.id}"]`) as HTMLButtonElement | null;
+        if (replaceBtn) {
+          replaceBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            convertDetectedDummyMask(source, dm, 'convertAndReplace');
+          };
+        }
+        const eraseBtn = panel.querySelector(`[data-vap-dummy-erase="${dm.id}"]`) as HTMLButtonElement | null;
+        if (eraseBtn) {
+          eraseBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            convertDetectedDummyMask(source, dm, 'eraseOnly');
+          };
+        }
+      });
 
       // Tab switching handlers
       panel.querySelectorAll('[data-vap-tab-btn]').forEach((btn) => {
@@ -7522,7 +9171,7 @@ export function initMotionToolsFixed() {
           const y = Math.max(0, Math.min(sh - h, Number(newYEl?.value) || 0));
           const shape = (newShapeEl?.value || (srcType === 'txt' ? 'roundedRect' : 'circle')) as VapMaskShapePreset;
           const nextId = buildNextSlotId([...(source?.meta?.dynamicSlots || []), ...(source._customVapSlots || [])]);
-          const maxExistingZ = slots.length ? Math.max(...slots.map((s) => Number(s.z ?? 0))) : -1;
+          const minExistingZ = slots.length ? Math.min(0, ...slots.map((s) => Number(s.z ?? 0))) : 0;
 
           const slot = makeCustomVapSlot({
             srcId: nextId,
@@ -7534,19 +9183,39 @@ export function initMotionToolsFixed() {
             h,
             shapePreset: pendingNewMaskData ? 'customImage' : shape,
             maskSilhouetteDataUrl: pendingNewMaskData?.dataUrl,
-            z: maxExistingZ + 1,
+            z: minExistingZ - 1,
           });
+          slot.zLayer = 'behindPrimary';
           source._customVapSlots.push(slot);
+          source._slotGeometryOverrides = source._slotGeometryOverrides || {};
+          const bMap = setSlotDepthBand(getEffectiveMaskSlots(source), slot.srcId, 'behindPrimary');
+          for (const [id, vals] of Object.entries(bMap)) {
+            source._slotGeometryOverrides[id] = {
+              ...(source._slotGeometryOverrides[id] || {}),
+              z: vals.z,
+              zLayer: vals.zLayer,
+              defaultFrame: id === String(slot.srcId) ? [x, y, w, h] : source._slotGeometryOverrides[id]?.defaultFrame,
+            };
+          }
           if (pendingNewMaskData) {
             source._customMaskCanvases[slot.srcId] = pendingNewMaskData.canvas;
             source._customMaskDataUrls[slot.srcId] = pendingNewMaskData.dataUrl;
           }
+          source._hasMaskEdits = true;
           source._vapAddFormOpen = false;
           (window as any).__selectedVapMaskId = slot.srcId;
           (window as any).__vapShowMaskGuides = true;
           setupVapDynamicMasksUI(source, m, clamped);
           repaintVapStageNow(source);
-          toast(`✅ تمت إضافة القناع "${srcTag}" — اسحبه بالماوس على الشاشة`);
+          emitVapMasksChange(source);
+          toast(`✅ تمت إضافة القناع "${srcTag}" خلف الهدية — اسحبه بالماوس على الشاشة`);
+        };
+      }
+
+      const openMasksBundleBtn = document.getElementById('vapOpenComposerMasksBtn');
+      if (openMasksBundleBtn) {
+        openMasksBundleBtn.onclick = () => {
+          (window as any).__openComposerMasksTab?.();
         };
       }
 
@@ -7556,6 +9225,7 @@ export function initMotionToolsFixed() {
           (window as any).__vapShowMaskGuides = !(window as any).__vapShowMaskGuides;
           setupVapDynamicMasksUI(source, m, clamped);
           repaintVapStageNow(source);
+          emitVapMasksChange(source);
         };
       }
 
@@ -7570,33 +9240,7 @@ export function initMotionToolsFixed() {
         }
 
         const triggerLayerReplace = () => {
-          const inp = document.createElement('input');
-          inp.type = 'file';
-          inp.accept = 'image/*';
-          inp.onchange = async () => {
-            const file = inp.files?.[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async () => {
-              const dataUrl = String(reader.result || '');
-              if (!dataUrl) return;
-              A[slot.assetKey] = dataUrl;
-              const thImg = document.querySelector(`.th[data-k="${slot.assetKey}"] img`) as HTMLImageElement | null;
-              if (thImg) thImg.src = dataUrl;
-              const prev = source._vapSlotReplacements[slot.srcId] || {};
-              if (!prev.fitMode && !slot.isTextSlot) {
-                prev.fitMode = 'cover';
-              }
-              source._vapSlotReplacements[slot.srcId] = prev;
-              source._bakeReplacedSlots = true;
-              source._hasMaskEdits = true;
-              await applyEdit(dataUrl, slot.assetKey);
-              setupVapDynamicMasksUI(source, m, clamped);
-              toast(`تم رفع وحفظ الصورة داخل القناع "${slot.srcTag}"`);
-            };
-            reader.readAsDataURL(file);
-          };
-          inp.click();
+          (window as any).__uploadVapMaskPhoto?.(slot.srcId);
         };
 
         const uploadBtn = panel.querySelector(`[data-vap-upload-btn="${slot.srcId}"]`) as HTMLElement | null;
@@ -7618,11 +9262,12 @@ export function initMotionToolsFixed() {
             (window as any).__reorderVapMaskSlot(slot.srcId, 'down');
           };
         }
-        const behindBtn = panel.querySelector(`[data-vap-behind-btn="${slot.srcId}"]`) as HTMLButtonElement | null;
-        if (behindBtn) {
-          behindBtn.onclick = (ev) => {
+        const depthSelect = panel.querySelector(`[data-vap-depth-select="${slot.srcId}"]`) as HTMLSelectElement | null;
+        if (depthSelect) {
+          depthSelect.onclick = (ev) => ev.stopPropagation();
+          depthSelect.onchange = (ev) => {
             ev.stopPropagation();
-            (window as any).__reorderVapMaskSlot(slot.srcId, 'toggleBehind');
+            (window as any).__setVapMaskDepthBand?.(slot.srcId, depthSelect.value as MaskDepthBand);
           };
         }
 
@@ -7639,6 +9284,7 @@ export function initMotionToolsFixed() {
             source._hasMaskEdits = true;
             setupVapDynamicMasksUI(source, m, clamped);
             repaintVapStageNow(source);
+            emitVapMasksChange(source);
             toast(nextFill === 'transparent' ? `تم جعل القناع "${slot.srcTag}" شفافاً` : `تم تلوين القناع "${slot.srcTag}"`);
           };
         }
@@ -7666,6 +9312,7 @@ export function initMotionToolsFixed() {
             ev.stopPropagation();
             setupVapDynamicMasksUI(source, m, clamped);
             repaintVapStageNow(source);
+            emitVapMasksChange(source);
           };
         }
 
@@ -7686,11 +9333,13 @@ export function initMotionToolsFixed() {
               source._slotGeometryOverrides[slot.srcId] = {
                 ...(source._slotGeometryOverrides[slot.srcId] || {}),
                 shapePreset: 'customImage',
+                hasCustomShape: true,
                 maskSilhouetteDataUrl: res.dataUrl,
               };
               source._hasMaskEdits = true;
               setupVapDynamicMasksUI(source, m, clamped);
               repaintVapStageNow(source);
+              emitVapMasksChange(source);
               toast(`🎭 تم تحديث شكل القناع "${slot.srcTag}"`);
             };
             inp.click();
@@ -7704,6 +9353,32 @@ export function initMotionToolsFixed() {
             source._openGeomSlotIds = source._openGeomSlotIds || {};
             source._openGeomSlotIds[slot.srcId] = !source._openGeomSlotIds[slot.srcId];
             setupVapDynamicMasksUI(source, m, clamped);
+          };
+        }
+
+        const geomShapeSelect = panel.querySelector(`[data-vap-geom-shape="${slot.srcId}"]`) as HTMLSelectElement | null;
+        if (geomShapeSelect) {
+          geomShapeSelect.onclick = (ev) => ev.stopPropagation();
+          geomShapeSelect.onchange = (ev) => {
+            ev.stopPropagation();
+            const nextShape = (geomShapeSelect.value || 'circle') as VapMaskShapePreset;
+            if (nextShape === 'customImage' && !source._customMaskCanvases?.[slot.srcId]) {
+              maskFileBtn?.click();
+              return;
+            }
+            if (nextShape !== 'customImage') {
+              delete source._customMaskCanvases[slot.srcId];
+              delete source._customMaskDataUrls[slot.srcId];
+            }
+            source._slotGeometryOverrides[slot.srcId] = {
+              ...(source._slotGeometryOverrides[slot.srcId] || {}),
+              shapePreset: nextShape,
+              hasCustomShape: true,
+            };
+            source._hasMaskEdits = true;
+            setupVapDynamicMasksUI(source, m, clamped);
+            repaintVapStageNow(source);
+            emitVapMasksChange(source);
           };
         }
 
@@ -7725,6 +9400,11 @@ export function initMotionToolsFixed() {
               delete source._customMaskDataUrls[slot.srcId];
             }
 
+            const hasCustomShapeEdit =
+              nextShape === 'customImage'
+                ? Boolean(source._customMaskCanvases?.[slot.srcId]) || Boolean(slot.hasCustomShape)
+                : Boolean(slot.hasCustomShape || nextShape !== (slot.isTextSlot ? 'roundedRect' : 'circle') || slot.isCustomAdded);
+
             source._slotGeometryOverrides[slot.srcId] = {
               ...(source._slotGeometryOverrides[slot.srcId] || {}),
               srcTag: nextTag,
@@ -7732,12 +9412,15 @@ export function initMotionToolsFixed() {
               h: nh,
               defaultFrame: [nx, ny, nw, nh],
               shapePreset: nextShape,
+              hasCustomFrame: true,
+              hasCustomShape: hasCustomShapeEdit,
             };
             source._hasMaskEdits = true;
             source._openGeomSlotIds = source._openGeomSlotIds || {};
             source._openGeomSlotIds[slot.srcId] = false;
             setupVapDynamicMasksUI(source, m, clamped);
             repaintVapStageNow(source);
+            emitVapMasksChange(source);
             toast(`✅ تم حفظ القناع "${nextTag}"`);
           };
         }
@@ -7749,14 +9432,22 @@ export function initMotionToolsFixed() {
         if (resetBtn) {
           resetBtn.onclick = (ev) => {
             ev.stopPropagation();
+            removeSlotFromSessionVault(slot.srcId, slot.srcTag, false);
             delete source._vapSlotReplacements[slot.srcId];
             if (window.EDIT) delete window.EDIT[slot.assetKey];
-            const silUrl = buildVapMaskSilhouetteDataUrl(m, slot, source);
+            if (source._slotGeometryOverrides?.[slot.srcId]) {
+              delete source._slotGeometryOverrides[slot.srcId];
+            }
+            delete source._customMaskCanvases[slot.srcId];
+            delete source._customMaskDataUrls[slot.srcId];
+            const freshSlot = getEffectiveMaskSlots(source).find((sl) => String(sl.srcId) === String(slot.srcId)) || slot;
+            const silUrl = buildVapMaskSilhouetteDataUrl(m, freshSlot, source);
             source._vapOrigSilhouettes[slot.srcId] = silUrl;
-            if (isVapVideo) A[slot.assetKey] = silUrl;
+            if (isVapVideo) A[freshSlot.assetKey] = silUrl;
             setupVapDynamicMasksUI(source, m, clamped);
             repaintVapStageNow(source);
-            toast(`تمت استعادة القناع "${slot.srcTag}"`);
+            emitVapMasksChange(source);
+            toast(`تمت استعادة القناع "${freshSlot.srcTag}"`);
           };
         }
 
@@ -7814,6 +9505,7 @@ export function initMotionToolsFixed() {
             prev.useMask = maskToggle.checked;
             source._vapSlotReplacements[slot.srcId] = prev;
             repaintVapStageNow(source);
+            emitVapMasksChange(source);
           };
         }
 
@@ -7824,6 +9516,7 @@ export function initMotionToolsFixed() {
             prev.fitMode = fitSelect.value;
             source._vapSlotReplacements[slot.srcId] = prev;
             repaintVapStageNow(source);
+            emitVapMasksChange(source);
           };
         }
       });
@@ -7847,6 +9540,7 @@ export function initMotionToolsFixed() {
         });
         fin();
         setupVapDynamicMasksUI(source, m, null);
+        void rehydrateSessionVisualsOnSource(source);
         return;
       }
       const clamped = clampMetaToVideoBounds(meta, m.videoWidth, m.videoHeight);
@@ -7880,6 +9574,7 @@ export function initMotionToolsFixed() {
       }
       info(infoObj);
       fin();
+      void rehydrateSessionVisualsOnSource(source);
     }
     $('#lay').onchange = () => {
       if (!S || !S.vid || !cur) return;
@@ -8071,28 +9766,131 @@ export function initMotionToolsFixed() {
         sy: mirror === 'vertical' ? -1 : 1,
       };
     }
+    function drawWatermarksToCtx(x: CanvasRenderingContext2D, W: number, H: number) {
+      const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
+      if (wmLayers.length === 0) return;
+      const wmBaseW = (S && S.w) || wmLayers[0]?.animWidth || W;
+      const wmBaseH = (S && S.h) || wmLayers[0]?.animHeight || H;
+      for (const wm of wmLayers) {
+        const imSource = wm._bmp || wm._img;
+        if (!imSource) continue;
+        const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
+          wm.x * (W / Math.max(1, wmBaseW)),
+          wm.y * (H / Math.max(1, wmBaseH)),
+          wm.width * (W / Math.max(1, wmBaseW)),
+          wm.height * (H / Math.max(1, wmBaseH)),
+          wm.scale,
+          wm.rotation
+        );
+        x.save();
+        x.globalAlpha = Math.max(0, Math.min(1, wm.opacity / 100));
+        x.transform(a, b, c, d, tx, ty);
+        x.drawImage(
+          imSource,
+          0,
+          0,
+          wm.width * (W / Math.max(1, wmBaseW)),
+          wm.height * (H / Math.max(1, wmBaseH))
+        );
+        x.restore();
+      }
+    }
+
+    function getActiveComposerPlaybackFrame(fallbackBaseTotal = 30): { frame: number; totalFrames: number } {
+      const renderIdx = (window as any).__activeRenderFrame;
+      const renderTot = (window as any).__activeRenderTotalFrames;
+      if (typeof renderIdx === 'number' && Number.isFinite(renderIdx)) {
+        return {
+          frame: Math.max(0, renderIdx),
+          totalFrames: Math.max(1, Number(renderTot) || (S && S.n) || fallbackBaseTotal),
+        };
+      }
+      const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      const getTransformMaxFrame = (t: ProjectLayerTransform | null | undefined): number => {
+        if (!t) return 0;
+        const e = Number(t.endFrame ?? 0);
+        const ve = t.visibilityEnabled ? Number(t.visibilityEndFrame ?? 0) : 0;
+        const wp = Array.isArray(t.motionWaypoints)
+          ? Math.max(0, ...t.motionWaypoints.map((w) => Number(w.frame) || 0))
+          : 0;
+        return Math.max(e, ve, wp);
+      };
+      let animMaxF = Math.max(29, getTransformMaxFrame(st?.primaryTransform));
+      for (const ov of st?.overlays || []) {
+        animMaxF = Math.max(animMaxF, getTransformMaxFrame(ov?.transform));
+      }
+      if (S) {
+        for (const sl of getEffectiveMaskSlots(S)) {
+          animMaxF = Math.max(animMaxF, getTransformMaxFrame((sl as any).motionTransform));
+        }
+      }
+      const minAnimFrames = animMaxF + 1;
+      const fps = Math.max(1, (S && S.fps) || 24);
+      const hasAnyAnim =
+        hasAnimatedMotion(st?.primaryTransform) ||
+        Boolean(st?.overlays?.some((o) => hasAnimatedMotion(o?.transform))) ||
+        anySlotHasAnimatedMotion(S);
+      const srcFrames = S && S.n > 1 ? S.n : hasAnyAnim ? minAnimFrames : Math.max(1, (S && S.n) || fallbackBaseTotal);
+
+      if (S && S.vid && Number.isFinite(S.vid.currentTime)) {
+        return { frame: Math.max(0, Math.floor(S.vid.currentTime * fps)), totalFrames: srcFrames };
+      }
+      if (typeof (window as any).__svgaCurrentFrame === 'number') {
+        return { frame: Math.max(0, (window as any).__svgaCurrentFrame), totalFrames: srcFrames };
+      }
+      if (window.SVP) {
+        const cf =
+          window.SVP.currentFrame ??
+          (window.SVP as any)._currentFrame ??
+          (window.SVP._renderer?.currentFrame || 0);
+        return { frame: Math.max(0, Number(cf) || 0), totalFrames: srcFrames };
+      }
+      if (anim && typeof anim.currentFrame === 'number') {
+        return { frame: Math.max(0, anim.currentFrame), totalFrames: srcFrames };
+      }
+      if (typeof (window as any).__currentAnimationStepIdx === 'number') {
+        return { frame: Math.max(0, (window as any).__currentAnimationStepIdx), totalFrames: srcFrames };
+      }
+      if (S && typeof (S as any).currentFrame === 'number') {
+        return { frame: Math.max(0, (S as any).currentFrame), totalFrames: srcFrames };
+      }
+      if (!S || S.n <= 1) {
+        const startMs = Number((window as any).__composerAnimStartMs || 0) || performance.now();
+        if (!(window as any).__composerAnimStartMs) (window as any).__composerAnimStartMs = startMs;
+        if (S && S.paused) {
+          return { frame: Math.max(0, Number((window as any).__composerStaticPausedFrame || 0)), totalFrames: srcFrames };
+        }
+        const elapsedFrames = Math.floor(((performance.now() - startMs) / 1000) * fps) % Math.max(1, srcFrames);
+        return { frame: Math.max(0, elapsedFrames), totalFrames: srcFrames };
+      }
+      return { frame: 0, totalFrames: srcFrames };
+    }
+    (window as any).__getCurrentComposerFrame = () => getActiveComposerPlaybackFrame().frame;
+
     function contentDraw(draw, x, W, H) {
       const g = geometry(W, H);
       const compState: ProjectComposerState | undefined = (window as any).__projectComposerState;
-      const pTrans = compState?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+      const rawPTrans = compState?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
       const baseW = Math.max(1, (S && S.w) || W);
       const baseH = Math.max(1, (S && S.h) || H);
+      const { frame: activeFrame, totalFrames: activeTotal } = getActiveComposerPlaybackFrame();
+      const pTrans = interpolateTransformAtFrame(rawPTrans, activeFrame, activeTotal, baseW, baseH);
+      const primaryOnlyPass = Boolean((window as any).__vapRenderPrimaryOnly);
 
+      const isVapSrc = Boolean(S && S.meta);
       const hasNonVapMaskReps =
+        !primaryOnlyPass &&
         S &&
-        !S.meta &&
+        !isVapSrc &&
         (window as any).__bakeReplacedVapSlotsInRender !== false &&
         (Object.values(S?._vapSlotReplacements || {}).some((r: any) => r && r.active && !r.hidden) ||
           getEffectiveMaskSlots(S).some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))));
 
-      if (typeof (window as any).__drawComposerOverlays === 'function') {
-        (window as any).__drawComposerOverlays(x, W, H, 'below');
-      }
-      if (hasNonVapMaskReps) {
-        renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'below');
-      }
-
-      if (pTrans.visible !== false && (Number(pTrans.opacity ?? 100) || 0) > 0.001) {
+      // Render transformed primary canvas into an offscreen buffer first when VAP is active
+      // (so __vapPaintExtPairs is populated for belowOverlays & aboveOverlays before compositing!)
+      let bufferedPrimaryCanvas: HTMLCanvasElement | null = null;
+      const drawPrimaryToCtx = (targetCtx: CanvasRenderingContext2D) => {
+        if (pTrans.visible === false || (Number(pTrans.opacity ?? 100) || 0) <= 0.001) return;
         const dx = (Number(pTrans.offsetX) || 0) * (W / baseW);
         const dy = (Number(pTrans.offsetY) || 0) * (H / baseH);
         const pScale = Math.max(0.05, Math.min(5, (Number(pTrans.scale) || 100) / 100));
@@ -8101,76 +9899,158 @@ export function initMotionToolsFixed() {
         const pFlipY = pTrans.flipV ? -1 : 1;
         const pAlpha = Math.max(0, Math.min(1, (Number(pTrans.opacity ?? 100) || 0) / 100));
 
-        x.save();
-        x.globalAlpha = pAlpha;
-        x.translate(W / 2 + dx, H / 2 + dy);
-        if (Math.abs(pRot) > 0.0001) x.rotate(pRot);
-        x.scale(g.sx * pFlipX * pScale, g.sy * pFlipY * pScale);
-        x.translate(-g.w / 2, -g.h / 2);
+        targetCtx.save();
+        targetCtx.globalAlpha = pAlpha;
+        targetCtx.translate(W / 2 + dx, H / 2 + dy);
+        if (Math.abs(pRot) > 0.0001) targetCtx.rotate(pRot);
+        targetCtx.scale(g.sx * pFlipX * pScale, g.sy * pFlipY * pScale);
+        targetCtx.translate(-g.w / 2, -g.h / 2);
 
         const featherCfg = (window as any).__edgeFeather || (window as any).__bakedEdgeFeather;
-        if (
+        const needsFeather = Boolean(
           featherCfg?.enabled &&
-          (featherCfg.topMargin > 0 ||
-            featherCfg.bottomMargin > 0 ||
-            featherCfg.leftMargin > 0 ||
-            featherCfg.rightMargin > 0 ||
-            featherCfg.featherRadius > 0)
-        ) {
+            (featherCfg.topMargin > 0 ||
+              featherCfg.bottomMargin > 0 ||
+              featherCfg.leftMargin > 0 ||
+              featherCfg.rightMargin > 0 ||
+              featherCfg.featherRadius > 0)
+        );
+        const nonVapErasures: VapDummyErasureRegion[] =
+          S && !S.meta && Array.isArray(S._dummyMaskErasures) ? S._dummyMaskErasures : [];
+
+        if (needsFeather || nonVapErasures.length > 0) {
+          const pw = Math.max(1, Math.round(g.w));
+          const ph = Math.max(1, Math.round(g.h));
           const pCv = document.createElement('canvas');
-          pCv.width = Math.max(1, Math.round(g.w));
-          pCv.height = Math.max(1, Math.round(g.h));
-          const pCtx = pCv.getContext('2d');
+          pCv.width = pw;
+          pCv.height = ph;
+          const pCtx = pCv.getContext('2d', { willReadFrequently: true });
           if (pCtx) {
             draw(pCtx, g.w, g.h);
-            applyEdgeFeatherToContext(pCtx, g.w, g.h, featherCfg);
-            x.drawImage(pCv, 0, 0, g.w, g.h);
+            if (nonVapErasures.length > 0) {
+              const rsx = pw / baseW;
+              const rsy = ph / baseH;
+              const imgData = pCtx.getImageData(0, 0, pw, ph);
+              const scaledErasures: VapDummyErasureRegion[] = nonVapErasures.map((er) => {
+                const sfW = Math.max(1, Math.round(er.frame[2] * rsx));
+                const sfH = Math.max(1, Math.round(er.frame[3] * rsy));
+                let scaledSil = er.silhouetteRgba;
+                if (er.silhouetteRgba && (pw !== baseW || ph !== baseH)) {
+                  const ow = Math.max(1, Math.round(er.frame[2]));
+                  const oh = Math.max(1, Math.round(er.frame[3]));
+                  const outSil = new Uint8ClampedArray(sfW * sfH * 4);
+                  for (let y = 0; y < sfH; y++) {
+                    const sy = Math.min(oh - 1, Math.floor((y * oh) / sfH));
+                    for (let x = 0; x < sfW; x++) {
+                      const sx = Math.min(ow - 1, Math.floor((x * ow) / sfW));
+                      const sOff = (sy * ow + sx) * 4;
+                      const dOff = (y * sfW + x) * 4;
+                      outSil[dOff] = er.silhouetteRgba[sOff];
+                      outSil[dOff + 1] = er.silhouetteRgba[sOff + 1];
+                      outSil[dOff + 2] = er.silhouetteRgba[sOff + 2];
+                      outSil[dOff + 3] = er.silhouetteRgba[sOff + 3];
+                    }
+                  }
+                  scaledSil = outSil;
+                }
+                return {
+                  ...er,
+                  frame: [Math.round(er.frame[0] * rsx), Math.round(er.frame[1] * rsy), sfW, sfH],
+                  silhouetteRgba: scaledSil,
+                };
+              });
+              eraseDummyMaskPixelsFromRgba(imgData.data, pw, ph, scaledErasures);
+              pCtx.putImageData(imgData, 0, 0);
+            }
+            if (needsFeather) {
+              applyEdgeFeatherToContext(pCtx, g.w, g.h, featherCfg);
+            }
+            targetCtx.drawImage(pCv, 0, 0, g.w, g.h);
           } else {
-            draw(x, g.w, g.h);
+            draw(targetCtx, g.w, g.h);
           }
         } else {
-          draw(x, g.w, g.h);
+          draw(targetCtx, g.w, g.h);
         }
-        x.restore();
+        targetCtx.restore();
+      };
+
+      if (primaryOnlyPass) {
+        const prevSplit = (window as any).__contentDrawSplitExtMaskBands;
+        (window as any).__contentDrawSplitExtMaskBands = true;
+        try {
+          drawPrimaryToCtx(x);
+          if ((window as any).__chromaKey?.enabled) {
+            applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
+          }
+        } finally {
+          (window as any).__contentDrawSplitExtMaskBands = prevSplit;
+        }
+        return;
       }
 
-      if (typeof (window as any).__drawComposerOverlays === 'function') {
-        (window as any).__drawComposerOverlays(x, W, H, 'above');
-      }
-
-      const wmLayers: any[] = (window as any).__WATERMARK_LAYERS || [];
-      if (wmLayers.length > 0) {
-        const wmBaseW = (S && S.w) || wmLayers[0]?.animWidth || W;
-        const wmBaseH = (S && S.h) || wmLayers[0]?.animHeight || H;
-        for (const wm of wmLayers) {
-          const imSource = wm._bmp || wm._img;
-          if (!imSource) continue;
-          const [a, b, c, d, tx, ty] = computeAffineMatrix2D(
-            wm.x * (W / Math.max(1, wmBaseW)),
-            wm.y * (H / Math.max(1, wmBaseH)),
-            wm.width * (W / Math.max(1, wmBaseW)),
-            wm.height * (H / Math.max(1, wmBaseH)),
-            wm.scale,
-            wm.rotation
-          );
-          x.save();
-          x.globalAlpha = Math.max(0, Math.min(1, wm.opacity / 100));
-          x.transform(a, b, c, d, tx, ty);
-          x.drawImage(
-            imSource,
-            0,
-            0,
-            wm.width * (W / Math.max(1, wmBaseW)),
-            wm.height * (H / Math.max(1, wmBaseH))
-          );
-          x.restore();
+      try {
+        if (isVapSrc) {
+          (window as any).__contentDrawSplitExtMaskBands = true;
+          bufferedPrimaryCanvas = mk(W, H);
+          const bCtx = bufferedPrimaryCanvas.getContext('2d')!;
+          drawPrimaryToCtx(bCtx);
         }
-      }
-      if (hasNonVapMaskReps) {
-        renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'above');
-      }
-      if ((window as any).__chromaKey?.enabled) {
-        applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
+
+        // Exact 7-Pass Unified Stack Compositing:
+        // 1. belowOverlays masks
+        if (isVapSrc && typeof (window as any).__vapPaintExtPairs === 'function') {
+          (window as any).__vapPaintExtPairs(x, W, H, 'belowOverlays');
+        } else if (hasNonVapMaskReps) {
+          renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'belowOverlays');
+        }
+
+        // 2. Composer 'below' overlays / frames
+        if (typeof (window as any).__drawComposerOverlays === 'function') {
+          (window as any).__drawComposerOverlays(x, W, H, 'below');
+        }
+
+        // 3. behindPrimary masks (both VAP and Non-VAP render in unshifted stage coordinates!)
+        if (isVapSrc && typeof (window as any).__vapPaintExtPairs === 'function') {
+          (window as any).__vapPaintExtPairs(x, W, H, 'behindPrimary');
+        } else if (hasNonVapMaskReps) {
+          renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'behindPrimary');
+        }
+
+        // 4. Primary Gift (cleanly transformed by primaryTransform without shifting masks)
+        if (bufferedPrimaryCanvas) {
+          x.drawImage(bufferedPrimaryCanvas, 0, 0, W, H);
+        } else {
+          drawPrimaryToCtx(x);
+        }
+
+        // 5. abovePrimary masks (sit above primary gift, yet strictly BEHIND added 'above' frames/overlays!)
+        if (isVapSrc && typeof (window as any).__vapPaintExtPairs === 'function') {
+          (window as any).__vapPaintExtPairs(x, W, H, 'abovePrimary');
+        } else if (hasNonVapMaskReps) {
+          renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'abovePrimary');
+        }
+
+        // 6. Composer 'above' added frames / images / videos / SVGAs
+        if (typeof (window as any).__drawComposerOverlays === 'function') {
+          (window as any).__drawComposerOverlays(x, W, H, 'above');
+        }
+
+        // 7. Watermark layers & aboveOverlays masks
+        drawWatermarksToCtx(x, W, H);
+
+        if (isVapSrc && typeof (window as any).__vapPaintExtPairs === 'function') {
+          (window as any).__vapPaintExtPairs(x, W, H, 'aboveOverlays');
+        } else if (hasNonVapMaskReps) {
+          renderMaskOverlaySlotsIntoCtx(x, W, H, S, false, true, 'aboveOverlays');
+        }
+
+        if ((window as any).__chromaKey?.enabled) {
+          applyChromaKeyToContext(x, W, H, (window as any).__chromaKey);
+        }
+      } finally {
+        (window as any).__contentDrawSplitExtMaskBands = false;
+        (window as any).__vapPaintExtPairs = null;
       }
     }
     function exportOptions() {
@@ -8494,9 +10374,10 @@ export function initMotionToolsFixed() {
                   (Number(ov.scale) > 0 && Math.abs(Number(ov.scale) - 1) > 0.01))
             )
         ),
-        bakeReplaced = Boolean(
-          (S?._bakeReplacedSlots !== false && (hasActiveReplacements || hasColoredFills)) || hasEmbeddedFrameEdits
-        ),
+        hasDummyMaskErasures = Boolean(Array.isArray(S?._dummyMaskErasures) && S._dummyMaskErasures.length > 0),
+        hasAnimatedMasks = anySlotHasAnimatedMotion(S),
+        bakeReplaced = Boolean(S?._bakeReplacedSlots !== false && (hasActiveReplacements || hasColoredFills)),
+        requiresVideoPixelReRender = Boolean(bakeReplaced || hasEmbeddedFrameEdits || hasDummyMaskErasures || hasAnimatedMasks),
         exportedSlots = allActiveSlots,
         plan = planVapMaskAtlasLayout({
           format: Y ? 'yyeva' : 'vap',
@@ -8509,7 +10390,9 @@ export function initMotionToolsFixed() {
         { VW, VH, aFrame: a, rgbFrame: rgb, packedSlots } = plan;
       if (VW > 8192 || VH > 8192) throw Error('Packed video exceeds 8192 pixels. Reduce output dimensions.');
 
-      const { metaJson, srcMFrameAtFrame } = buildVapDynamicMetadataJson({
+      const stForVap: ProjectComposerState | undefined = (window as any).__projectComposerState;
+      const rawPTransForVap = stForVap?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+      const { metaJson, srcMFrameAtFrame, resolvedFrameAtFrame, opacityAtFrame } = buildVapDynamicMetadataJson({
         plan,
         nk: o.nk,
         fps: o.fps,
@@ -8520,17 +10403,53 @@ export function initMotionToolsFixed() {
         srcW: S.w || W,
         srcH: S.h || H,
         sourceMeta: M,
+        resolveSlotTransformAtFrame: (slot, fIdx, totalF) => {
+          const mt = (slot as any).motionTransform as ProjectLayerTransform | undefined;
+          const primaryLinked = hasAnimatedMotion(rawPTransForVap) && mt?.linkFrameAndLayer !== false;
+          if (!hasAnimatedMotion(mt) && !primaryLinked && isDefaultLayerTransform(mt)) {
+            return null;
+          }
+          const primaryAtF = interpolateTransformAtFrame(rawPTransForVap, fIdx, totalF, S.w || W, S.h || H);
+          const eff = resolveLinkedTransformAtFrame(mt, rawPTransForVap, primaryAtF, fIdx, totalF, S.w || W, S.h || H);
+          return {
+            offsetX: Number(eff.offsetX) || 0,
+            offsetY: Number(eff.offsetY) || 0,
+            scale: Number(eff.scale ?? 100),
+            rotation: Number(eff.rotation) || 0,
+            opacity: Number(eff.opacity ?? 100),
+            visible: eff.visible !== false,
+          };
+        },
       });
 
       const rgba = mk(W, H),
         rx = rgba.getContext('2d', { willReadFrequently: true }),
         alpha = mk(W, H),
         ax = alpha.getContext('2d'),
-        hasVapMaskEdits = hasActiveReplacements || hasColoredFills || hasEmbeddedFrameEdits,
+        compStateForOcc: ProjectComposerState | undefined = (window as any).__projectComposerState,
+        activeOverlayList = (compStateForOcc?.overlays || []).filter(
+          (ov: any) => ov && ov.transform?.visible !== false && !(ov.isVapMask && ov.linkedMaskSlotId)
+        ),
+        hasAboveComposerOverlays = activeOverlayList.some((ov: any) => (ov.zOrder || 'above') === 'above'),
         hasWatermarkLayers = !!(
           Array.isArray((window as any).__WATERMARK_LAYERS) &&
           (window as any).__WATERMARK_LAYERS.length > 0
         ),
+        hasAboveForeground = hasAboveComposerOverlays || hasWatermarkLayers,
+        hasAbovePrimarySlot = packedSlots.some((p) => resolveMaskDepthBand(p.slot) === 'abovePrimary'),
+        hasBehindPrimarySlot = packedSlots.some((p) => resolveMaskDepthBand(p.slot) === 'behindPrimary'),
+        hasBelowOverlaysSlot = packedSlots.some((p) => resolveMaskDepthBand(p.slot) === 'belowOverlays'),
+        needAboveFgCanvas = hasAboveForeground && (hasAbovePrimarySlot || hasBehindPrimarySlot || hasBelowOverlaysSlot),
+        needBehindPrimaryFgCanvas = hasBehindPrimarySlot || hasBelowOverlaysSlot,
+        needBelowOverlaysFgCanvas = hasBelowOverlaysSlot,
+        ocAboveCanvas = needAboveFgCanvas ? mk(W, H) : null,
+        ocAboveCtx = ocAboveCanvas ? ocAboveCanvas.getContext('2d', { willReadFrequently: true }) : null,
+        ocBehindCanvas = needBehindPrimaryFgCanvas ? mk(W, H) : null,
+        ocBehindCtx = ocBehindCanvas ? ocBehindCanvas.getContext('2d', { willReadFrequently: true }) : null,
+        ocBelowCanvas = needBelowOverlaysFgCanvas ? mk(W, H) : null,
+        ocBelowCtx = ocBelowCanvas ? ocBelowCanvas.getContext('2d', { willReadFrequently: true }) : null,
+        fgCropCanvas = packedSlots.length > 0 ? mk(64, 64) : null,
+        fgCropCtx = fgCropCanvas ? fgCropCanvas.getContext('2d', { willReadFrequently: true }) : null,
         hasComposerEdits = hasActiveComposerModifications((window as any).__projectComposerState),
         direct = !!(
           M &&
@@ -8540,7 +10459,7 @@ export function initMotionToolsFixed() {
           $('#mirror').value === 'none' &&
           !(window as any).__edgeFeather?.enabled &&
           !(window as any).__chromaKey?.enabled &&
-          (!hasVapMaskEdits || !bakeReplaced) &&
+          !requiresVideoPixelReRender &&
           !hasWatermarkLayers &&
           !hasComposerEdits
         );
@@ -8556,6 +10475,8 @@ export function initMotionToolsFixed() {
           VW,
           VH,
           paint: async (x, k) => {
+            (window as any).__activeRenderFrame = k;
+            (window as any).__activeRenderTotalFrames = Math.max(1, o.nk || 1);
             const t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
             if (m) await seekVideo(m, t);
             else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
@@ -8582,20 +10503,113 @@ export function initMotionToolsFixed() {
               x.drawImage(alpha, ...a);
             }
 
-            // Paint every dynamic slot's white-on-black silhouette (`mFrame`) into the packed atlas below `aFrame`
+            // Build per-band foreground occlusion canvases (strictly excluding mask replacements themselves)
             if (packedSlots.length > 0) {
+              if (ocAboveCtx && ocAboveCanvas) {
+                ocAboveCtx.clearRect(0, 0, W, H);
+                if (hasAboveComposerOverlays && typeof (window as any).__drawComposerOverlays === 'function') {
+                  (window as any).__drawComposerOverlays(ocAboveCtx, W, H, 'above');
+                }
+                if (hasWatermarkLayers) {
+                  drawWatermarksToCtx(ocAboveCtx, W, H);
+                }
+              }
+              if (ocBehindCtx && ocBehindCanvas) {
+                ocBehindCtx.clearRect(0, 0, W, H);
+                const savedBake = (window as any).__bakeReplacedVapSlotsInRender;
+                const savedPrimOnly = (window as any).__vapRenderPrimaryOnly;
+                (window as any).__bakeReplacedVapSlotsInRender = false;
+                (window as any).__vapRenderPrimaryOnly = true;
+                try {
+                  contentDraw(raw, ocBehindCtx, W, H);
+                } finally {
+                  (window as any).__bakeReplacedVapSlotsInRender = savedBake;
+                  (window as any).__vapRenderPrimaryOnly = savedPrimOnly;
+                }
+                if (ocAboveCanvas) {
+                  ocBehindCtx.drawImage(ocAboveCanvas, 0, 0, W, H);
+                }
+              }
+              if (ocBelowCtx && ocBelowCanvas) {
+                ocBelowCtx.clearRect(0, 0, W, H);
+                if (typeof (window as any).__drawComposerOverlays === 'function') {
+                  (window as any).__drawComposerOverlays(ocBelowCtx, W, H, 'below');
+                }
+                if (ocBehindCanvas) {
+                  ocBelowCtx.drawImage(ocBehindCanvas, 0, 0, W, H);
+                }
+              }
+
+              // Paint every dynamic slot's white-on-black silhouette (`mFrame`) into the packed atlas below `aFrame`,
+              // attenuating luminance by any foreground layers sitting in front of that slot's depth band.
               const frameMMap = srcMFrameAtFrame[k] || {};
+              const frameRectMap = resolvedFrameAtFrame[k] || {};
+              const frameOpacityMap = opacityAtFrame[k] || {};
               for (const packed of packedSlots) {
-                const { slot, mFrame } = packed;
+                const { slot, mFrame, targetFrame } = packed;
                 const [mx, my, mw, mh] = mFrame;
+                if (!frameRectMap[slot.srcId]) {
+                  // Hidden outside visibility window on frame k
+                  continue;
+                }
                 const srcMf = frameMMap[slot.srcId] || slot.defaultMFrame;
                 const maskCanvas = buildMaskCanvasFromPresetOrSource(slot, S, m, srcMf, mw, mh);
+
+                const band = resolveMaskDepthBand(slot);
+                const occCanvas =
+                  band === 'belowOverlays'
+                    ? ocBelowCanvas
+                    : band === 'behindPrimary'
+                      ? ocBehindCanvas
+                      : band === 'abovePrimary'
+                        ? hasAboveForeground
+                          ? ocAboveCanvas
+                          : null
+                        : null;
+
+                if (occCanvas && fgCropCanvas && fgCropCtx) {
+                  if (fgCropCanvas.width !== mw || fgCropCanvas.height !== mh) {
+                    fgCropCanvas.width = mw;
+                    fgCropCanvas.height = mh;
+                  }
+                  const [fx, fy, fw, fh] = frameRectMap[slot.srcId] || targetFrame;
+                  fgCropCtx.clearRect(0, 0, mw, mh);
+                  fgCropCtx.imageSmoothingEnabled = true;
+                  fgCropCtx.imageSmoothingQuality = 'high';
+                  fgCropCtx.drawImage(occCanvas, fx, fy, fw, fh, 0, 0, mw, mh);
+
+                  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+                  if (maskCtx) {
+                    const mImg = maskCtx.getImageData(0, 0, mw, mh);
+                    const fImg = fgCropCtx.getImageData(0, 0, mw, mh);
+                    attenuateMaskRgbaByForegroundAlpha(mImg.data, fImg.data, mw, mh);
+                    maskCtx.putImageData(mImg, 0, 0);
+                  }
+                }
+
+                const slotOp =
+                  frameOpacityMap[slot.srcId] !== undefined ? Number(frameOpacityMap[slot.srcId]) : 1;
+                if (slotOp < 0.999) {
+                  const mCtx2 = maskCanvas.getContext('2d', { willReadFrequently: true });
+                  if (mCtx2) {
+                    const mImg2 = mCtx2.getImageData(0, 0, mw, mh);
+                    for (let pi = 0; pi < mImg2.data.length; pi += 4) {
+                      mImg2.data[pi] = Math.round(mImg2.data[pi] * slotOp);
+                      mImg2.data[pi + 1] = Math.round(mImg2.data[pi + 1] * slotOp);
+                      mImg2.data[pi + 2] = Math.round(mImg2.data[pi + 2] * slotOp);
+                    }
+                    mCtx2.putImageData(mImg2, 0, 0);
+                  }
+                }
+
                 x.drawImage(maskCanvas, mx, my, mw, mh);
               }
             }
           },
         });
       } finally {
+        delete (window as any).__activeRenderFrame;
+        delete (window as any).__activeRenderTotalFrames;
         (window as any).__bakeReplacedVapSlotsInRender = prevBakeFlag;
         (window as any).__vapExportingFrames = prevExpFlag;
       }
@@ -8712,6 +10726,8 @@ export function initMotionToolsFixed() {
           } else {
             t = Math.min(o.start + (k + 0.5) / o.fps, o.end - 0.0001);
           }
+          (window as any).__activeRenderFrame = k;
+          (window as any).__activeRenderTotalFrames = Math.max(1, o.nk || 1);
           if (S.vid) await seekVideo(S.vid, t);
           else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
           if (typeof (window as any).__seekComposerOverlays === 'function') {
@@ -8733,6 +10749,8 @@ export function initMotionToolsFixed() {
           }
         },
       });
+      delete (window as any).__activeRenderFrame;
+      delete (window as any).__activeRenderTotalFrames;
       if (format === 'mov') {
         const u = new Uint8Array(await blob.arrayBuffer());
         u.set([113, 116, 32, 32], 8);
@@ -8790,6 +10808,7 @@ export function initMotionToolsFixed() {
             ((source._vapSlotReplacements &&
               Object.values(source._vapSlotReplacements).some((r: any) => r && r.active && !r.hidden)) ||
               getEffectiveMaskSlots(source).some((sl: any) => Boolean(parseHexColorRgb((sl as any).fillColor))) ||
+              anySlotHasAnimatedMotion(source) ||
               source._customVapSlots?.length > 0 ||
               source._hasMaskEdits)
         );
@@ -8939,16 +10958,180 @@ export function initMotionToolsFixed() {
         };
         (window as any).__exportAeScriptPackage = exportAeScriptPackage;
         try {
+          const activeComposerSt: ProjectComposerState =
+            (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
+          const activeNonMaskOverlays = (activeComposerSt.overlays || []).filter(
+            (ov: any) => ov && ov.transform?.visible !== false && !(ov.isVapMask && ov.linkedMaskSlotId)
+          );
+          const isDecomposedPrimarySvga = Boolean(
+            (window.SV && window.SV.m) || (cur && /\.svga$/i.test(cur.name || ''))
+          );
+          const isStaticSingleFramePrimary = Boolean(
+            S && !isDecomposedPrimarySvga && !S.vid && (!S.n || S.n <= 1)
+          );
+          const hasMasksOrOverlaysForSvga =
+            F === 'svga' &&
+            Boolean(S) &&
+            !isDecomposedPrimarySvga &&
+            (isStaticSingleFramePrimary ||
+              getEffectiveMaskSlots(S).length > 0 ||
+              activeNonMaskOverlays.length > 0 ||
+              hasComposerEdits);
+
           if (F === 'ae_script') await exportAeScriptPackage(cur);
           else if (F === 'vap' || F === 'yyeva') await exportVY(F);
           else if (['mp4', 'mov', 'dual'].includes(F)) await exportVideo(F);
-          else if (F === 'orig' && source.meta) {
+          else if (hasMasksOrOverlaysForSvga) {
+            const W = even(o.W),
+              H = even(o.H),
+              fps = Math.max(1, o.fps || 15),
+              nk = Math.max(1, o.nk || 1),
+              raw = S._rawDraw || S.draw,
+              baseW = Math.max(1, S.w || W),
+              baseH = Math.max(1, S.h || H);
+            const stEl = document.getElementById('exportStatus');
+            if (stEl) stEl.textContent = 'جاري تجهيز الطبقات والأقنعة كملف SVGA متفكك…';
+
+            const primarySprites: any[] = [];
+            const primaryImages: Record<string, Uint8Array> = {};
+            const invSx = baseW / W;
+            const invSy = baseH / H;
+
+            if (isStaticSingleFramePrimary) {
+              // Render static primary image as ONE single piece (primary_main) and animate via SVGA matrix transforms
+              const singleCv = mk(baseW, baseH);
+              const singleCtx = singleCv.getContext('2d', { willReadFrequently: true })!;
+              await S.set(0);
+              singleCtx.clearRect(0, 0, baseW, baseH);
+              raw(singleCtx, baseW, baseH);
+              const nonVapErasures: VapDummyErasureRegion[] =
+                S && !S.meta && Array.isArray(S._dummyMaskErasures) ? S._dummyMaskErasures : [];
+              if (nonVapErasures.length > 0) {
+                const imgData = singleCtx.getImageData(0, 0, baseW, baseH);
+                eraseDummyMaskPixelsFromRgba(imgData.data, baseW, baseH, nonVapErasures);
+                singleCtx.putImageData(imgData, 0, 0);
+              }
+              const featherCfg = (window as any).__edgeFeather || (window as any).__bakedEdgeFeather;
+              if (
+                featherCfg?.enabled &&
+                (featherCfg.topMargin > 0 ||
+                  featherCfg.bottomMargin > 0 ||
+                  featherCfg.leftMargin > 0 ||
+                  featherCfg.rightMargin > 0 ||
+                  featherCfg.featherRadius > 0)
+              ) {
+                applyEdgeFeatherToContext(singleCtx, baseW, baseH, featherCfg);
+              }
+              const pngBlob = await window.pngQ(singleCv, true, true);
+              const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+              primaryImages['primary_main'] = pngBytes;
+              primarySprites.push({
+                key: 'primary_main',
+                fr: [
+                  {
+                    a: 1,
+                    x: 0,
+                    y: 0,
+                    w: baseW,
+                    h: baseH,
+                    t: [1, 0, 0, 1, 0, 0],
+                  },
+                ],
+              });
+
+              const syntheticBaseMovie = {
+                w: baseW,
+                h: baseH,
+                fps,
+                n: 1,
+                im: primaryImages,
+                sp: primarySprites,
+              };
+              const cfg = getSvgaCompressionConfig();
+              const blob = await exportDecomposedSvgaProject(
+                syntheticBaseMovie,
+                W,
+                H,
+                fps,
+                cfg.qualityPercent
+              );
+              const baseName = cur.name.replace(/\.[^.]+$/, '');
+              await dl(blob, `${baseName}.svga`);
+            } else {
+              const frameCv = mk(W, H);
+              const frameCtx = frameCv.getContext('2d', { willReadFrequently: true })!;
+              const savedBake = (window as any).__bakeReplacedVapSlotsInRender;
+              const savedPrimOnly = (window as any).__vapRenderPrimaryOnly;
+              (window as any).__bakeReplacedVapSlotsInRender = false;
+              (window as any).__vapRenderPrimaryOnly = true;
+              try {
+                for (let k = 0; k < nk; k++) {
+                  (window as any).__activeRenderFrame = k;
+                  (window as any).__activeRenderTotalFrames = nk;
+                  const t = Math.min(o.start + (k + 0.5) / fps, o.end - 0.0001);
+                  if (S.vid) await seekVideo(S.vid, t);
+                  else await S.set(Math.min(S.n - 1, Math.floor(t * S.fps)));
+                  frameCtx.clearRect(0, 0, W, H);
+                  contentDraw(raw, frameCtx, W, H);
+                  const pngBlob = await window.pngQ(frameCv, true, true);
+                  const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+                  const key = `primary_f${k}`;
+                  primaryImages[key] = pngBytes;
+                  const fr: any[] = [];
+                  for (let fi = 0; fi < nk; fi++) {
+                    fr.push({
+                      a: fi === k ? 1 : 0,
+                      x: 0,
+                      y: 0,
+                      w: W,
+                      h: H,
+                      t: [invSx, 0, 0, invSy, 0, 0],
+                    });
+                  }
+                  primarySprites.push({ key, fr });
+                }
+              } finally {
+                delete (window as any).__activeRenderFrame;
+                delete (window as any).__activeRenderTotalFrames;
+                (window as any).__bakeReplacedVapSlotsInRender = savedBake;
+                (window as any).__vapRenderPrimaryOnly = savedPrimOnly;
+              }
+
+              const syntheticBaseMovie = {
+                w: baseW,
+                h: baseH,
+                fps,
+                n: nk,
+                im: primaryImages,
+                sp: primarySprites,
+              };
+              const cfg = getSvgaCompressionConfig();
+              const composerForPrimaryBaked: ProjectComposerState = {
+                ...activeComposerSt,
+                primaryTransform: { ...DEFAULT_LAYER_TRANSFORM },
+              };
+              const blob = await exportDecomposedSvgaProject(
+                syntheticBaseMovie,
+                W,
+                H,
+                fps,
+                cfg.qualityPercent,
+                {
+                  composerStateOverride: composerForPrimaryBaked,
+                  ignoreGlobalPrimaryTransform: true,
+                }
+              );
+              const baseName = cur.name.replace(/\.[^.]+$/, '');
+              await dl(blob, `${baseName}.svga`);
+            }
+          } else if (F === 'orig' && source.meta) {
             const hasVapMaskEdits = !!(
               (S?._vapSlotReplacements &&
                 Object.values(S._vapSlotReplacements).some((r: any) => r && r.active)) ||
               (S?._customVapSlots && S._customVapSlots.length > 0) ||
               S?._hasMaskEdits ||
               S?._deletedSlotIds?.size > 0 ||
+              (Array.isArray(S?._dummyMaskErasures) && S._dummyMaskErasures.length > 0) ||
               Object.keys(S?._slotGeometryOverrides || {}).length > 0
             );
             const hasWatermarkLayers = !!(
@@ -9087,10 +11270,18 @@ export function initMotionToolsFixed() {
       const vapMasksState = {
         guidesEnabled: Boolean((window as any).__vapShowMaskGuides),
         preserveMasksOnExport: S._preserveMasksOnExport !== false,
-        bakeReplacedSlots: Boolean(S._bakeReplacedSlots),
+        bakeReplacedSlots: S._bakeReplacedSlots !== false,
         customSlots: (S._customVapSlots || []).map((cs: any) => ({ ...cs })),
         slotOverrides: { ...(S._slotGeometryOverrides || {}) },
         deletedSlotIds: Array.from(S._deletedSlotIds || []),
+        convertedDummyIds: Array.from(S._convertedDummyIds || []),
+        dummyMaskErasures: (S._dummyMaskErasures || []).map((er: any) => ({
+          id: er.id,
+          kind: er.kind,
+          frame: er.frame,
+          fillRgb: er.fillRgb,
+          silBase64: er.silhouetteRgba ? base64(new Uint8Array(er.silhouetteRgba)) : undefined,
+        })),
         customSilhouettes: { ...(S._customMaskDataUrls || {}) },
         replacements: serializedReplacements,
       };
@@ -9159,6 +11350,16 @@ export function initMotionToolsFixed() {
         S._customVapSlots = Array.isArray(vm.customSlots) ? vm.customSlots.map((cs: any) => ({ ...cs })) : [];
         S._slotGeometryOverrides = vm.slotOverrides && typeof vm.slotOverrides === 'object' ? { ...vm.slotOverrides } : {};
         S._deletedSlotIds = new Set(Array.isArray(vm.deletedSlotIds) ? vm.deletedSlotIds.map(String) : []);
+        S._convertedDummyIds = new Set(Array.isArray(vm.convertedDummyIds) ? vm.convertedDummyIds.map(String) : []);
+        S._dummyMaskErasures = Array.isArray(vm.dummyMaskErasures)
+          ? vm.dummyMaskErasures.map((er: any) => ({
+              id: String(er.id),
+              kind: er.kind,
+              frame: er.frame,
+              fillRgb: er.fillRgb,
+              silhouetteRgba: typeof er.silBase64 === 'string' ? new Uint8ClampedArray(unbase64(er.silBase64)) : undefined,
+            }))
+          : [];
         S._customMaskDataUrls = {};
         S._customMaskCanvases = {};
 
@@ -9193,7 +11394,13 @@ export function initMotionToolsFixed() {
           };
         }
 
-        if (S._customVapSlots.length > 0 || silEntries.length > 0 || Object.keys(S._slotGeometryOverrides).length > 0 || S._deletedSlotIds.size > 0) {
+        if (
+          S._customVapSlots.length > 0 ||
+          silEntries.length > 0 ||
+          Object.keys(S._slotGeometryOverrides).length > 0 ||
+          S._deletedSlotIds.size > 0 ||
+          S._dummyMaskErasures.length > 0
+        ) {
           S._hasMaskEdits = true;
         }
         (window as any).__refreshVapDynamicMasksPanel?.(S);
@@ -9297,8 +11504,14 @@ export function initMotionToolsFixed() {
           if ((window as any).__chromaKey?.enabled) {
             (window as any).__applyChromaKeyToStageAndAssets?.((window as any).__chromaKey);
           }
-          (window as any).__refreshVapDynamicMasksPanel?.(S);
+          await (window as any).__rehydrateSessionVisualsOnSource?.(S);
           status('Ready to export or save the project.');
+          try {
+            window.dispatchEvent(new CustomEvent('primaryprojectchange'));
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent('primaryprojectchange'));
+            }, 150);
+          } catch (_) {}
         } else status('Could not open this file.');
       } catch (e) {
         S = null;
@@ -9329,6 +11542,8 @@ export function initMotionToolsFixed() {
             } catch (_) {}
           }
           (window as any).__svgaCurrentFrame = targetFrame;
+          (window as any).__currentAnimationStepIdx = targetFrame;
+          (window as any).__composerStaticPausedFrame = targetFrame;
           if (window.SVP && typeof window.SVP.stepToFrame === 'function') {
             try {
               (window.SVP as any).currentFrame = targetFrame;
@@ -9339,6 +11554,9 @@ export function initMotionToolsFixed() {
             try {
               await S.set(targetFrame);
             } catch (_) {}
+          }
+          if (typeof (window as any).__syncComposerStagePreview === 'function') {
+            (window as any).__syncComposerStagePreview(targetFrame);
           }
           if (window.PA) {
             window.PA.t = targetTime;
@@ -9514,18 +11732,23 @@ export function initMotionToolsFixed() {
         window.dispatchEvent(new CustomEvent('projectcomposerchange', { detail: st }));
       };
 
-      const syncComposerStagePreview = () => {
+      const syncComposerStagePreview = (overrideFrame?: number) => {
         const v = document.getElementById('view') as HTMLElement | null;
         if (!v) return;
         const st: ProjectComposerState =
           (window as any).__projectComposerState || INITIAL_PROJECT_COMPOSER_STATE;
-        const pTrans = st.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+        const rawPTrans = st.primaryTransform || DEFAULT_LAYER_TRANSFORM;
 
         v.style.position = 'relative';
         v.style.overflow = 'hidden';
 
         const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 400);
         const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 400);
+        const { frame: activeFrame, totalFrames: activeTotal } =
+          typeof overrideFrame === 'number'
+            ? { frame: overrideFrame, totalFrames: Math.max(1, (S && S.n) || 30) }
+            : getActiveComposerPlaybackFrame();
+        const pTrans = interpolateTransformAtFrame(rawPTrans, activeFrame, activeTotal, baseW, baseH);
 
         const globalScalePct = Number(($('#scale') as HTMLInputElement)?.value) || 100;
         const globalMirror =
@@ -9549,17 +11772,29 @@ export function initMotionToolsFixed() {
           if (
             ch.id === 'projectComposerUnderlayCanvas' ||
             ch.id === 'projectComposerOverlayCanvas' ||
-            ch.id === 'vapDynamicMaskOverlay' ||
-            ch.id === 'vapDynamicMaskUnderlay' ||
+            ch.id === 'vapDynamicMaskGuides' ||
             ch.id === 'stageWatermarkOverlay'
           ) {
+            continue;
+          }
+          if (
+            ch.id === 'vapDynamicMaskBelowAll' ||
+            ch.id === 'vapDynamicMaskUnderlay' ||
+            ch.id === 'vapDynamicMaskOverlay' ||
+            ch.id === 'vapDynamicMaskAboveAll'
+          ) {
+            // Individual mask motion transforms & visibility windows are rendered per-slot on canvas
+            // (in drawMaskPlacementToTarget / renderMaskOverlaySlotsIntoCtx) to prevent double-transforming.
+            ch.style.transformOrigin = 'center center';
+            ch.style.transform = 'none';
+            ch.style.opacity = '1';
             continue;
           }
           if (ch.tagName === 'VIDEO' && ch.style.width === '2px') {
             continue;
           }
           ch.style.position = 'relative';
-          ch.style.zIndex = '2';
+          ch.style.zIndex = '4';
           ch.style.transformOrigin = 'center center';
           ch.style.transform = isDefault ? '' : cssRes.transform;
           ch.style.opacity = cssRes.opacity;
@@ -9599,8 +11834,8 @@ export function initMotionToolsFixed() {
           return c;
         };
 
-        underlayCv = ensureOverlayCanvas('projectComposerUnderlayCanvas', '1');
-        overlayCv = ensureOverlayCanvas('projectComposerOverlayCanvas', '10');
+        underlayCv = ensureOverlayCanvas('projectComposerUnderlayCanvas', '2');
+        overlayCv = ensureOverlayCanvas('projectComposerOverlayCanvas', '6');
       };
 
       (window as any).__syncComposerStagePreview = syncComposerStagePreview;
@@ -9649,22 +11884,26 @@ export function initMotionToolsFixed() {
             prevFrame[1] !== frame[1] ||
             prevFrame[2] !== frame[2] ||
             prevFrame[3] !== frame[3];
-          const curZ = Number(prevOv.z ?? 0);
+          const allSlots = getEffectiveMaskSlots(source);
+          const matchingSlot = allSlots.find((s) => String(s.srcId) === slotId);
+          const curBand = resolveMaskDepthBand(matchingSlot || prevOv);
           const wantBelow = layer.zOrder === 'below';
-          let nextZ = prevOv.z;
-          if (wantBelow && curZ >= 0) nextZ = -1;
-          else if (!wantBelow && curZ < 0) {
-            const allSlots = getEffectiveMaskSlots(source);
-            nextZ = Math.max(0, ...allSlots.map((s) => Number(s.z ?? 0))) + 1;
+          let zVals: { z?: number; zLayer?: MaskDepthBand } = {};
+          if (wantBelow && curBand !== 'belowOverlays' && curBand !== 'behindPrimary') {
+            const bMap = setSlotDepthBand(allSlots, slotId, 'behindPrimary');
+            if (bMap[slotId]) zVals = bMap[slotId];
+          } else if (!wantBelow && (curBand === 'belowOverlays' || curBand === 'behindPrimary')) {
+            const bMap = setSlotDepthBand(allSlots, slotId, 'abovePrimary');
+            if (bMap[slotId]) zVals = bMap[slotId];
           }
 
-          if (changedFrame || nextZ !== prevOv.z) {
+          if (changedFrame || (zVals.z !== undefined && (zVals.z !== prevOv.z || zVals.zLayer !== prevOv.zLayer))) {
             source._slotGeometryOverrides[slotId] = {
               ...prevOv,
               w: frame[2],
               h: frame[3],
               defaultFrame: frame,
-              ...(nextZ !== undefined ? { z: nextZ } : {}),
+              ...(zVals.z !== undefined ? { z: zVals.z, zLayer: zVals.zLayer } : {}),
             };
             source._hasMaskEdits = true;
             touched = true;
@@ -9735,7 +11974,10 @@ export function initMotionToolsFixed() {
         const lx = layerCv.getContext('2d', { willReadFrequently: true })!;
         lx.clearRect(0, 0, rw, rh);
         if (rt) {
+          lx.save();
+          lx.translate(rw / 2, rh / 2);
           rt.drawAtTime(lx, rw, rh, 0, layer.alphaMode || 'auto');
+          lx.restore();
         }
         const layerDataUrl = layerCv.toDataURL('image/png');
         const rawData = lx.getImageData(0, 0, rw, rh);
@@ -9872,6 +12114,10 @@ export function initMotionToolsFixed() {
         const nowSec =
           typeof overrideTimeSec === 'number' ? overrideTimeSec : getCurrentPrimaryTimeSec();
 
+        const { frame: currentFrame, totalFrames } = getActiveComposerPlaybackFrame();
+        const rawPTrans = st.primaryTransform || DEFAULT_LAYER_TRANSFORM;
+        const primaryAtFrame = interpolateTransformAtFrame(rawPTrans, currentFrame, totalFrames, baseW, baseH);
+
         for (const layer of st.overlays) {
           if (layer.isVapMask && layer.linkedMaskSlotId && S) continue;
           if ((layer.zOrder || 'above') !== pass) continue;
@@ -9879,6 +12125,15 @@ export function initMotionToolsFixed() {
           const rt = overlayRuntimes.get(layer.id);
           if (!rt) continue;
 
+          const effectiveTransform = resolveLinkedTransformAtFrame(
+            layer.transform,
+            rawPTrans,
+            primaryAtFrame,
+            currentFrame,
+            totalFrames,
+            baseW,
+            baseH
+          );
           const geom = computeLayerDrawGeometry(
             Math.max(1, rt.width || layer.width || W),
             Math.max(1, rt.height || layer.height || H),
@@ -9887,7 +12142,7 @@ export function initMotionToolsFixed() {
             W,
             H,
             layer.fitMode || 'contain',
-            layer.transform || DEFAULT_LAYER_TRANSFORM
+            effectiveTransform
           );
           if (!geom.visible || geom.opacity <= 0.001 || geom.drawWidth <= 0 || geom.drawHeight <= 0) {
             continue;
@@ -9929,29 +12184,82 @@ export function initMotionToolsFixed() {
         }
       };
 
-      // Continuous live preview loop for secondary overlay layers inside #view
+      (window as any).__replayComposerMotion = async (fromFrame = 0) => {
+        (window as any).__composerAnimStartMs = performance.now();
+        (window as any).__composerStaticPausedFrame = fromFrame;
+        if (S) {
+          if (S.vid) {
+            try {
+              S.vid.currentTime = fromFrame / Math.max(1, S.fps || 24);
+              if (S.paused) {
+                S.paused = false;
+                const pp = document.getElementById('pp');
+                if (pp) pp.textContent = 'Pause';
+                S.go?.();
+              }
+            } catch (_) {}
+          } else {
+            (window as any).__svgaCurrentFrame = fromFrame;
+            (window as any).__currentAnimationStepIdx = fromFrame;
+            if (S.paused) {
+              S.paused = false;
+              const pp = document.getElementById('pp');
+              if (pp) pp.textContent = 'Pause';
+              try { S.go?.(); } catch (_) {}
+            }
+            if (window.SVP && typeof window.SVP.stepToFrame === 'function') {
+              try {
+                (window.SVP as any).currentFrame = fromFrame;
+                window.SVP.stepToFrame(fromFrame, true);
+              } catch (_) {}
+            } else if (typeof S.set === 'function') {
+              try {
+                await S.set(fromFrame);
+              } catch (_) {}
+            }
+          }
+        }
+        syncComposerStagePreview(fromFrame);
+      };
+
+      // Continuous live preview loop for primary motion, mask motion/visibility AND secondary overlay layers inside #view
       (function renderComposerStageLoop() {
         const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
-        if (!window.__busy && st && Array.isArray(st.overlays) && st.overlays.length > 0) {
-          const underlayCv = document.getElementById(
-            'projectComposerUnderlayCanvas'
-          ) as HTMLCanvasElement | null;
-          const overlayCv = document.getElementById(
-            'projectComposerOverlayCanvas'
-          ) as HTMLCanvasElement | null;
-
-          if (!underlayCv || !overlayCv) {
+        if (!window.__busy && st) {
+          const hasPrimaryMotion = hasAnimatedMotion(st.primaryTransform);
+          const hasMaskMotion = anySlotHasAnimatedMotion(S);
+          const hasOverlays = Array.isArray(st.overlays) && st.overlays.length > 0;
+          if (hasPrimaryMotion || hasMaskMotion) {
             syncComposerStagePreview();
-          } else {
-            const uCtx = underlayCv.getContext('2d');
-            if (uCtx) {
-              uCtx.clearRect(0, 0, underlayCv.width, underlayCv.height);
-              drawComposerOverlaysForPass(uCtx, underlayCv.width, underlayCv.height, 'below');
+          }
+          if (S && (hasMaskMotion || (hasPrimaryMotion && getEffectiveMaskSlots(S).length > 0))) {
+            if (S.meta) {
+              if (S.paused) repaintVapStageNow(S);
+            } else {
+              syncNonVapMaskStageOverlay(S);
             }
-            const oCtx = overlayCv.getContext('2d');
-            if (oCtx) {
-              oCtx.clearRect(0, 0, overlayCv.width, overlayCv.height);
-              drawComposerOverlaysForPass(oCtx, overlayCv.width, overlayCv.height, 'above');
+          }
+          if (hasOverlays) {
+            const underlayCv = document.getElementById(
+              'projectComposerUnderlayCanvas'
+            ) as HTMLCanvasElement | null;
+            const overlayCv = document.getElementById(
+              'projectComposerOverlayCanvas'
+            ) as HTMLCanvasElement | null;
+
+            if (!underlayCv || !overlayCv) {
+              syncComposerStagePreview();
+            } else {
+              const uCtx = underlayCv.getContext('2d');
+              if (uCtx) {
+                uCtx.clearRect(0, 0, underlayCv.width, underlayCv.height);
+                drawComposerOverlaysForPass(uCtx, underlayCv.width, underlayCv.height, 'below');
+              }
+              const oCtx = overlayCv.getContext('2d');
+              if (oCtx) {
+                oCtx.clearRect(0, 0, overlayCv.width, overlayCv.height);
+                drawComposerOverlaysForPass(oCtx, overlayCv.width, overlayCv.height, 'above');
+              }
             }
           }
         }
@@ -10424,14 +12732,68 @@ export function initMotionToolsFixed() {
         };
       };
 
+      const generateOverlayThumbnail = async (
+        runtime: SecondaryOverlayRuntime
+      ): Promise<string | undefined> => {
+        try {
+          const maxSide = 120;
+          const rw = Math.max(1, runtime.width || 120);
+          const rh = Math.max(1, runtime.height || 120);
+          const sc = Math.min(1, maxSide / Math.max(rw, rh));
+          const tw = Math.max(24, Math.round(rw * sc));
+          const th = Math.max(24, Math.round(rh * sc));
+          const tc = mk(tw, th);
+          const tx = tc.getContext('2d', { willReadFrequently: true });
+          if (!tx) return undefined;
+
+          const dur = Math.max(0.05, runtime.durationSec || 1);
+          const candidateTimes =
+            runtime.totalFrames > 1 ? [0, dur * 0.25, dur * 0.5, dur * 0.1] : [0];
+
+          for (const t of candidateTimes) {
+            if (t > 0 && typeof runtime.seekToTime === 'function') {
+              try {
+                await Promise.race([runtime.seekToTime(t), sleep(250)]);
+              } catch (_) {}
+            }
+            tx.clearRect(0, 0, tw, th);
+            tx.save();
+            tx.translate(tw / 2, th / 2);
+            runtime.drawAtTime(tx, tw, th, t, 'auto');
+            tx.restore();
+
+            const px = tx.getImageData(0, 0, tw, th).data;
+            let hasVisible = false;
+            for (let i = 3; i < px.length; i += 16) {
+              if (px[i] > 10) {
+                hasVisible = true;
+                break;
+              }
+            }
+            if (hasVisible) {
+              return tc.toDataURL('image/png');
+            }
+          }
+          return tc.toDataURL('image/png');
+        } catch (_) {
+          return undefined;
+        }
+      };
+
       (window as any).__loadSecondaryOverlayFile = async (
         file: File,
-        replaceLayerId?: string
-      ) => {
+        replaceLayerId?: string,
+        opts?: {
+          zOrder?: 'above' | 'below';
+          fitMode?: 'contain' | 'cover' | 'stretch' | 'original';
+          keepActiveTarget?: boolean;
+        }
+      ): Promise<SecondaryOverlayLayer | null> => {
         try {
           toast(`⏳ جاري تحميل الملف الإضافي: ${file.name}...`);
           const layerId = replaceLayerId || `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           const runtime = await buildSecondaryOverlayRuntime(file, layerId);
+          const thumbDataUrl = await generateOverlayThumbnail(runtime);
 
           if (replaceLayerId && overlayRuntimes.has(replaceLayerId)) {
             overlayRuntimes.get(replaceLayerId)?.dispose?.();
@@ -10452,15 +12814,18 @@ export function initMotionToolsFixed() {
             frames: runtime.totalFrames,
             duration: runtime.durationSec,
             zOrder:
-              existingIdx >= 0 ? st.overlays[existingIdx].zOrder : 'above',
+              opts?.zOrder ??
+              (existingIdx >= 0 ? st.overlays[existingIdx].zOrder : 'above'),
             fitMode:
-              existingIdx >= 0 ? st.overlays[existingIdx].fitMode : 'contain',
+              opts?.fitMode ??
+              (existingIdx >= 0 ? st.overlays[existingIdx].fitMode : 'contain'),
             alphaMode:
               existingIdx >= 0 ? st.overlays[existingIdx].alphaMode : 'auto',
             transform:
               existingIdx >= 0
                 ? { ...st.overlays[existingIdx].transform }
                 : { ...DEFAULT_LAYER_TRANSFORM },
+            ...(thumbDataUrl ? { thumbnailDataUrl: thumbDataUrl } : {}),
           };
 
           const nextOverlays =
@@ -10470,14 +12835,16 @@ export function initMotionToolsFixed() {
 
           const nextState: ProjectComposerState = {
             ...st,
-            activeTargetId: layerId,
+            activeTargetId: opts?.keepActiveTarget ? st.activeTargetId : layerId,
             overlays: nextOverlays,
           };
 
           (window as any).__setProjectComposerState(nextState);
           toast(`✅ تم إضافة الملف الثاني بنجاح (${runtime.formatLabel} · ${runtime.width}×${runtime.height})`);
+          return newLayerMeta;
         } catch (err: any) {
           toast(`❌ تعذر تحميل الملف الثاني: ${err?.message || err}`);
+          return null;
         }
       };
 
@@ -10536,9 +12903,27 @@ export function initMotionToolsFixed() {
           const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 300);
           const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 300);
           const rect = viewStageEl.getBoundingClientRect();
-          const stageX = ((clientX - rect.left) / Math.max(1, rect.width)) * baseW;
-          const stageY = ((clientY - rect.top) / Math.max(1, rect.height)) * baseH;
-          return { stageX, stageY, baseW, baseH, rect };
+          const contentLeft = rect.left + (viewStageEl.clientLeft || 0);
+          const contentTop = rect.top + (viewStageEl.clientTop || 0);
+          const contentW = Math.max(1, viewStageEl.clientWidth || rect.width);
+          const contentH = Math.max(1, viewStageEl.clientHeight || rect.height);
+          const stageX = ((clientX - contentLeft) / contentW) * baseW;
+          const stageY = ((clientY - contentTop) / contentH) * baseH;
+          return { stageX, stageY, baseW, baseH, rect, contentW, contentH };
+        };
+
+        const getLiveMaskSlotsForHitTest = (source: any) => {
+          const slots = source ? getEffectiveMaskSlots(source) : [];
+          if (!slots.length || !source?.meta) return slots;
+          const fps = Math.max(1, source.meta.fps || source.fps || 30);
+          const totalFrames = Math.max(1, source.meta.frames || source.n || 1);
+          const curTime = Number(source.vid?.currentTime) || 0;
+          const curFrameIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor((curTime + 0.0005) * fps)));
+          const placements = resolveEffectivePlacementsForSource(source, source.meta, curFrameIdx);
+          return slots.map((sl) => {
+            const pl = placements.find((p) => String(p.srcId) === String(sl.srcId));
+            return pl && Array.isArray(pl.frame) ? { ...sl, defaultFrame: pl.frame } : sl;
+          });
         };
 
         const getHitTestableEmbeddedFramesAsSlots = (source: any) => {
@@ -10568,7 +12953,7 @@ export function initMotionToolsFixed() {
           (e: WheelEvent) => {
             const st: ProjectComposerState | undefined = (window as any).__projectComposerState;
             const panelOpen = Boolean((window as any).__projectComposerPanelOpen);
-            const slots = S ? getEffectiveMaskSlots(S) : [];
+            const slots = getLiveMaskSlotsForHitTest(S);
             const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
             const combinedSlots = [...frameSlots, ...slots];
             const guidesOn = Boolean((window as any).__vapShowMaskGuides);
@@ -10649,7 +13034,7 @@ export function initMotionToolsFixed() {
         viewStageEl.addEventListener('pointerdown', (e: PointerEvent) => {
           if (e.button !== 0) return;
 
-          const slots = S ? getEffectiveMaskSlots(S) : [];
+          const slots = getLiveMaskSlotsForHitTest(S);
           const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
           const combinedSlots = [...frameSlots, ...slots];
           const guidesOn = Boolean((window as any).__vapShowMaskGuides);
@@ -10725,8 +13110,10 @@ export function initMotionToolsFixed() {
             const baseW = Math.max(1, (S && S.w) || +($('#w') as HTMLInputElement)?.value || 300);
             const baseH = Math.max(1, (S && S.h) || +($('#h') as HTMLInputElement)?.value || 300);
             const rect = viewStageEl.getBoundingClientRect();
-            const dxStage = (dxScreen / Math.max(1, rect.width)) * baseW;
-            const dyStage = (dyScreen / Math.max(1, rect.height)) * baseH;
+            const contentW = Math.max(1, viewStageEl.clientWidth || rect.width);
+            const contentH = Math.max(1, viewStageEl.clientHeight || rect.height);
+            const dxStage = (dxScreen / contentW) * baseW;
+            const dyStage = (dyScreen / contentH) * baseH;
 
             const nextFrame = computeDraggedOrResizedMaskFrame(
               maskDrag.startFrame,
@@ -10749,6 +13136,7 @@ export function initMotionToolsFixed() {
               w: nextFrame[2],
               h: nextFrame[3],
               defaultFrame: nextFrame,
+              hasCustomFrame: true,
             };
             S._hasMaskEdits = true;
             repaintVapStageNow(S);
@@ -10765,7 +13153,7 @@ export function initMotionToolsFixed() {
 
           if (!dragActive) {
             // Update hover cursor over VAP masks or embedded video frames
-            const slots = S ? getEffectiveMaskSlots(S) : [];
+            const slots = getLiveMaskSlotsForHitTest(S);
             const frameSlots = S ? getHitTestableEmbeddedFramesAsSlots(S) : [];
             const combinedSlots = [...frameSlots, ...slots];
             const guidesOn = Boolean((window as any).__vapShowMaskGuides);
@@ -10886,6 +13274,7 @@ export function initMotionToolsFixed() {
             if (S) {
               setupVapDynamicMasksUI(S, S.vid || null, S.meta || null);
               repaintVapStageNow(S);
+              emitVapMasksChange(S);
             }
             if (dragMoved) {
               setTimeout(() => {

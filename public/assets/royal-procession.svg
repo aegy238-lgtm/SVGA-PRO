@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="procBg" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#d8b76e" stop-opacity="0.28"/>
+      <stop offset="60%" stop-color="#991b1b" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#0b101d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="archGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff3c4"/>
+      <stop offset="50%" stop-color="#d8b76e"/>
+      <stop offset="100%" stop-color="#855b14"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#procBg)"/>
+  <g transform="translate(200, 155)">
+    <!-- Royal Archway -->
+    <path d="M-95,80 L-95,-25 A95,85 0 0,1 95,-25 L95,80" fill="none" stroke="url(#archGold)" stroke-width="6"/>
+    <!-- Red Carpet Perspective -->
+    <polygon points="-32,-15 32,-15 82,85 -82,85" fill="#991b1b" stroke="url(#archGold)" stroke-width="2.5"/>
+    <!-- Crest Star -->
+    <g transform="translate(0, -35)">
+      <animateTransform attributeName="transform" type="scale" values="1; 1.12; 1" dur="2.8s" repeatCount="indefinite"/>
+      <polygon points="0,-36 9,-10 36,-10 14,6 22,32 0,16 -22,32 -14,6 -36,-10 -9,-10" fill="url(#archGold)"/>
+    </g>
+  </g>
+</svg>

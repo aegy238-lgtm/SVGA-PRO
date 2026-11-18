@@ -9,6 +9,7 @@ import {
   applyLuminanceMaskToRgba,
   extractMaskPreviewRgba,
   computeSlotFitDrawRect,
+  isValidExternalMFrame,
 } from './vapYyevaDetection';
 import { boxes, readMeta } from './codecs';
 
@@ -274,3 +275,36 @@ test('computeSlotFitDrawRect calculates cover, contain, and fitXY rectangles acc
   assert.equal(cover.dw, 200);
   assert.equal(cover.dh, 100);
 });
+
+test('omitted mFrame never falls back to M.c corner and isValidExternalMFrame rejects overlapping RGB regions', () => {
+  const meta = metaFromAnyObject(
+    {
+      info: { v: 2, f: 10, w: 750, h: 1624, fps: 24, videoW: 1136, videoH: 1632, aFrame: [754, 0, 375, 812], rgbFrame: [0, 0, 750, 1624], isVapx: 1 },
+      src: [{ srcId: '0', srcType: 'img', srcTag: 'avatar1', w: 209, h: 211 }],
+      frame: [
+        { i: 0, obj: [{ srcId: '0', z: 0, frame: [438, 1162, 209, 211], mt: 0 }] }, // no mFrame
+        { i: 5, obj: [{ srcId: '0', z: 0, frame: [438, 1100, 209, 211], mFrame: [754, 820, 209, 211], mt: 0 }] },
+        { i: 8, obj: [] }, // explicitly empty frame
+      ],
+    },
+    'VAP'
+  );
+  assert.ok(meta);
+  assert.equal(meta.dynamicSlots![0].hasExplicitMFrame, false);
+  assert.deepEqual(meta.dynamicSlots![0].defaultMFrame, [0, 0, 0, 0]);
+  assert.equal(isValidExternalMFrame(meta.dynamicSlots![0].defaultMFrame, meta.c, 1136, 1632), false);
+
+  // [0, 0, 209, 211] overlaps M.c [0,0,750,1624] -> rejected
+  assert.equal(isValidExternalMFrame([0, 0, 209, 211], [0, 0, 750, 1624], 1136, 1632), false);
+  // External right-side atlas mFrame [754, 820, 209, 211] -> accepted
+  assert.equal(isValidExternalMFrame([754, 820, 209, 211], [0, 0, 750, 1624], 1136, 1632), true);
+
+  // Sparse keyframe resolution: frame 2 holds keyframe 0; frame 8 stays explicitly empty
+  const f2 = resolveDynamicFramePlacements(meta, 2);
+  assert.equal(f2.length, 1);
+  assert.deepEqual(f2[0].frame, [438, 1162, 209, 211]);
+
+  const f8 = resolveDynamicFramePlacements(meta, 8);
+  assert.equal(f8.length, 0);
+});
+

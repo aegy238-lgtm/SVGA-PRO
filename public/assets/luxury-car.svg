@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="carGlow" cx="50%" cy="55%" r="55%">
+      <stop offset="0%" stop-color="#e8bd62" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#0b101d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="carGold" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#855b14"/>
+      <stop offset="35%" stop-color="#f7df97"/>
+      <stop offset="70%" stop-color="#b8872c"/>
+      <stop offset="100%" stop-color="#fff0bd"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#carGlow)"/>
+  <g transform="translate(200, 165)">
+    <animateTransform attributeName="transform" type="translate" values="197,165; 203,163; 197,165" dur="2.5s" repeatCount="indefinite"/>
+    <!-- Ground Reflection Line -->
+    <line x1="-150" y1="34" x2="150" y2="34" stroke="url(#carGold)" stroke-width="2" opacity="0.5"/>
+    <!-- Supercar Silhouette -->
+    <path d="M-135,18 L-120,-8 L-65,-16 L-15,-42 L68,-42 L115,-12 L140,8 L135,24 L-135,24 Z" fill="url(#carGold)" stroke="#fff5cc" stroke-width="1.2"/>
+    <!-- Cockpit Canopy -->
+    <path d="M-55,-14 L-12,-36 L58,-36 L95,-12 Z" fill="#0d1323" stroke="#f7df97" stroke-width="1"/>
+    <!-- Wheels -->
+    <circle cx="-82" cy="22" r="22" fill="#0b101d" stroke="url(#carGold)" stroke-width="4"/>
+    <circle cx="-82" cy="22" r="9" fill="url(#carGold)"/>
+    <circle cx="84" cy="22" r="22" fill="#0b101d" stroke="url(#carGold)" stroke-width="4"/>
+    <circle cx="84" cy="22" r="9" fill="url(#carGold)"/>
+    <!-- Headlight Beam -->
+    <polygon points="138,4 185,-8 185,22" fill="#fef08a" opacity="0.35"/>
+  </g>
+</svg>

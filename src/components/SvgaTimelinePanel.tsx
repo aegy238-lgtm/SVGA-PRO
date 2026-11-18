@@ -16,6 +16,8 @@ import {
   Clock,
   Link2,
   Scissors,
+  FlipHorizontal2,
+  FlipVertical2,
 } from 'lucide-react';
 import {
   AnimatableProperty,
@@ -108,6 +110,8 @@ interface SvgaTimelinePanelProps {
     currentOffset?: number
   ) => void;
   onSplitOrTrimLayerAtCurrentFrame: (layerId: string, mode: 'trimIn' | 'trimOut') => void;
+  onFlipLayerHorizontally?: (layerId: string, mirrorMode: 'canvas' | 'local') => void;
+  onFlipLayerVertically?: (layerId: string, mirrorMode: 'canvas' | 'local') => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }
@@ -145,6 +149,8 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
   onTogglePropertyKeyframe,
   onStartLayerBarDrag,
   onSplitOrTrimLayerAtCurrentFrame,
+  onFlipLayerHorizontally,
+  onFlipLayerVertically,
   collapsed = false,
   onToggleCollapse,
 }) => {
@@ -346,64 +352,102 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
               <SlidersHorizontal size={11} />
               <span>Transform</span>
             </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
-              <button
-                type="button"
-                onClick={() => onSplitOrTrimLayerAtCurrentFrame(layerId, 'trimIn')}
-                title="قص بداية الشريط عند الفريم الحالي (Trim Start to Playhead)"
-                style={{
-                  background: '#171724',
-                  border: '1px solid #28283c',
-                  color: '#a0a0b8',
-                  borderRadius: '4px',
-                  padding: '1px 5px',
-                  fontSize: '9px',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                [ قص البداية
-              </button>
-              <button
-                type="button"
-                onClick={() => onSplitOrTrimLayerAtCurrentFrame(layerId, 'trimOut')}
-                title="قص نهاية الشريط عند الفريم الحالي (Trim End to Playhead)"
-                style={{
-                  background: '#171724',
-                  border: '1px solid #28283c',
-                  color: '#a0a0b8',
-                  borderRadius: '4px',
-                  padding: '1px 5px',
-                  fontSize: '9px',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                قص النهاية ]
-              </button>
-              <button
-                type="button"
-                onClick={() => onTogglePropertyKeyframe(layerId, 'all', currentFrame)}
-                title="إضافة/حذف نقطة تحريك لجميع الخصائص عند الفريم الحالي"
-                style={{
-                  background: hasAnyKfAtCurrent ? 'rgba(245,158,11,0.18)' : 'transparent',
-                  border: `1px solid ${hasAnyKfAtCurrent ? '#f59e0b' : '#2c2c3e'}`,
-                  borderRadius: '4px',
-                  padding: '1px 5px',
-                  color: hasAnyKfAtCurrent ? '#fbbf24' : '#9e9eb0',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '2px',
-                  fontSize: '9px',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                <Diamond size={9} />
-                <span>+All</span>
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                {onFlipLayerHorizontally && (
+                  <button
+                    type="button"
+                    onClick={() => onFlipLayerHorizontally(layerId, 'local')}
+                    title="عكس من الشمال لليمين ↔️"
+                    style={{
+                      background: t.sx < 0 ? 'rgba(56, 189, 248, 0.2)' : '#171724',
+                      border: `1px solid ${t.sx < 0 ? '#38bdf8' : '#28283c'}`,
+                      color: t.sx < 0 ? '#7dd3fc' : '#a0a0b8',
+                      borderRadius: '4px',
+                      padding: '2px 4px',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <FlipHorizontal2 size={10} />
+                  </button>
+                )}
+                {onFlipLayerVertically && (
+                  <button
+                    type="button"
+                    onClick={() => onFlipLayerVertically(layerId, 'local')}
+                    title="عكس من الأعلى للأسفل ↕️"
+                    style={{
+                      background: t.sy < 0 ? 'rgba(167, 139, 250, 0.2)' : '#171724',
+                      border: `1px solid ${t.sy < 0 ? '#a78bfa' : '#28283c'}`,
+                      color: t.sy < 0 ? '#ddd6fe' : '#a0a0b8',
+                      borderRadius: '4px',
+                      padding: '2px 4px',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <FlipVertical2 size={10} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onSplitOrTrimLayerAtCurrentFrame(layerId, 'trimIn')}
+                  title="قص بداية الشريط عند الفريم الحالي (Trim Start to Playhead)"
+                  style={{
+                    background: '#171724',
+                    border: '1px solid #28283c',
+                    color: '#a0a0b8',
+                    borderRadius: '4px',
+                    padding: '1px 4px',
+                    fontSize: '9px',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  [ البداية
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSplitOrTrimLayerAtCurrentFrame(layerId, 'trimOut')}
+                  title="قص نهاية الشريط عند الفريم الحالي (Trim End to Playhead)"
+                  style={{
+                    background: '#171724',
+                    border: '1px solid #28283c',
+                    color: '#a0a0b8',
+                    borderRadius: '4px',
+                    padding: '1px 4px',
+                    fontSize: '9px',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  النهاية ]
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onTogglePropertyKeyframe(layerId, 'all', currentFrame)}
+                  title="إضافة/حذف نقطة تحريك لجميع الخصائص عند الفريم الحالي"
+                  style={{
+                    background: hasAnyKfAtCurrent ? 'rgba(245,158,11,0.18)' : 'transparent',
+                    border: `1px solid ${hasAnyKfAtCurrent ? '#f59e0b' : '#2c2c3e'}`,
+                    borderRadius: '4px',
+                    padding: '1px 4px',
+                    color: hasAnyKfAtCurrent ? '#fbbf24' : '#9e9eb0',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '2px',
+                    fontSize: '9px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <Diamond size={9} />
+                  <span>+All</span>
+                </button>
+              </div>
             </div>
-          </div>
           <div
             style={{
               flex: 1,
@@ -564,7 +608,7 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
             style={{
               width: '280px',
               minWidth: '280px',
-              padding: '0 8px 0 28px',
+              padding: '0 6px 0 16px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
@@ -573,7 +617,7 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
               fontSize: '11px',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
               <button
                 type="button"
                 aria-label={`Add Scale keyframe for ${layerId}`}
@@ -601,14 +645,14 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '4px',
+                  gap: '3px',
                   fontWeight: hasScaleKf ? 600 : 400,
                 }}
               >
                 <Clock size={10} /> Scale
               </span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
               <button
                 type="button"
                 onClick={onToggleScaleLinked}
@@ -636,16 +680,16 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
                   );
                 }}
                 style={{
-                  width: '38px',
+                  width: '46px',
                   background: '#14141e',
                   border: '1px solid #232334',
                   borderRadius: '4px',
-                  padding: '1px 3px',
-                  textAlign: 'right',
-                  fontSize: '11px',
+                  padding: '1px 2px',
+                  textAlign: 'center',
+                  fontSize: '10.5px',
                 }}
               />
-              <span style={{ color: '#6e6e80', fontSize: '10px' }}>%</span>
+              <span style={{ color: '#6e6e80', fontSize: '9.5px' }}>%</span>
               <span style={{ color: '#7e7e90', fontSize: '10px', marginLeft: '1px' }}>Y</span>
               <input
                 type="number"
@@ -660,16 +704,16 @@ export const SvgaTimelinePanel: React.FC<SvgaTimelinePanelProps> = ({
                   );
                 }}
                 style={{
-                  width: '38px',
+                  width: '46px',
                   background: '#14141e',
                   border: '1px solid #232334',
                   borderRadius: '4px',
-                  padding: '1px 3px',
-                  textAlign: 'right',
-                  fontSize: '11px',
+                  padding: '1px 2px',
+                  textAlign: 'center',
+                  fontSize: '10.5px',
                 }}
               />
-              <span style={{ color: '#6e6e80', fontSize: '10px' }}>%</span>
+              <span style={{ color: '#6e6e80', fontSize: '9.5px' }}>%</span>
             </div>
           </div>
           {renderPropertyKeyframeTrack(layerId, 'scale', pkf.scale, '#38bdf8')}

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Layers,
   Image as ImageIcon,
@@ -42,14 +43,25 @@ import {
   ArrowDownToLine,
   CopyPlus,
   FlipHorizontal2,
+  FlipVertical2,
   Clapperboard,
   Scaling,
   Maximize2,
+  Minimize2,
+  Play,
+  Pause,
   Palette,
 } from 'lucide-react';
 import { parseMovie, pako, SvgaFrame, SvgaMovie } from '../utils/codecs';
 import { compressPngBufferLikeReference } from '../utils/svgaImageCompressor';
 import { issueAndAutoAttachGiftCertificate } from '../utils/giftCertificateEngine';
+import {
+  EDITOR_IMPORT_ACCEPT,
+  EDITOR_EXPORT_FORMATS,
+  EditorExportFormatKey,
+  decodeUniversalFileToSvgaMovie,
+  exportCompositeFramesToFormat,
+} from '../utils/svgaUniversalFormats';
 import {
   LayerTransform,
   AnimatableProperty,
@@ -76,7 +88,9 @@ import {
   retargetCopiedFramesDimensions,
   cloneLayerPropertyKeyframes,
   mirrorSvgaFramesHorizontally,
+  mirrorSvgaFramesVertically,
   mirrorLayerTransformHorizontally,
+  mirrorLayerTransformVertically,
   duplicateSvgaSprite,
   computeUnstretchedZoomPatch,
   AffineMatrix,
@@ -124,6 +138,20 @@ import {
   isPagBinary,
 } from '../utils/pagEngine';
 
+export type AeMaskShapePreset = 'circle' | 'roundedRect' | 'rect' | 'shield' | 'customImage';
+
+export interface AeMaskConfig {
+  isMaskSlot: true;
+  srcType: 'img' | 'txt';
+  shapePreset: AeMaskShapePreset;
+  fillColor: string;
+  textContent?: string;
+  textColor?: string;
+  photoDataUrl?: string;
+  maskSilhouetteDataUrl?: string;
+  fitMode?: 'cover' | 'contain' | 'fitXY';
+}
+
 interface AddedLayer {
   id: string;
   assetKey: string;
@@ -145,6 +173,7 @@ interface AddedLayer {
   copiedFromKey?: string;
   copiedFromDisplayNum?: number;
   shineConfig?: ShineLayerConfig;
+  maskConfig?: AeMaskConfig;
 }
 
 interface ShapeObject {
@@ -299,6 +328,151 @@ async function renderShapeObjectToPngBytes(sh: ShapeObject): Promise<Uint8Array>
   return new Uint8Array(await blob.arrayBuffer());
 }
 
+function loadHtmlImageFromUrl(url: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => resolve(im);
+    im.onerror = () => resolve(null);
+    im.src = url;
+  });
+}
+
+function traceAeMaskShapePath(
+  ctx: CanvasRenderingContext2D,
+  preset: AeMaskShapePreset,
+  W: number,
+  H: number
+) {
+  ctx.beginPath();
+  if (preset === 'circle') {
+    ctx.ellipse(W / 2, H / 2, Math.max(2, W / 2 - 1), Math.max(2, H / 2 - 1), 0, 0, Math.PI * 2);
+  } else if (preset === 'roundedRect') {
+    const r = Math.min(W, H) * 0.22;
+    ctx.roundRect(1, 1, Math.max(2, W - 2), Math.max(2, H - 2), r);
+  } else if (preset === 'shield') {
+    ctx.moveTo(W * 0.5, 2);
+    ctx.bezierCurveTo(W * 0.85, 2, W - 2, H * 0.16, W - 2, H * 0.42);
+    ctx.bezierCurveTo(W - 2, H * 0.72, W * 0.68, H * 0.9, W * 0.5, H - 2);
+    ctx.bezierCurveTo(W * 0.32, H * 0.9, 2, H * 0.72, 2, H * 0.42);
+    ctx.bezierCurveTo(2, H * 0.16, W * 0.15, 2, W * 0.5, 2);
+  } else {
+    ctx.rect(1, 1, Math.max(2, W - 2), Math.max(2, H - 2));
+  }
+  ctx.closePath();
+}
+
+async function renderAeMaskCanvasAssets(opts: {
+  width: number;
+  height: number;
+  config: AeMaskConfig;
+}): Promise<{ bitmap: ImageBitmap; pngBytes: Uint8Array; dataUrl: string } | null> {
+  const W = Math.max(16, Math.round(opts.width));
+  const H = Math.max(16, Math.round(opts.height));
+  const cfg = opts.config;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d');
+  if (!ctx) return null;
+
+  const hasCustomSil = cfg.shapePreset === 'customImage' && Boolean(cfg.maskSilhouetteDataUrl);
+
+  const drawContent = async (targetCtx: CanvasRenderingContext2D) => {
+    const isTransparentFill = !cfg.fillColor || cfg.fillColor === 'transparent' || cfg.fillColor === 'none';
+    if (!isTransparentFill) {
+      targetCtx.fillStyle = cfg.fillColor;
+      targetCtx.fillRect(0, 0, W, H);
+    } else if (!cfg.photoDataUrl && !cfg.textContent?.trim()) {
+      targetCtx.fillStyle = 'rgba(168, 85, 247, 0.14)';
+      targetCtx.fillRect(0, 0, W, H);
+    }
+
+    if (cfg.photoDataUrl) {
+      const im = await loadHtmlImageFromUrl(cfg.photoDataUrl);
+      if (im && im.naturalWidth > 0 && im.naturalHeight > 0) {
+        const mode = cfg.fitMode || 'cover';
+        if (mode === 'fitXY') {
+          targetCtx.drawImage(im, 0, 0, W, H);
+        } else {
+          const sx = W / im.naturalWidth;
+          const sy = H / im.naturalHeight;
+          const sc = mode === 'contain' ? Math.min(sx, sy) : Math.max(sx, sy);
+          const dw = im.naturalWidth * sc;
+          const dh = im.naturalHeight * sc;
+          targetCtx.drawImage(im, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        }
+      }
+    }
+
+    if (cfg.srcType === 'txt' && cfg.textContent?.trim()) {
+      const txt = cfg.textContent.trim();
+      let fontSize = Math.max(14, Math.round(H * 0.48));
+      targetCtx.font = `bold ${fontSize}px Cairo, Inter, system-ui, sans-serif`;
+      const measured = targetCtx.measureText(txt).width;
+      if (measured > W * 0.86) {
+        fontSize = Math.max(11, Math.floor(fontSize * ((W * 0.86) / measured)));
+        targetCtx.font = `bold ${fontSize}px Cairo, Inter, system-ui, sans-serif`;
+      }
+      targetCtx.textAlign = 'center';
+      targetCtx.textBaseline = 'middle';
+      targetCtx.lineWidth = Math.max(2, Math.round(fontSize * 0.12));
+      targetCtx.strokeStyle = 'rgba(0,0,0,0.65)';
+      targetCtx.strokeText(txt, W / 2, H / 2);
+      targetCtx.fillStyle = cfg.textColor || '#fde047';
+      targetCtx.fillText(txt, W / 2, H / 2);
+    }
+  };
+
+  if (hasCustomSil && cfg.maskSilhouetteDataUrl) {
+    await drawContent(ctx);
+    const silImg = await loadHtmlImageFromUrl(cfg.maskSilhouetteDataUrl);
+    if (silImg && silImg.naturalWidth > 0 && silImg.naturalHeight > 0) {
+      const silCanvas = document.createElement('canvas');
+      silCanvas.width = W;
+      silCanvas.height = H;
+      const silCtx = silCanvas.getContext('2d');
+      if (silCtx) {
+        silCtx.drawImage(silImg, 0, 0, W, H);
+        const imgData = silCtx.getImageData(0, 0, W, H);
+        const px = imgData.data;
+        let hasAlphaHoles = false;
+        for (let i = 3; i < px.length; i += 4) {
+          if (px[i] < 240) {
+            hasAlphaHoles = true;
+            break;
+          }
+        }
+        for (let i = 0; i < px.length; i += 4) {
+          const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+          const maskA = hasAlphaHoles ? px[i + 3] : lum > 40 ? 255 : 0;
+          px[i] = 255;
+          px[i + 1] = 255;
+          px[i + 2] = 255;
+          px[i + 3] = maskA;
+        }
+        silCtx.putImageData(imgData, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-in';
+        ctx.drawImage(silCanvas, 0, 0);
+        ctx.restore();
+      }
+    }
+  } else {
+    ctx.save();
+    traceAeMaskShapePath(ctx, cfg.shapePreset, W, H);
+    ctx.clip();
+    await drawContent(ctx);
+    ctx.restore();
+  }
+
+  const pngBlob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
+  if (!pngBlob) return null;
+  const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+  const bitmap = await createImageBitmap(pngBlob);
+  return { bitmap, pngBytes, dataUrl: c.toDataURL('image/png') };
+}
+
 const EMPTY_MOVIE: SvgaMovie = {
   w: 500,
   h: 500,
@@ -347,6 +521,20 @@ export default function SvgaAeEditor({
   const [zoom, setZoom] = useState<number>(100);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [timelineCollapsed, setTimelineCollapsed] = useState<boolean>(false);
+  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(false);
+  const [stageBgMode, setStageBgMode] = useState<'checker' | 'color' | 'media'>('checker');
+  const [stageBgColor, setStageBgColor] = useState<string>('#000000');
+  const [stageBgUrl, setStageBgUrl] = useState<string | null>(null);
+  const [stageBgName, setStageBgName] = useState<string>('');
+  const [stageBgMediaType, setStageBgMediaType] = useState<'image' | 'video' | null>(null);
+  const [stageBgFit, setStageBgFit] = useState<'cover' | 'contain'>('cover');
+  const [stageBgOpacity, setStageBgOpacity] = useState<number>(100);
+  const [stageBgSyncVideo, setStageBgSyncVideo] = useState<boolean>(true);
+  const [stageBgIncludeInExport, setStageBgIncludeInExport] = useState<boolean>(false);
+  const [stageBgControlsExpanded, setStageBgControlsExpanded] = useState<boolean>(false);
+  const stageBgInputRef = useRef<HTMLInputElement | null>(null);
+  const stageBgImgRef = useRef<HTMLImageElement | null>(null);
+  const stageBgVideoRef = useRef<HTMLVideoElement | null>(null);
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const [stageViewportSize, setStageViewportSize] = useState<{ w: number; h: number }>({
     w: 1020,
@@ -411,6 +599,26 @@ export default function SvgaAeEditor({
   const [customCanvasW, setCustomCanvasW] = useState<number>(750);
   const [customCanvasH, setCustomCanvasH] = useState<number>(1334);
   const projectSizeFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Universal Export Format Menu state (portaled to document.body so toolbar overflowY:hidden never clips it)
+  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
+  const [isUniversalExporting, setIsUniversalExporting] = useState<boolean>(false);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const exportPopoverRef = useRef<HTMLDivElement | null>(null);
+  const [exportPopoverPos, setExportPopoverPos] = useState<{
+    top: number;
+    left: number;
+    maxHeight: number;
+  }>({ top: 52, left: 16, maxHeight: 420 });
+
+  // Integrated Project Animation Composer & Secondary File Studio inside AE Editor
+  const [aeComposerOpen, setAeComposerOpen] = useState<boolean>(false);
+  const [aeComposerTab, setAeComposerTab] = useState<'primary' | 'secondary' | 'masks' | 'stack'>('primary');
+  const [aeSecondaryZOrder, setAeSecondaryZOrder] = useState<'above' | 'below'>('above');
+  const [aeMaskPlacement, setAeMaskPlacement] = useState<'above' | 'below'>('below');
+  const [aeComposerStatus, setAeComposerStatus] = useState<string>('');
+  const aeSecondaryFileInputRef = useRef<HTMLInputElement | null>(null);
+  const aeMaskSvgaFrameInputRef = useRef<HTMLInputElement | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const shineCompCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -512,20 +720,32 @@ export default function SvgaAeEditor({
 
   const loadSvgaBuffer = useCallback(
     async (buf: ArrayBuffer, name: string, reportedSize?: number) => {
-      const isPagFile = /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(name.trim());
-      setLastAction(isPagFile ? 'Decoding decomposed PAG layers...' : 'Decoding decomposed SVGA 2.0...');
+      setLastAction(`جاري استيراد وتفكيك ${name}...`);
       try {
         const raw = new Uint8Array(buf);
+        const isPagFile = /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(name.trim());
+        const isSvga2File =
+          !isPagFile &&
+          /\.svga$/i.test(name.trim()) &&
+          !(raw.length >= 2 && raw[0] === 0x50 && raw[1] === 0x4b);
+
         let m: SvgaMovie;
+        let detectedKindLabel = 'SVGA 2.0';
+        let collapseGroupByDefault = false;
+
         if (isPagBinary(raw) || isPagFile) {
           const decodedPag = await decodePagWithLibpagFallback(raw);
           m = decodedPag.svgaMovie;
-        } else {
-          if (raw[0] === 0x50 && raw[1] === 0x4b) {
-            throw new Error('SVGA 1.x (ZIP) is not supported; use SVGA 2.0');
-          }
+          detectedKindLabel = 'PAG';
+        } else if (isSvga2File) {
           const inflated = await decompressDeflate(raw);
           m = parseMovie(inflated);
+          detectedKindLabel = 'SVGA 2.0';
+        } else {
+          const universal = await decodeUniversalFileToSvgaMovie(buf, name);
+          m = universal.movie;
+          detectedKindLabel = universal.detectedFormat.toUpperCase();
+          collapseGroupByDefault = m.sp.length > 6;
         }
         if (!m.w || !m.h) throw new Error('Invalid animation header');
         if (!m.n) m.n = Math.max(...m.sp.map((s) => s.fr.length), 1);
@@ -569,7 +789,7 @@ export default function SvgaAeEditor({
           name: `📁 ${name}`,
           spriteIds: initialSpriteIds,
           transform: { ...DEFAULT_TRANSFORM },
-          isUngrouped: true,
+          isUngrouped: !collapseGroupByDefault,
         };
 
         setMovie(m);
@@ -579,7 +799,10 @@ export default function SvgaAeEditor({
         setFileSize(reportedSize ?? buf.byteLength);
         setCurrentFrame(0);
         setMergedGroups([initialGroup]);
-        if (m.sp.length > 0) {
+        if (collapseGroupByDefault) {
+          setSelectedTarget(initialGroupId);
+          setSelectedAssetKey(null);
+        } else if (m.sp.length > 0) {
           setSelectedTarget('sprite_0');
           setSelectedAssetKey(m.sp[0]?.key || null);
         } else {
@@ -617,7 +840,7 @@ export default function SvgaAeEditor({
         setZoom(100);
         setPan({ x: 0, y: 0 });
         setLastAction(
-          `Loaded ${name} (${m.sp.length} layers, ${Object.keys(m.im).length} assets)`
+          `✅ تم فتح وتفكيك ${name} [${detectedKindLabel}] (${m.sp.length} طبقة · ${m.w}×${m.h} · ${m.n} فريم)`
         );
       } catch (err: any) {
         // Fallback: If not standard SVGA 2.0 (e.g. PNG, JPG, WEBP, GIF, Lottie, etc.), load as decomposed image layer
@@ -726,7 +949,7 @@ export default function SvgaAeEditor({
       if (ro) ro.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [timelineCollapsed]);
+  }, [timelineCollapsed, isTheaterMode]);
 
   const handleFitCanvasToCenter = useCallback(() => {
     const el = stageContainerRef.current;
@@ -945,40 +1168,15 @@ export default function SvgaAeEditor({
   const canvasH = Math.max(1, Math.round(movie.h || 500));
 
   const baseStageDisplayDims = useMemo(() => {
-    const availW = Math.max(420, stageViewportSize.w - 32);
-    const availH = Math.max(380, stageViewportSize.h - 20);
-    const aspect = canvasW / Math.max(1, canvasH);
-
-    // Tall portrait compositions (e.g., 750x1624, 750x1334, 1080x1920):
-    // Fill 96% of the stage vertical height and ensure a generous, comfortable width in the center stage
-    if (canvasH > canvasW * 1.2) {
-      const dispH = Math.round(availH * 0.96);
-      const naturalW = dispH * aspect;
-      const comfortableMinW = Math.min(availW * 0.56, dispH * 0.58);
-      const dispW = Math.round(Math.min(availW * 0.82, Math.max(naturalW, comfortableMinW)));
-      return { w: Math.max(220, dispW), h: Math.max(260, dispH) };
-    }
-
-    // Wide banner compositions (e.g., 800x200, 643x180):
-    if (canvasW > canvasH * 1.35) {
-      const fitScale = Math.min((availW * 0.88) / canvasW, (availH * 0.92) / canvasH);
-      const dispW = Math.round(Math.max(Math.min(availW * 0.86, 680), canvasW * fitScale));
-      const naturalH = dispW / Math.max(0.1, aspect);
-      const dispH = Math.round(
-        Math.min(availH * 0.92, Math.max(naturalH, Math.min(availH * 0.42, dispW * 0.3)))
-      );
-      return { w: Math.max(260, dispW), h: Math.max(160, dispH) };
-    }
-
-    // Square or near-square compositions (e.g., 500x500, 800x800):
-    const fitScale = Math.min((availW * 0.88) / canvasW, (availH * 0.95) / canvasH);
-    const dispW = Math.round(canvasW * fitScale);
-    const dispH = Math.round(canvasH * fitScale);
-    return {
-      w: Math.max(260, dispW),
-      h: Math.max(260, dispH),
-    };
-  }, [canvasW, canvasH, stageViewportSize.w, stageViewportSize.h]);
+    const padX = isTheaterMode ? 36 : 40;
+    const padY = isTheaterMode ? 124 : 64;
+    const availW = Math.max(260, stageViewportSize.w - padX);
+    const availH = Math.max(240, stageViewportSize.h - padY);
+    const fitScale = Math.min(availW / canvasW, availH / canvasH);
+    const dispW = Math.max(96, Math.round(canvasW * fitScale));
+    const dispH = Math.max(96, Math.round(canvasH * fitScale));
+    return { w: dispW, h: dispH };
+  }, [canvasW, canvasH, stageViewportSize.w, stageViewportSize.h, isTheaterMode]);
 
   const rulerMarks = useMemo(
     () => generateTimeRulerMarks(durationSec, totalFrames, fps),
@@ -1024,75 +1222,107 @@ export default function SvgaAeEditor({
     [docTransform, layerTransforms, layerKeyframes, addedLayers, shapes, mergedGroups]
   );
 
-  // Canvas 2D Render Loop (uses exact same matrix math as serializeDecomposedSvga)
-  useEffect(() => {
-    const cv = canvasRef.current;
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
-    if (!ctx) return;
+  // Shared pure frame compositor used both by live canvas preview AND multi-format universal export
+  const renderCompositeFrameToContext = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      W: number,
+      H: number,
+      frameIdx: number,
+      collectBounds = false
+    ): {
+      compMinX: number;
+      compMinY: number;
+      compMaxX: number;
+      compMaxY: number;
+      selectedBounds: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        mat: AffineMatrix;
+        label: string;
+      } | null;
+      docT: LayerTransform;
+    } => {
+      const docT = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+      const docAlpha = hiddenLayerIds.has('DOCUMENT')
+        ? 0
+        : Math.max(0, Math.min(1, docT.opacity / 100));
 
-    const W = canvasW;
-    const H = canvasH;
-    if (cv.width !== W) cv.width = W;
-    if (cv.height !== H) cv.height = H;
+      // Optional stage backdrop baking when export-with-background is enabled
+      if (!collectBounds && stageBgIncludeInExport) {
+        if (stageBgMode === 'color') {
+          ctx.save();
+          ctx.fillStyle = stageBgColor || '#000000';
+          ctx.fillRect(0, 0, W, H);
+          ctx.restore();
+        } else if (stageBgMode === 'media') {
+          const mediaEl =
+            stageBgMediaType === 'video' ? stageBgVideoRef.current : stageBgImgRef.current;
+          if (mediaEl) {
+            const mw =
+              stageBgMediaType === 'video'
+                ? (mediaEl as HTMLVideoElement).videoWidth
+                : (mediaEl as HTMLImageElement).naturalWidth;
+            const mh =
+              stageBgMediaType === 'video'
+                ? (mediaEl as HTMLVideoElement).videoHeight
+                : (mediaEl as HTMLImageElement).naturalHeight;
+            if (mw > 0 && mh > 0) {
+              ctx.save();
+              ctx.globalAlpha = Math.max(0, Math.min(1, stageBgOpacity / 100));
+              const scale =
+                stageBgFit === 'contain' ? Math.min(W / mw, H / mh) : Math.max(W / mw, H / mh);
+              const dw = mw * scale;
+              const dh = mh * scale;
+              ctx.drawImage(mediaEl, (W - dw) / 2, (H - dh) / 2, dw, dh);
+              ctx.restore();
+            }
+          }
+        }
+      }
 
-    ctx.clearRect(0, 0, W, H);
+      let compMinX = Infinity;
+      let compMinY = Infinity;
+      let compMaxX = -Infinity;
+      let compMaxY = -Infinity;
 
-    const docT = getEffectiveTransform('DOCUMENT', undefined, currentFrame);
-    const docAlpha = hiddenLayerIds.has('DOCUMENT')
-      ? 0
-      : Math.max(0, Math.min(1, docT.opacity / 100));
+      let selectedBounds: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        mat: [number, number, number, number, number, number];
+        label: string;
+      } | null = null;
 
-    let compMinX = Infinity;
-    let compMinY = Infinity;
-    let compMaxX = -Infinity;
-    let compMaxY = -Infinity;
-
-    let selectedBounds: {
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      mat: [number, number, number, number, number, number];
-      label: string;
-    } | null = null;
-
-    // 1. Render original decomposed SVGA sprites (top group in mergedGroups renders last = visually in front)
-    const spriteToGroupMap = new Map<number, MergedGroup>();
-    mergedGroups.forEach((g) => {
-      g.spriteIds.forEach((sid) => {
-        const idx = Number(sid.replace('sprite_', ''));
-        spriteToGroupMap.set(idx, g);
+      // 1. Map sprites to their parent MergedGroup (transform ALWAYS applies even if ungrouped!)
+      const spriteToGroupMap = new Map<number, MergedGroup>();
+      mergedGroups.forEach((g) => {
+        g.spriteIds.forEach((sid) => {
+          const idx = Number(sid.replace('sprite_', ''));
+          spriteToGroupMap.set(idx, g);
+        });
       });
-    });
 
-    const orderedSpriteIndices = movie.sp.map((_, i) => i).sort((a, b) => {
-      const groupA = spriteToGroupMap.get(a);
-      const groupB = spriteToGroupMap.get(b);
-      const orderA = groupA ? mergedGroups.indexOf(groupA) : mergedGroups.length;
-      const orderB = groupB ? mergedGroups.indexOf(groupB) : mergedGroups.length;
-      if (orderA !== orderB) return orderB - orderA;
-      return a - b;
-    });
+      const drawSingleSprite = (idx: number) => {
+        if (deletedSpriteIndices.has(idx)) return;
+        const spriteId = `sprite_${idx}`;
+        const parentGroup = spriteToGroupMap.get(idx);
+        if (hiddenLayerIds.has(spriteId) || (parentGroup && hiddenLayerIds.has(parentGroup.id))) return;
 
-    const drawSingleSprite = (idx: number) => {
-      if (deletedSpriteIndices.has(idx)) return;
-      const spriteId = `sprite_${idx}`;
-      const parentGroup = spriteToGroupMap.get(idx);
-      if (hiddenLayerIds.has(spriteId) || (parentGroup && hiddenLayerIds.has(parentGroup.id))) return;
+        const s = movie.sp[idx];
+        const resolved = resolveSpriteFrameAt(s, frameIdx, totalFrames, spriteFrameRanges[idx]);
+        const f = resolved.frameObj;
+        if (!f || !resolved.visible) return;
+        const bm = s.key ? bitmaps[s.key] : undefined;
+        const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
+        if (f.a <= 0.001 && !hasShapes) return;
 
-      const s = movie.sp[idx];
-      const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[idx]);
-      const f = resolved.frameObj;
-      if (!f || !resolved.visible) return;
-      const bm = s.key ? bitmaps[s.key] : undefined;
-      const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
-      if (f.a <= 0.001 && !hasShapes) return;
-
-      const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
-      const groupT =
-        parentGroup && !parentGroup.isUngrouped
-          ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
+        const lt = getEffectiveTransform(spriteId, s.key, frameIdx);
+        const groupT = parentGroup
+          ? getEffectiveTransform(parentGroup.id, undefined, frameIdx)
           : DEFAULT_TRANSFORM;
 
       const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
@@ -1198,7 +1428,7 @@ export default function SvgaAeEditor({
 
       ctx.restore();
 
-      if (selectedTarget === spriteId && !isAllLayersGrouped) {
+      if (collectBounds && selectedTarget === spriteId && !isAllLayersGrouped) {
         selectedBounds = {
           x: f.x || 0,
           y: f.y || 0,
@@ -1213,42 +1443,42 @@ export default function SvgaAeEditor({
     // Helper to compute target layer world matrix at any frame (for followTargetLayerTransform)
     const resolveLayerWorldMatrixAtFrame = (
       targetLayerId: string,
-      frameIdx: number
+      fIdx: number
     ): [number, number, number, number, number, number] | null => {
       if (!targetLayerId || targetLayerId === 'DOCUMENT') {
-        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, fIdx);
         return buildPivotTransformMatrix(W / 2, H / 2, W / 2, H / 2, dt);
       }
       if (targetLayerId.startsWith('sprite_')) {
         const sIdx = Number(targetLayerId.replace('sprite_', ''));
         const sp = movie.sp[sIdx];
         if (!sp) return null;
-        const resolved = resolveSpriteFrameAt(sp, frameIdx, totalFrames, spriteFrameRanges[sIdx]);
+        const resolved = resolveSpriteFrameAt(sp, fIdx, totalFrames, spriteFrameRanges[sIdx]);
         const f = resolved.frameObj || sp.fr.find((fr) => fr && fr.a > 0.001) || sp.fr[0];
         if (!f) return null;
         const bm = sp.key ? bitmaps[sp.key] : undefined;
         const assetW = bm?.width || thumbs[sp.key]?.w || f.w || W;
         const assetH = bm?.height || thumbs[sp.key]?.h || f.h || H;
-        const lt = getEffectiveTransform(targetLayerId, sp.key, frameIdx);
-        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        const lt = getEffectiveTransform(targetLayerId, sp.key, fIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, fIdx);
         return computeSpriteFrameMatrix(f, assetW, assetH, W, H, lt, dt);
       }
       const targetAl = addedLayers.find((x) => x.id === targetLayerId);
       if (targetAl) {
-        const lt = getEffectiveTransform(targetAl.id, targetAl.assetKey, frameIdx);
-        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        const lt = getEffectiveTransform(targetAl.id, targetAl.assetKey, fIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, fIdx);
         return computeAddedLayerFrameMatrix(targetAl.width, targetAl.height, W, H, lt, dt);
       }
       const targetSh = shapes.find((x) => x.id === targetLayerId);
       if (targetSh) {
-        const lt = getEffectiveTransform(targetSh.id, targetSh.assetKey, frameIdx);
-        const dt = getEffectiveTransform('DOCUMENT', undefined, frameIdx);
+        const lt = getEffectiveTransform(targetSh.id, targetSh.assetKey, fIdx);
+        const dt = getEffectiveTransform('DOCUMENT', undefined, fIdx);
         return computeAddedLayerFrameMatrix(targetSh.w, targetSh.h, W, H, lt, dt);
       }
       return null;
     };
 
-    // Helper to draw the exact rendered alpha silhouette of a target layer at currentFrame
+    // Helper to draw the exact rendered alpha silhouette of a target layer at frameIdx
     // for 100% pixel-perfect destination-in masking of Shine layers (zero cut marks)
     const drawTargetAlphaMaskAtCurrentFrame = (
       maskCtx: CanvasRenderingContext2D,
@@ -1264,18 +1494,17 @@ export default function SvgaAeEditor({
         if (hiddenLayerIds.has(spriteId) || (parentGroup && hiddenLayerIds.has(parentGroup.id))) return;
         const s = movie.sp[sIdx];
         if (!s) return;
-        const resolved = resolveSpriteFrameAt(s, currentFrame, totalFrames, spriteFrameRanges[sIdx]);
+        const resolved = resolveSpriteFrameAt(s, frameIdx, totalFrames, spriteFrameRanges[sIdx]);
         const f = resolved.frameObj;
         if (!f || !resolved.visible) return;
         const bm = s.key ? bitmaps[s.key] : undefined;
         const hasShapes = f.shapesRaw && f.shapesRaw.length > 0;
         if (f.a <= 0.001 && !hasShapes) return;
 
-        const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
-        const groupT =
-          parentGroup && !parentGroup.isUngrouped
-            ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
-            : DEFAULT_TRANSFORM;
+        const lt = getEffectiveTransform(spriteId, s.key, frameIdx);
+        const groupT = parentGroup
+          ? getEffectiveTransform(parentGroup.id, undefined, frameIdx)
+          : DEFAULT_TRANSFORM;
         const layerAlpha = Math.max(0, Math.min(1, lt.opacity / 100));
         const groupAlpha = Math.max(0, Math.min(1, groupT.opacity / 100));
         const finalAlpha = Math.min(1, Math.max(0, (f.a ?? 1) * docAlpha * groupAlpha * layerAlpha));
@@ -1337,10 +1566,10 @@ export default function SvgaAeEditor({
 
       const drawSingleAddedLayerToMask = (targetAl: AddedLayer) => {
         if (hiddenLayerIds.has(targetAl.id) || targetAl.shineConfig?.enabled) return;
-        if (currentFrame < targetAl.inFrame || currentFrame > targetAl.outFrame) return;
-        const tLt = getEffectiveTransform(targetAl.id, targetAl.assetKey, currentFrame);
+        if (frameIdx < targetAl.inFrame || frameIdx > targetAl.outFrame) return;
+        const tLt = getEffectiveTransform(targetAl.id, targetAl.assetKey, frameIdx);
         if (targetAl.copiedFrames && targetAl.copiedFrames.length > 0) {
-          const cf = targetAl.copiedFrames[Math.min(currentFrame, targetAl.copiedFrames.length - 1)];
+          const cf = targetAl.copiedFrames[Math.min(frameIdx, targetAl.copiedFrames.length - 1)];
           if (!cf || (cf.a ?? 0) <= 0.001) return;
           const fAlpha = Math.max(0, Math.min(1, (cf.a ?? 1) * (tLt.opacity / 100) * docAlpha));
           if (fAlpha <= 0.001) return;
@@ -1380,7 +1609,11 @@ export default function SvgaAeEditor({
       };
 
       if (!targetLayerId || targetLayerId === 'DOCUMENT') {
-        orderedSpriteIndices.forEach((sIdx) => drawSingleSpriteToMask(sIdx));
+        effectiveLayerOrder.forEach((lid) => {
+          if (lid.startsWith('sprite_')) {
+            drawSingleSpriteToMask(Number(lid.replace('sprite_', '')));
+          }
+        });
         addedLayers.forEach((l) => drawSingleAddedLayerToMask(l));
         return drewAny;
       }
@@ -1414,8 +1647,8 @@ export default function SvgaAeEditor({
     // 2. Render added decomposed image layers helper (supporting static/keyframed, copied SVGA sprite motion, and Shine clipPath + destination-in alpha layers)
     const drawSingleAddedLayer = (al: AddedLayer) => {
       if (hiddenLayerIds.has(al.id)) return;
-      if (currentFrame < al.inFrame || currentFrame > al.outFrame) return;
-      const lt = getEffectiveTransform(al.id, al.assetKey, currentFrame);
+      if (frameIdx < al.inFrame || frameIdx > al.outFrame) return;
+      const lt = getEffectiveTransform(al.id, al.assetKey, frameIdx);
 
       // Compute optional targetDeltaMatrix if this is a Shine layer locked to a moving target layer
       let shineTargetDelta: [number, number, number, number, number, number] | null = null;
@@ -1427,7 +1660,7 @@ export default function SvgaAeEditor({
       ) {
         const refFrame = al.shineConfig.referenceFrame ?? 0;
         const matRef = resolveLayerWorldMatrixAtFrame(al.shineConfig.targetLayerId, refFrame);
-        const matCur = resolveLayerWorldMatrixAtFrame(al.shineConfig.targetLayerId, currentFrame);
+        const matCur = resolveLayerWorldMatrixAtFrame(al.shineConfig.targetLayerId, frameIdx);
         if (matRef && matCur) {
           const invRef = invertAffine(matRef);
           if (invRef) {
@@ -1437,7 +1670,7 @@ export default function SvgaAeEditor({
       }
 
       if (al.copiedFrames && al.copiedFrames.length > 0 && !al.shineConfig?.enabled) {
-        const cf = al.copiedFrames[Math.min(currentFrame, al.copiedFrames.length - 1)];
+        const cf = al.copiedFrames[Math.min(frameIdx, al.copiedFrames.length - 1)];
         if (!cf || (cf.a ?? 0) <= 0.001) return;
         const finalAlpha = Math.max(
           0,
@@ -1477,7 +1710,7 @@ export default function SvgaAeEditor({
         ctx.drawImage(al.originalBitmap || al.bitmap, fx, fy, fw, fh);
         ctx.restore();
 
-        if (selectedTarget === al.id && !isAllLayersGrouped) {
+        if (collectBounds && selectedTarget === al.id && !isAllLayersGrouped) {
           selectedBounds = {
             x: fx,
             y: fy,
@@ -1499,7 +1732,7 @@ export default function SvgaAeEditor({
         let frameSpriteAlpha = 1;
 
         if (al.copiedFrames && al.copiedFrames.length > 0) {
-          const cf = al.copiedFrames[Math.min(currentFrame, al.copiedFrames.length - 1)];
+          const cf = al.copiedFrames[Math.min(frameIdx, al.copiedFrames.length - 1)];
           if (!cf || (cf.a ?? 0) <= 0.001) return;
           frameSpriteAlpha = cf.a ?? 1;
           drawW = cf.w > 0 ? cf.w : al.width;
@@ -1574,7 +1807,7 @@ export default function SvgaAeEditor({
                   maskCtx,
                   scratchCanvas: shineScratchCanvasRef.current,
                   config: al.shineConfig,
-                  currentFrame,
+                  currentFrame: frameIdx,
                   totalFrames,
                   canvasW: W,
                   canvasH: H,
@@ -1631,7 +1864,7 @@ export default function SvgaAeEditor({
             }
           }
 
-          if (selectedTarget === al.id && !isAllLayersGrouped) {
+          if (collectBounds && selectedTarget === al.id && !isAllLayersGrouped) {
             selectedBounds = {
               x: drawX,
               y: drawY,
@@ -1648,7 +1881,7 @@ export default function SvgaAeEditor({
           ctx.drawImage(al.originalBitmap || al.bitmap, 0, 0, al.width, al.height);
           ctx.restore();
 
-          if (selectedTarget === al.id && !isAllLayersGrouped) {
+          if (collectBounds && selectedTarget === al.id && !isAllLayersGrouped) {
             selectedBounds = {
               x: 0,
               y: 0,
@@ -1665,8 +1898,8 @@ export default function SvgaAeEditor({
     // 3. Render added decomposed shape / path / text layers helper
     const drawSingleShape = (sh: ShapeObject) => {
       if (hiddenLayerIds.has(sh.id)) return;
-      if (currentFrame < sh.inFrame || currentFrame > sh.outFrame) return;
-      const lt = getEffectiveTransform(sh.id, sh.assetKey, currentFrame);
+      if (frameIdx < sh.inFrame || frameIdx > sh.outFrame) return;
+      const lt = getEffectiveTransform(sh.id, sh.assetKey, frameIdx);
       const finalAlpha = Math.max(0, Math.min(1, (lt.opacity / 100) * docAlpha));
       if (finalAlpha <= 0.001) return;
 
@@ -1754,7 +1987,7 @@ export default function SvgaAeEditor({
 
       ctx.restore();
 
-      if (selectedTarget === sh.id && !isAllLayersGrouped) {
+      if (collectBounds && selectedTarget === sh.id && !isAllLayersGrouped) {
         selectedBounds = {
           x: 0,
           y: 0,
@@ -1785,6 +2018,50 @@ export default function SvgaAeEditor({
         }
       }
     }
+
+    return { compMinX, compMinY, compMaxX, compMaxY, selectedBounds, docT };
+  },
+  [
+    movie,
+    bitmaps,
+    thumbs,
+    getEffectiveTransform,
+    hiddenLayerIds,
+    deletedSpriteIndices,
+    spriteFrameRanges,
+    addedLayers,
+    shapes,
+    selectedTarget,
+    canvasW,
+    canvasH,
+    totalFrames,
+    mergedGroups,
+    isAllLayersGrouped,
+    effectiveLayerOrder,
+    stageBgIncludeInExport,
+    stageBgMode,
+    stageBgColor,
+    stageBgMediaType,
+    stageBgFit,
+    stageBgOpacity,
+  ]
+);
+
+  // Canvas 2D Render Loop
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+
+    const W = canvasW;
+    const H = canvasH;
+    if (cv.width !== W) cv.width = W;
+    if (cv.height !== H) cv.height = H;
+    ctx.clearRect(0, 0, W, H);
+
+    let { compMinX, compMinY, compMaxX, compMaxY, selectedBounds, docT } =
+      renderCompositeFrameToContext(ctx, W, H, currentFrame, true);
 
     // 4. Render interactive Pen tool draft points on stage
     if (activeTool === 'Pen' && penDraftPoints.length > 0) {
@@ -2129,6 +2406,7 @@ export default function SvgaAeEditor({
 
     ctx.globalAlpha = 1;
   }, [
+    renderCompositeFrameToContext,
     movie,
     bitmaps,
     thumbs,
@@ -2149,6 +2427,7 @@ export default function SvgaAeEditor({
     mergedGroups,
     isAllLayersGrouped,
     shineEditSubmode,
+    docName,
   ]);
 
   const activeLayerTransform: LayerTransform = useMemo(() => {
@@ -3286,31 +3565,75 @@ export default function SvgaAeEditor({
     [shapes, handleMoveLayer]
   );
 
-  const handleMoveMergedGroupUp = useCallback((groupId: string) => {
-    setMergedGroups((prev) => {
-      const idx = prev.findIndex((g) => g.id === groupId);
-      if (idx <= 0) return prev;
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx - 1];
-      next[idx - 1] = temp;
-      return next;
-    });
-    setLastAction('رفع المجموعة المدمجة للأعلى (Move Up)');
-  }, []);
+  const handleMoveMergedGroupUp = useCallback(
+    (groupId: string) => {
+      const idx = mergedGroups.findIndex((g) => g.id === groupId);
+      if (idx <= 0) return;
+      const targetGroup = mergedGroups[idx];
+      const upperNeighbor = mergedGroups[idx - 1];
+      const nextGroups = [...mergedGroups];
+      nextGroups[idx] = upperNeighbor;
+      nextGroups[idx - 1] = targetGroup;
+      setMergedGroups(nextGroups);
 
-  const handleMoveMergedGroupDown = useCallback((groupId: string) => {
-    setMergedGroups((prev) => {
-      const idx = prev.findIndex((g) => g.id === groupId);
-      if (idx < 0 || idx >= prev.length - 1) return prev;
-      const next = [...prev];
-      const temp = next[idx];
-      next[idx] = next[idx + 1];
-      next[idx + 1] = temp;
-      return next;
-    });
-    setLastAction('خفض المجموعة المدمجة للأسفل (Move Down)');
-  }, []);
+      // Sync visual Z-order in layerOrder (bottom-to-top, so upper in UI = higher index)
+      const movingIds = new Set(targetGroup.spriteIds);
+      const neighborIds = new Set(upperNeighbor.spriteIds);
+      const baseOrder = [...effectiveLayerOrder];
+      const extracted = baseOrder.filter((id) => movingIds.has(id));
+      const remaining = baseOrder.filter((id) => !movingIds.has(id));
+      let insertAt = remaining.length;
+      for (let i = remaining.length - 1; i >= 0; i--) {
+        if (neighborIds.has(remaining[i])) {
+          insertAt = i + 1;
+          break;
+        }
+      }
+      remaining.splice(insertAt, 0, ...extracted);
+      setLayerOrder(remaining);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        mergedGroups: nextGroups,
+        layerOrder: remaining,
+      });
+      setLastAction('رفع المجموعة المدمجة للأعلى (Move Up)');
+    },
+    [mergedGroups, effectiveLayerOrder, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+  );
+
+  const handleMoveMergedGroupDown = useCallback(
+    (groupId: string) => {
+      const idx = mergedGroups.findIndex((g) => g.id === groupId);
+      if (idx < 0 || idx >= mergedGroups.length - 1) return;
+      const targetGroup = mergedGroups[idx];
+      const lowerNeighbor = mergedGroups[idx + 1];
+      const nextGroups = [...mergedGroups];
+      nextGroups[idx] = lowerNeighbor;
+      nextGroups[idx + 1] = targetGroup;
+      setMergedGroups(nextGroups);
+
+      // Sync visual Z-order in layerOrder (bottom-to-top, so lower in UI = lower index)
+      const movingIds = new Set(targetGroup.spriteIds);
+      const neighborIds = new Set(lowerNeighbor.spriteIds);
+      const baseOrder = [...effectiveLayerOrder];
+      const extracted = baseOrder.filter((id) => movingIds.has(id));
+      const remaining = baseOrder.filter((id) => !movingIds.has(id));
+      let insertAt = 0;
+      for (let i = 0; i < remaining.length; i++) {
+        if (neighborIds.has(remaining[i])) {
+          insertAt = i;
+          break;
+        }
+      }
+      remaining.splice(insertAt, 0, ...extracted);
+      setLayerOrder(remaining);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        mergedGroups: nextGroups,
+        layerOrder: remaining,
+      });
+      setLastAction('خفض المجموعة المدمجة للأسفل (Move Down)');
+    },
+    [mergedGroups, effectiveLayerOrder, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+  );
 
   const handleToggleGroupUngroup = useCallback((groupId: string) => {
     setMergedGroups((prev) =>
@@ -3974,63 +4297,173 @@ export default function SvgaAeEditor({
     ]
   );
 
-  // 3. Flip/Mirror an existing layer horizontally in-place or across the canvas width
-  const handleFlipLayerHorizontally = useCallback(
-    (targetId: string, mirrorMode: 'canvas' | 'local' = 'canvas') => {
-      if (!targetId || targetId === 'DOCUMENT' || targetId === 'GROUP_ALL') return;
+  // 3. Flip/Mirror an existing layer, group, or whole composition horizontally or vertically
+  const handleFlipLayer = useCallback(
+    (
+      targetId: string,
+      axis: 'horizontal' | 'vertical',
+      mirrorMode: 'canvas' | 'local' = 'canvas'
+    ) => {
+      if (!targetId) return;
+      const isHoriz = axis === 'horizontal';
+      const arrow = isHoriz ? '↔️' : '↕️';
+      const axisAr = isHoriz ? 'أفقياً (شمال ↔ يمين)' : 'عمودياً (أعلى ↕ أسفل)';
 
+      // A) Entire Project / Master Composition (DOCUMENT or GROUP_ALL)
+      if (targetId === 'DOCUMENT' || targetId === 'GROUP_ALL') {
+        const nextDocT = isHoriz
+          ? mirrorLayerTransformHorizontally(docTransform, mirrorMode)
+          : mirrorLayerTransformVertically(docTransform, mirrorMode);
+        const clonedKfs = cloneLayerPropertyKeyframes(
+          layerKeyframes['DOCUMENT'],
+          mirrorMode,
+          false,
+          axis
+        );
+        const nextKfs: Record<string, LayerPropertyKeyframes> = clonedKfs
+          ? { ...layerKeyframes, DOCUMENT: clonedKfs }
+          : layerKeyframes;
+        setDocTransform(nextDocT);
+        if (clonedKfs) setLayerKeyframes(nextKfs);
+        pushHistory(nextDocT, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          layerKeyframes: nextKfs,
+        });
+        setLastAction(`${arrow} تم قلب المشروع بالكامل ${axisAr}`);
+        return;
+      }
+
+      // B) MergedGroup Container (purple group card; persists even after Ungroup)
+      if (targetId.startsWith('merged_group_')) {
+        const mg = mergedGroups.find((g) => g.id === targetId);
+        if (!mg) return;
+        const flippedGroupT = isHoriz
+          ? mirrorLayerTransformHorizontally(mg.transform, mirrorMode)
+          : mirrorLayerTransformVertically(mg.transform, mirrorMode);
+        const nextGroups = mergedGroups.map((g) =>
+          g.id === targetId ? { ...g, transform: flippedGroupT } : g
+        );
+        const clonedKfs = cloneLayerPropertyKeyframes(
+          layerKeyframes[targetId],
+          mirrorMode,
+          false,
+          axis
+        );
+        const nextKfs: Record<string, LayerPropertyKeyframes> = clonedKfs
+          ? { ...layerKeyframes, [targetId]: clonedKfs }
+          : layerKeyframes;
+        setMergedGroups(nextGroups);
+        if (clonedKfs) setLayerKeyframes(nextKfs);
+        pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          mergedGroups: nextGroups,
+          layerKeyframes: nextKfs,
+        });
+        setLastAction(`${arrow} تم قلب المجموعة (${mg.name}) ${axisAr}`);
+        return;
+      }
+
+      // C) Added Image / Motion / Shine Layer
       if (targetId.startsWith('layer_')) {
         const srcLayer = addedLayers.find((al) => al.id === targetId);
         if (!srcLayer) return;
         const baseTransform =
           srcLayer.transform || layerTransforms[srcLayer.id] || DEFAULT_TRANSFORM;
+        const hasCopied = Boolean(srcLayer.copiedFrames && srcLayer.copiedFrames.length > 0);
 
+        let nextAddedLayers: AddedLayer[];
+        let nextT: LayerTransform;
         if (srcLayer.copiedFrames && srcLayer.copiedFrames.length > 0) {
-          const flippedFrames = mirrorSvgaFramesHorizontally(
-            srcLayer.copiedFrames,
-            canvasW,
-            srcLayer.width,
-            srcLayer.height,
-            mirrorMode
+          const flippedFrames = isHoriz
+            ? mirrorSvgaFramesHorizontally(
+                srcLayer.copiedFrames,
+                canvasW,
+                srcLayer.width,
+                srcLayer.height,
+                mirrorMode
+              )
+            : mirrorSvgaFramesVertically(
+                srcLayer.copiedFrames,
+                canvasH,
+                srcLayer.width,
+                srcLayer.height,
+                mirrorMode
+              );
+          nextT = isHoriz
+            ? {
+                ...baseTransform,
+                x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+                rotation: -baseTransform.rotation,
+              }
+            : {
+                ...baseTransform,
+                y: mirrorMode === 'canvas' ? -baseTransform.y : baseTransform.y,
+                rotation: -baseTransform.rotation,
+              };
+          nextAddedLayers = addedLayers.map((al) =>
+            al.id === targetId ? { ...al, copiedFrames: flippedFrames, transform: nextT } : al
           );
-          const nextT: LayerTransform = {
-            ...baseTransform,
-            x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
-            rotation: -baseTransform.rotation,
-          };
-          setAddedLayers((prev) =>
-            prev.map((al) =>
-              al.id === targetId
-                ? { ...al, copiedFrames: flippedFrames, transform: nextT }
-                : al
-            )
-          );
-          setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
         } else {
-          const nextT = mirrorLayerTransformHorizontally(baseTransform, mirrorMode);
-          setAddedLayers((prev) =>
-            prev.map((al) => (al.id === targetId ? { ...al, transform: nextT } : al))
+          nextT = isHoriz
+            ? mirrorLayerTransformHorizontally(baseTransform, mirrorMode)
+            : mirrorLayerTransformVertically(baseTransform, mirrorMode);
+          nextAddedLayers = addedLayers.map((al) =>
+            al.id === targetId ? { ...al, transform: nextT } : al
           );
-          setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
         }
-        setLastAction('↔️ تم عكس طبقة الصورة أفقياً من الشمال لليمين مع الحفاظ على مقاساتها');
+        const nextLayerT = { ...layerTransforms, [targetId]: nextT };
+        const clonedKfs = cloneLayerPropertyKeyframes(
+          layerKeyframes[targetId],
+          mirrorMode,
+          hasCopied,
+          axis
+        );
+        const nextKfs: Record<string, LayerPropertyKeyframes> = clonedKfs
+          ? { ...layerKeyframes, [targetId]: clonedKfs }
+          : layerKeyframes;
+        setAddedLayers(nextAddedLayers);
+        setLayerTransforms(nextLayerT);
+        if (clonedKfs) setLayerKeyframes(nextKfs);
+        pushHistory(docTransform, nextLayerT, hiddenLayerIds, deletedSpriteIndices, {
+          addedLayers: nextAddedLayers,
+          layerKeyframes: nextKfs,
+        });
+        setLastAction(`${arrow} تم قلب الطبقة (${srcLayer.name}) ${axisAr}`);
         return;
       }
 
+      // D) Vector Shape / Text Layer
       if (targetId.startsWith('shape_')) {
         const srcShape = shapes.find((sh) => sh.id === targetId);
         if (!srcShape) return;
         const baseTransform =
           srcShape.transform || layerTransforms[srcShape.id] || DEFAULT_TRANSFORM;
-        const nextT = mirrorLayerTransformHorizontally(baseTransform, mirrorMode);
-        setShapes((prev) =>
-          prev.map((sh) => (sh.id === targetId ? { ...sh, transform: nextT } : sh))
+        const nextT = isHoriz
+          ? mirrorLayerTransformHorizontally(baseTransform, mirrorMode)
+          : mirrorLayerTransformVertically(baseTransform, mirrorMode);
+        const nextShapes = shapes.map((sh) =>
+          sh.id === targetId ? { ...sh, transform: nextT } : sh
         );
-        setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
-        setLastAction('↔️ تم عكس الشكل/النص أفقياً من الشمال لليمين');
+        const nextLayerT = { ...layerTransforms, [targetId]: nextT };
+        const clonedKfs = cloneLayerPropertyKeyframes(
+          layerKeyframes[targetId],
+          mirrorMode,
+          false,
+          axis
+        );
+        const nextKfs: Record<string, LayerPropertyKeyframes> = clonedKfs
+          ? { ...layerKeyframes, [targetId]: clonedKfs }
+          : layerKeyframes;
+        setShapes(nextShapes);
+        setLayerTransforms(nextLayerT);
+        if (clonedKfs) setLayerKeyframes(nextKfs);
+        pushHistory(docTransform, nextLayerT, hiddenLayerIds, deletedSpriteIndices, {
+          shapes: nextShapes,
+          layerKeyframes: nextKfs,
+        });
+        setLastAction(`${arrow} تم قلب الشكل/النص (${srcShape.name}) ${axisAr}`);
         return;
       }
 
+      // E) Decomposed SVGA Sprite Layer
       if (targetId.startsWith('sprite_')) {
         const sIdx = Number(targetId.replace('sprite_', ''));
         if (Number.isNaN(sIdx) || !movie.sp[sIdx]) return;
@@ -4043,29 +4476,86 @@ export default function SvgaAeEditor({
         setMovie((prev) => {
           const targetSp = prev.sp[sIdx];
           if (!targetSp) return prev;
-          const flippedFrames = mirrorSvgaFramesHorizontally(
-            targetSp.fr || [],
-            canvasW,
-            defaultW,
-            defaultH,
-            mirrorMode
-          );
+          const flippedFrames = isHoriz
+            ? mirrorSvgaFramesHorizontally(
+                targetSp.fr || [],
+                canvasW,
+                defaultW,
+                defaultH,
+                mirrorMode
+              )
+            : mirrorSvgaFramesVertically(
+                targetSp.fr || [],
+                canvasH,
+                defaultW,
+                defaultH,
+                mirrorMode
+              );
           const nextSp = [...prev.sp];
           nextSp[sIdx] = { ...targetSp, fr: flippedFrames };
           return { ...prev, sp: nextSp };
         });
 
         const baseTransform = layerTransforms[targetId] || DEFAULT_TRANSFORM;
-        const nextT: LayerTransform = {
-          ...baseTransform,
-          x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
-          rotation: -baseTransform.rotation,
-        };
-        setLayerTransforms((prev) => ({ ...prev, [targetId]: nextT }));
-        setLastAction(`↔️ تم عكس الطبقة (${sKey}) من الشمال لليمين عبر الكانفاس`);
+        const nextT: LayerTransform = isHoriz
+          ? {
+              ...baseTransform,
+              x: mirrorMode === 'canvas' ? -baseTransform.x : baseTransform.x,
+              rotation: -baseTransform.rotation,
+            }
+          : {
+              ...baseTransform,
+              y: mirrorMode === 'canvas' ? -baseTransform.y : baseTransform.y,
+              rotation: -baseTransform.rotation,
+            };
+        const nextLayerT = { ...layerTransforms, [targetId]: nextT };
+        const clonedKfs = cloneLayerPropertyKeyframes(
+          layerKeyframes[targetId],
+          mirrorMode,
+          true,
+          axis
+        );
+        const nextKfs: Record<string, LayerPropertyKeyframes> = clonedKfs
+          ? { ...layerKeyframes, [targetId]: clonedKfs }
+          : layerKeyframes;
+        setLayerTransforms(nextLayerT);
+        if (clonedKfs) setLayerKeyframes(nextKfs);
+        pushHistory(docTransform, nextLayerT, hiddenLayerIds, deletedSpriteIndices, {
+          layerKeyframes: nextKfs,
+        });
+        setLastAction(`${arrow} تم قلب الطبقة (${sKey || targetId}) ${axisAr}`);
       }
     },
-    [addedLayers, shapes, movie.sp, bitmaps, thumbs, canvasW, canvasH, layerTransforms]
+    [
+      addedLayers,
+      shapes,
+      mergedGroups,
+      movie.sp,
+      bitmaps,
+      thumbs,
+      canvasW,
+      canvasH,
+      docTransform,
+      layerTransforms,
+      layerKeyframes,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  const handleFlipLayerHorizontally = useCallback(
+    (targetId: string, mirrorMode: 'canvas' | 'local' = 'canvas') => {
+      handleFlipLayer(targetId, 'horizontal', mirrorMode);
+    },
+    [handleFlipLayer]
+  );
+
+  const handleFlipLayerVertically = useCallback(
+    (targetId: string, mirrorMode: 'canvas' | 'local' = 'canvas') => {
+      handleFlipLayer(targetId, 'vertical', mirrorMode);
+    },
+    [handleFlipLayer]
   );
 
   // ============================================================================
@@ -5885,6 +6375,7 @@ export default function SvgaAeEditor({
     (window as any).__svgaCopyMotionToAddedLayer = handleCopyMotionFromSpriteToAddedLayer;
     (window as any).__svgaDuplicateLayer = handleDuplicateLayer;
     (window as any).__svgaFlipLayerHorizontally = handleFlipLayerHorizontally;
+    (window as any).__svgaFlipLayerVertically = handleFlipLayerVertically;
     (window as any).__svgaBakeAddedLayerDimensions = handleBakeAddedLayerDimensions;
     (window as any).__svgaUpdateLayerTransform = updateLayerTransformById;
     (window as any).__svgaCreateShineLayer = handleCreateShineLayer;
@@ -5980,17 +6471,26 @@ export default function SvgaAeEditor({
         shineConfig: a.shineConfig || null,
       })),
       selectedTarget,
+      mergedGroups: mergedGroups.map((g) => ({
+        id: g.id,
+        name: g.name,
+        isUngrouped: Boolean(g.isUngrouped),
+        transform: g.transform,
+        spriteCount: g.spriteIds.length,
+      })),
     });
   }, [
     handleCopyMotionFromSpriteToAddedLayer,
     handleDuplicateLayer,
     handleFlipLayerHorizontally,
+    handleFlipLayerVertically,
     handleBakeAddedLayerDimensions,
     updateLayerTransformById,
     handleCreateShineLayer,
     handleUpdateShineConfig,
     movie.sp.length,
     addedLayers,
+    mergedGroups,
     selectedTarget,
   ]);
 
@@ -6140,10 +6640,9 @@ export default function SvgaAeEditor({
       const assetW = bm?.width || thumbs[s.key]?.w || f.w || canvasW;
       const assetH = bm?.height || thumbs[s.key]?.h || f.h || canvasH;
       const lt = getEffectiveTransform(spriteId, s.key, currentFrame);
-      const groupT =
-        parentGroup && !parentGroup.isUngrouped
-          ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
-          : DEFAULT_TRANSFORM;
+      const groupT = parentGroup
+        ? getEffectiveTransform(parentGroup.id, undefined, currentFrame)
+        : DEFAULT_TRANSFORM;
 
       let mat = computeSpriteFrameMatrix(f, assetW, assetH, canvasW, canvasH, lt, DEFAULT_TRANSFORM);
       if (!isIdentityLayerTransform(groupT)) {
@@ -6799,14 +7298,20 @@ export default function SvgaAeEditor({
     if (!f) return;
     setLastAction(`Merging ${f.name}...`);
     try {
-      const raw = new Uint8Array(await f.arrayBuffer());
+      const buf = await f.arrayBuffer();
+      const raw = new Uint8Array(buf);
       let other: SvgaMovie;
       if (isPagBinary(raw) || /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(f.name.trim())) {
         const decodedPag = await decodePagWithLibpagFallback(raw);
         other = decodedPag.svgaMovie;
       } else {
-        const inf = await decompressDeflate(raw);
-        other = parseMovie(inf);
+        try {
+          const inf = await decompressDeflate(raw);
+          other = parseMovie(inf);
+        } catch {
+          const decoded = await decodeUniversalFileToSvgaMovie(buf, f.name);
+          other = decoded.movie;
+        }
       }
       const nextIm = { ...movie.im };
       const nextBm = { ...bitmaps };
@@ -6930,6 +7435,443 @@ export default function SvgaAeEditor({
       setLastAction(`Merge failed: ${err?.message || 'Invalid SVGA'}`);
     }
   };
+
+  // Helper: identify the primary file's group / sprite IDs for Z-order placement ('above' | 'below')
+  const primaryGroupObj = useMemo(() => {
+    return (
+      mergedGroups.find((g) => g.id.startsWith('merged_group_main_')) ||
+      mergedGroups.find((g) => g.spriteIds.includes('sprite_0')) ||
+      null
+    );
+  }, [mergedGroups]);
+
+  const getPrimaryTargetId = useCallback(() => {
+    return primaryGroupObj ? primaryGroupObj.id : 'DOCUMENT';
+  }, [primaryGroupObj]);
+
+  const getPrimarySpriteIdSet = useCallback((): Set<string> => {
+    if (primaryGroupObj) return new Set(primaryGroupObj.spriteIds);
+    const otherGroupedIds = new Set(mergedGroups.flatMap((g) => g.spriteIds));
+    const set = new Set<string>();
+    for (let i = 0; i < movie.sp.length; i++) {
+      const sid = `sprite_${i}`;
+      if (!otherGroupedIds.has(sid) && !deletedSpriteIndices.has(i)) set.add(sid);
+    }
+    return set;
+  }, [primaryGroupObj, mergedGroups, movie.sp.length, deletedSpriteIndices]);
+
+  const isTargetAbovePrimary = useCallback(
+    (targetIds: string[]): boolean => {
+      if (targetIds.length === 0) return true;
+      const pSet = getPrimarySpriteIdSet();
+      const tSet = new Set(targetIds);
+      const tIndices = effectiveLayerOrder
+        .map((id, idx) => (tSet.has(id) ? idx : -1))
+        .filter((i) => i >= 0);
+      const pIndices = effectiveLayerOrder
+        .map((id, idx) => (pSet.has(id) ? idx : -1))
+        .filter((i) => i >= 0);
+      if (tIndices.length === 0 || pIndices.length === 0) return true;
+      const maxP = Math.max(...pIndices);
+      const minT = Math.min(...tIndices);
+      return minT > maxP;
+    },
+    [effectiveLayerOrder, getPrimarySpriteIdSet]
+  );
+
+  const handleSetAeTargetPositionRelativeToPrimary = useCallback(
+    (targetIds: string[], pos: 'above' | 'below') => {
+      if (targetIds.length === 0) return;
+      const moveSet = new Set(targetIds);
+      const baseOrder = [...effectiveLayerOrder];
+      const extracted = baseOrder.filter((id) => moveSet.has(id));
+      const remaining = baseOrder.filter((id) => !moveSet.has(id));
+      const pSet = getPrimarySpriteIdSet();
+      if (pos === 'below') {
+        const firstPrimaryIdx = remaining.findIndex((id) => pSet.has(id));
+        const insertAt = firstPrimaryIdx >= 0 ? firstPrimaryIdx : 0;
+        remaining.splice(insertAt, 0, ...extracted);
+      } else {
+        let lastPrimaryIdx = -1;
+        for (let i = remaining.length - 1; i >= 0; i--) {
+          if (pSet.has(remaining[i])) {
+            lastPrimaryIdx = i;
+            break;
+          }
+        }
+        const insertAt = lastPrimaryIdx >= 0 ? lastPrimaryIdx + 1 : remaining.length;
+        remaining.splice(insertAt, 0, ...extracted);
+      }
+      setLayerOrder(remaining);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        layerOrder: remaining,
+      });
+      setLastAction(
+        pos === 'below'
+          ? '⬇️ تم تثبيت العنصر خلف الملف الأساسي'
+          : '⬆️ تم تقديم العنصر أمام الملف الأساسي'
+      );
+    },
+    [
+      effectiveLayerOrder,
+      getPrimarySpriteIdSet,
+      docTransform,
+      layerTransforms,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  // Add secondary file (any supported format: SVGA, PAG, VAP, YYEVA, MP4, MOV, WebM, GIF, WebP, APNG, Lottie, PNG/JPG/SVG)
+  const handleAddSecondaryFileInAeComposer = useCallback(
+    async (file: File, zOrder: 'above' | 'below') => {
+      setAeComposerStatus(`⏳ جاري استيراد ${file.name}...`);
+      try {
+        const isPureStaticImage =
+          /^image\/(png|jpeg|jpg|bmp|svg\+xml)$/i.test(file.type) ||
+          /\.(png|jpe?g|bmp|svg)$/i.test(file.name);
+
+        if (isPureStaticImage) {
+          const bm = await createImageBitmap(file);
+          const c = document.createElement('canvas');
+          c.width = bm.width;
+          c.height = bm.height;
+          c.getContext('2d')?.drawImage(bm, 0, 0);
+          const pngBlob: Blob | null = await new Promise((r) => c.toBlob(r, 'image/png'));
+          if (!pngBlob) throw new Error('تعذر قراءة الصورة');
+          const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+          const seqNum = addedLayers.length + 1;
+          const id = `layer_${Date.now()}_${seqNum}`;
+          const rawBase = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const assetKey = rawBase ? `${rawBase}_sec_${seqNum}` : `sec_img_${seqNum}`;
+          const name = file.name.replace(/\.[^.]+$/, '') || assetKey;
+          const newLayer: AddedLayer = {
+            id,
+            assetKey,
+            name,
+            bitmap: bm,
+            originalBitmap: bm,
+            originalWidth: bm.width,
+            originalHeight: bm.height,
+            pngBytes,
+            dataUrl: c.toDataURL('image/png'),
+            width: bm.width,
+            height: bm.height,
+            bytes: pngBytes.byteLength,
+            transform: { ...DEFAULT_TRANSFORM },
+            inFrame: 0,
+            outFrame: Math.max(0, totalFrames - 1),
+          };
+          const nextAdded = [...addedLayers, newLayer];
+          const nextOrder = [...effectiveLayerOrder.filter((x) => x !== id)];
+          const pSet = getPrimarySpriteIdSet();
+          if (zOrder === 'below') {
+            const idx = nextOrder.findIndex((x) => pSet.has(x));
+            nextOrder.splice(idx >= 0 ? idx : 0, 0, id);
+          } else {
+            let lastP = -1;
+            for (let i = nextOrder.length - 1; i >= 0; i--) {
+              if (pSet.has(nextOrder[i])) {
+                lastP = i;
+                break;
+              }
+            }
+            nextOrder.splice(lastP >= 0 ? lastP + 1 : nextOrder.length, 0, id);
+          }
+          setAddedLayers(nextAdded);
+          setLayerOrder(nextOrder);
+          setSelectedTarget(id);
+          setSelectedAssetKey(null);
+          pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+            addedLayers: nextAdded,
+            layerOrder: nextOrder,
+          });
+          setAeComposerStatus(`✅ تمت إضافة "${name}" (${zOrder === 'below' ? 'خلف الأساسي' : 'أمام الأساسي'})`);
+          setLastAction(`✨ تم دمج "${name}" في محرر AE`);
+          return;
+        }
+
+        // Animated format (SVGA, PAG, VAP, YYEVA, MP4, MOV, WebM, GIF, WebP, APNG, Lottie, ZIP)
+        const buf = await file.arrayBuffer();
+        const raw = new Uint8Array(buf);
+        let other: SvgaMovie;
+        if (isPagBinary(raw) || /\.pag(?:\s*\[\d+\]|\s*\(\d+\)|\s+-\s*copy|\s+copy)*$/i.test(file.name.trim())) {
+          const decodedPag = await decodePagWithLibpagFallback(raw);
+          other = decodedPag.svgaMovie;
+        } else {
+          try {
+            const inf = await decompressDeflate(raw);
+            other = parseMovie(inf);
+          } catch {
+            const decoded = await decodeUniversalFileToSvgaMovie(buf, file.name);
+            other = decoded.movie;
+          }
+        }
+        const nextIm = { ...movie.im };
+        const nextBm = { ...bitmaps };
+        const nextTh = { ...thumbs };
+        const keyMap: Record<string, string> = {};
+        for (const k of Object.keys(other.im)) {
+          let mergedKey = k;
+          let suffix = 1;
+          while (nextIm[mergedKey]) mergedKey = `${k}_m${suffix++}`;
+          keyMap[k] = mergedKey;
+          const d = other.im[k];
+          nextIm[mergedKey] = d;
+          try {
+            const blob = new Blob([d as any], { type: 'image/png' });
+            const bm = await createImageBitmap(blob);
+            nextBm[mergedKey] = bm;
+            const c = document.createElement('canvas');
+            c.width = bm.width;
+            c.height = bm.height;
+            c.getContext('2d')?.drawImage(bm, 0, 0);
+            nextTh[mergedKey] = { url: c.toDataURL('image/png'), w: bm.width, h: bm.height };
+          } catch {}
+        }
+
+        const startIdx = movie.sp.length;
+        const targetFrames = Math.max(movie.n || 1, other.n || 1);
+        const mergedSprites = [
+          ...movie.sp,
+          ...other.sp.map((s) => ({ ...s, key: keyMap[s.key] || s.key })),
+        ];
+
+        let updatedMergedGroups = [...mergedGroups];
+        let nextDocTransform = docTransform;
+        const hasFile1Group = updatedMergedGroups.some(
+          (g) => g.id.startsWith('merged_group_main_') || g.spriteIds.includes('sprite_0')
+        );
+        if (!hasFile1Group && startIdx > 0) {
+          updatedMergedGroups.push({
+            id: `merged_group_main_${Date.now()}`,
+            name: `📁 الملف الأساسي (#1): ${docName || 'الملف الأول'}`,
+            spriteIds: Array.from({ length: startIdx }, (_, i) => `sprite_${i}`),
+            transform: { ...docTransform },
+            isUngrouped: false,
+          });
+          nextDocTransform = { ...DEFAULT_TRANSFORM };
+          setDocTransform(nextDocTransform);
+        }
+        if (isAllLayersGrouped) setIsAllLayersGrouped(false);
+
+        const newGroupId = `merged_group_${Date.now() + 1}`;
+        const newSpriteIds = Array.from({ length: other.sp.length }, (_, i) => `sprite_${startIdx + i}`);
+        const newGroup: MergedGroup = {
+          id: newGroupId,
+          name: `📁 ${file.name}`,
+          spriteIds: newSpriteIds,
+          transform: { ...DEFAULT_TRANSFORM },
+          isUngrouped: false,
+        };
+        updatedMergedGroups =
+          zOrder === 'below'
+            ? [...updatedMergedGroups, newGroup]
+            : [newGroup, ...updatedMergedGroups];
+
+        const baseOrder = [...effectiveLayerOrder];
+        const pSet = getPrimarySpriteIdSet();
+        if (zOrder === 'below') {
+          const firstP = baseOrder.findIndex((x) => pSet.has(x));
+          baseOrder.splice(firstP >= 0 ? firstP : 0, 0, ...newSpriteIds);
+        } else {
+          let lastP = -1;
+          for (let i = baseOrder.length - 1; i >= 0; i--) {
+            if (pSet.has(baseOrder[i])) {
+              lastP = i;
+              break;
+            }
+          }
+          baseOrder.splice(lastP >= 0 ? lastP + 1 : baseOrder.length, 0, ...newSpriteIds);
+        }
+
+        setBitmaps(nextBm);
+        setThumbs(nextTh);
+        setMovie({
+          ...movie,
+          w: movie.sp.length === 0 && other.w ? other.w : movie.w,
+          h: movie.sp.length === 0 && other.h ? other.h : movie.h,
+          fps: movie.sp.length === 0 && other.fps ? other.fps : movie.fps,
+          n: targetFrames,
+          im: nextIm,
+          sp: mergedSprites,
+        });
+        setMergedGroups(updatedMergedGroups);
+        setLayerOrder(baseOrder);
+        setSelectedTarget(newGroupId);
+        setSelectedAssetKey(null);
+        pushHistory(nextDocTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+          mergedGroups: updatedMergedGroups,
+          layerOrder: baseOrder,
+        });
+        setAeComposerStatus(
+          `✅ تم دمج ${file.name} (+${other.sp.length} طبقة · ${zOrder === 'below' ? 'خلف الأساسي' : 'أمام الأساسي'})`
+        );
+        setLastAction(`✨ تم دمج "${file.name}" كملف ثاني مستقل في AE`);
+      } catch (err: any) {
+        setAeComposerStatus(`⚠️ تعذر استيراد الملف: ${err?.message || 'Error'}`);
+      }
+    },
+    [
+      addedLayers,
+      totalFrames,
+      effectiveLayerOrder,
+      getPrimarySpriteIdSet,
+      docTransform,
+      layerTransforms,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+      movie,
+      bitmaps,
+      thumbs,
+      mergedGroups,
+      docName,
+      isAllLayersGrouped,
+    ]
+  );
+
+  // Add & customize Mask slots directly inside After Effects Studio
+  const handleAddAeMaskSlot = useCallback(
+    async (kind: 'img' | 'txt') => {
+      const existingMasks = addedLayers.filter((l) => l.maskConfig?.isMaskSlot);
+      const num = existingMasks.length + 1;
+      const defaultW = kind === 'txt' ? Math.min(Math.round(canvasW * 0.72), 360) : Math.min(Math.round(canvasW * 0.44), 240);
+      const defaultH = kind === 'txt' ? 76 : defaultW;
+      const cfg: AeMaskConfig = {
+        isMaskSlot: true,
+        srcType: kind,
+        shapePreset: kind === 'txt' ? 'roundedRect' : 'circle',
+        fillColor: kind === 'txt' ? '#1e1b4b' : '#ec4899',
+        textContent: kind === 'txt' ? `الاسم ${num}` : undefined,
+        textColor: '#fde047',
+        fitMode: 'cover',
+      };
+      const rendered = await renderAeMaskCanvasAssets({ width: defaultW, height: defaultH, config: cfg });
+      if (!rendered) return;
+      const id = `layer_mask_${Date.now()}_${num}`;
+      const assetKey = kind === 'txt' ? `ae_mask_txt_${num}_${Date.now()}` : `ae_mask_img_${num}_${Date.now()}`;
+      const newLayer: AddedLayer = {
+        id,
+        assetKey,
+        name: kind === 'txt' ? `قناع اسم ${num}` : `قناع صورة ${num}`,
+        bitmap: rendered.bitmap,
+        originalBitmap: rendered.bitmap,
+        originalWidth: defaultW,
+        originalHeight: defaultH,
+        pngBytes: rendered.pngBytes,
+        dataUrl: rendered.dataUrl,
+        width: defaultW,
+        height: defaultH,
+        bytes: rendered.pngBytes.byteLength,
+        transform: { ...DEFAULT_TRANSFORM },
+        inFrame: 0,
+        outFrame: Math.max(0, totalFrames - 1),
+        maskConfig: cfg,
+      };
+      const nextAdded = [...addedLayers, newLayer];
+      const baseOrder = [...effectiveLayerOrder.filter((x) => x !== id)];
+      const pSet = getPrimarySpriteIdSet();
+      if (aeMaskPlacement === 'below') {
+        const firstP = baseOrder.findIndex((x) => pSet.has(x));
+        baseOrder.splice(firstP >= 0 ? firstP : 0, 0, id);
+      } else {
+        let lastP = -1;
+        for (let i = baseOrder.length - 1; i >= 0; i--) {
+          if (pSet.has(baseOrder[i])) {
+            lastP = i;
+            break;
+          }
+        }
+        baseOrder.splice(lastP >= 0 ? lastP + 1 : baseOrder.length, 0, id);
+      }
+      setAddedLayers(nextAdded);
+      setLayerOrder(baseOrder);
+      setSelectedTarget(id);
+      setSelectedAssetKey(null);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+        layerOrder: baseOrder,
+      });
+      setAeComposerStatus(`🎭 تمت إضافة ${newLayer.name} (${aeMaskPlacement === 'below' ? 'خلف الأساسي' : 'أمام الأساسي'})`);
+      setLastAction(`🎭 تمت إضافة ${newLayer.name} إلى التايم لاين`);
+    },
+    [
+      addedLayers,
+      canvasW,
+      totalFrames,
+      effectiveLayerOrder,
+      getPrimarySpriteIdSet,
+      aeMaskPlacement,
+      docTransform,
+      layerTransforms,
+      hiddenLayerIds,
+      deletedSpriteIndices,
+      pushHistory,
+    ]
+  );
+
+  const handleUpdateAeMaskLayer = useCallback(
+    async (
+      layerId: string,
+      patch: Partial<AeMaskConfig>,
+      dims?: { width?: number; height?: number; name?: string }
+    ) => {
+      const target = addedLayers.find((l) => l.id === layerId);
+      if (!target || !target.maskConfig) return;
+      const nextCfg: AeMaskConfig = { ...target.maskConfig, ...patch };
+      const nextW = dims?.width !== undefined ? Math.max(16, Math.round(dims.width)) : target.width;
+      const nextH = dims?.height !== undefined ? Math.max(16, Math.round(dims.height)) : target.height;
+      const rendered = await renderAeMaskCanvasAssets({ width: nextW, height: nextH, config: nextCfg });
+      if (!rendered) return;
+      const nextAdded = addedLayers.map((l) =>
+        l.id === layerId
+          ? {
+              ...l,
+              name: dims?.name !== undefined ? dims.name : l.name,
+              width: nextW,
+              height: nextH,
+              originalWidth: nextW,
+              originalHeight: nextH,
+              bitmap: rendered.bitmap,
+              originalBitmap: rendered.bitmap,
+              pngBytes: rendered.pngBytes,
+              dataUrl: rendered.dataUrl,
+              bytes: rendered.pngBytes.byteLength,
+              maskConfig: nextCfg,
+            }
+          : l
+      );
+      setAddedLayers(nextAdded);
+      pushHistory(docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, {
+        addedLayers: nextAdded,
+      });
+    },
+    [addedLayers, docTransform, layerTransforms, hiddenLayerIds, deletedSpriteIndices, pushHistory]
+  );
+
+  const handleUploadAeMaskFile = useCallback(
+    (layerId: string, mode: 'photo' | 'silhouette', file: File) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = String(reader.result || '');
+        if (!dataUrl) return;
+        if (mode === 'photo') {
+          await handleUpdateAeMaskLayer(layerId, { photoDataUrl: dataUrl });
+          setAeComposerStatus(`✅ تم وضع الصورة داخل القناع بنجاح`);
+        } else {
+          await handleUpdateAeMaskLayer(layerId, {
+            shapePreset: 'customImage',
+            maskSilhouetteDataUrl: dataUrl,
+          });
+          setAeComposerStatus(`🎭 تم تحديث شكل القناع بملف PNG المخصص`);
+        }
+      };
+      reader.readAsDataURL(file);
+    },
+    [handleUpdateAeMaskLayer]
+  );
 
   const handleReplaceImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -7545,6 +8487,175 @@ export default function SvgaAeEditor({
     });
   };
 
+  const handleExportUniversalFormat = async (fmt: EditorExportFormatKey) => {
+    setExportMenuOpen(false);
+    if (fmt === 'svga') {
+      await handleExportSvga();
+      return;
+    }
+    if (fmt === 'pag') {
+      await handleExportPag();
+      return;
+    }
+    if (fmt === 'ae_script') {
+      handleDownloadAeScript();
+      return;
+    }
+    if (typeof (window as any).__checkConversionAccess === 'function') {
+      const featureMap: Record<string, string> = {
+        vap: 'vap',
+        yyeva: 'yyeva',
+        dual: 'vap',
+        mp4: 'mp4_video',
+        mov: 'mp4_video',
+        webm: 'webm',
+        gif: 'gif',
+        webp: 'webp',
+        apng: 'apng',
+        lottie: 'lottie',
+        dotlottie: 'dotlottie',
+        zip: 'png_seq',
+      };
+      const allowed = (window as any).__checkConversionAccess(featureMap[fmt] || 'svga_editor', docName);
+      if (!allowed) return;
+    }
+
+    setIsUniversalExporting(true);
+    setLastAction(`جاري تجهيز وتصدير صيغة ${fmt.toUpperCase()}...`);
+    try {
+      const result = await exportCompositeFramesToFormat({
+        format: fmt,
+        baseName: docName,
+        W: canvasW,
+        H: canvasH,
+        fps,
+        totalFrames,
+        renderFrameToCanvas: (ctx, W, H, frameIdx) => {
+          renderCompositeFrameToContext(ctx, W, H, frameIdx, false);
+        },
+        buildSvgaBlob: buildEditedSvgaBlob,
+        exportPagFile: handleExportPag,
+        exportAeZipFile: async () => handleDownloadAeScript(),
+        onProgress: (msg) => setLastAction(msg),
+      });
+
+      if (result) {
+        const url = URL.createObjectURL(result.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = result.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        setLastAction(
+          `✅ تم تصدير ${result.fileName} (${(result.blob.size / 1024).toFixed(1)} KB)`
+        );
+        void issueAndAutoAttachGiftCertificate({
+          giftFileName: result.fileName,
+          fileFormat: fmt.toUpperCase(),
+          fileSizeBytes: result.blob.size,
+          dimensionsLabel: `${canvasW}x${canvasH}`,
+          sourceStudio: 'محرر SVGA & الصيغ الشاملة – منصة المصمم أحمد للهدايا',
+        });
+      }
+    } catch (err: any) {
+      setLastAction(`⚠️ فشل التصدير (${fmt.toUpperCase()}): ${err?.message || 'Error'}`);
+    } finally {
+      setIsUniversalExporting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const syncPos = () => {
+      const el = exportMenuRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const menuW = 295;
+      const left = Math.max(8, Math.min(window.innerWidth - menuW - 8, rect.right - menuW));
+      const top = Math.min(window.innerHeight - 160, rect.bottom + 6);
+      const maxHeight = Math.max(180, window.innerHeight - top - 16);
+      setExportPopoverPos({ top, left, maxHeight });
+    };
+    syncPos();
+    const onOutside = (ev: MouseEvent) => {
+      const t = ev.target as Node;
+      const insideBtn = Boolean(exportMenuRef.current && exportMenuRef.current.contains(t));
+      const insidePop = Boolean(exportPopoverRef.current && exportPopoverRef.current.contains(t));
+      if (!insideBtn && !insidePop) {
+        setExportMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onOutside);
+    window.addEventListener('resize', syncPos);
+    window.addEventListener('scroll', syncPos, true);
+    return () => {
+      window.removeEventListener('mousedown', onOutside);
+      window.removeEventListener('resize', syncPos);
+      window.removeEventListener('scroll', syncPos, true);
+    };
+  }, [exportMenuOpen]);
+
+  const handleUploadStageBg = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (stageBgUrl && stageBgUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(stageBgUrl);
+      } catch {}
+    }
+    const url = URL.createObjectURL(file);
+    const isVid =
+      file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(file.name);
+    setStageBgUrl(url);
+    setStageBgName(file.name);
+    setStageBgMediaType(isVid ? 'video' : 'image');
+    setStageBgMode('media');
+    setStageBgOpacity(100);
+    setLastAction(
+      `🖼️ تم رفع خلفية ${isVid ? 'فيديو متزامنة' : 'معاينة'}: ${file.name}`
+    );
+  };
+
+  const handleClearStageBg = () => {
+    if (stageBgUrl && stageBgUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(stageBgUrl);
+      } catch {}
+    }
+    setStageBgUrl(null);
+    setStageBgName('');
+    setStageBgMediaType(null);
+    setStageBgMode('checker');
+    setStageBgControlsExpanded(false);
+    setLastAction('تمت إعادة الخلفية إلى الوضع الشفاف الافتراضي');
+  };
+
+  // Sync uploaded video background time with animation currentFrame & play state
+  useEffect(() => {
+    if (stageBgMode !== 'media' || stageBgMediaType !== 'video' || !stageBgSyncVideo) return;
+    const vid = stageBgVideoRef.current;
+    if (!vid || !Number.isFinite(vid.duration) || vid.duration <= 0) return;
+    const animSec = currentFrame / Math.max(1, fps);
+    const targetSec = animSec % vid.duration;
+    if (Math.abs(vid.currentTime - targetSec) > 0.04) {
+      try {
+        vid.currentTime = targetSec;
+      } catch {}
+    }
+  }, [currentFrame, fps, stageBgMode, stageBgMediaType, stageBgSyncVideo]);
+
+  useEffect(() => {
+    if (!isTheaterMode) return;
+    const onEsc = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setIsTheaterMode(false);
+    };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [isTheaterMode]);
+
   const toggleTimelineLayerExpand = (layerId: string) => {
     setExpandedTimelineLayerIds((prev) => {
       const next = new Set(prev);
@@ -7578,6 +8689,11 @@ export default function SvgaAeEditor({
     [shapes, selectedTarget]
   );
 
+  const selectedMergedGroup = useMemo(
+    () => (selectedTarget.startsWith('merged_group_') ? mergedGroups.find((g) => g.id === selectedTarget) || null : null),
+    [mergedGroups, selectedTarget]
+  );
+
   const isEmptyStage =
     spriteLayers.length === 0 && addedLayers.length === 0 && shapes.length === 0;
 
@@ -7601,9 +8717,7 @@ export default function SvgaAeEditor({
         e.preventDefault();
         const f = e.dataTransfer?.files?.[0];
         if (!f) return;
-        if (f.name.toLowerCase().endsWith('.svga')) {
-          f.arrayBuffer().then((buf) => loadSvgaBuffer(buf, f.name, f.size));
-        }
+        f.arrayBuffer().then((buf) => loadSvgaBuffer(buf, f.name, f.size));
       }}
       style={{
         display: 'flex',
@@ -7622,7 +8736,7 @@ export default function SvgaAeEditor({
       <input
         ref={openSvgaInputRef}
         type="file"
-        accept=".svga,.pag"
+        accept={EDITOR_IMPORT_ACCEPT}
         hidden
         onChange={handleOpenSvgaFile}
       />
@@ -7637,7 +8751,7 @@ export default function SvgaAeEditor({
       <input
         ref={mergeSvgaInputRef}
         type="file"
-        accept=".svga,.pag"
+        accept={EDITOR_IMPORT_ACCEPT}
         hidden
         onChange={handleMergeSvga}
       />
@@ -7656,6 +8770,36 @@ export default function SvgaAeEditor({
         onChange={handleImportImageWithOriginalDimensions}
       />
 
+      <input
+        ref={stageBgInputRef}
+        type="file"
+        accept="image/*,video/mp4,video/webm,video/quicktime,.gif,.webp,.svg"
+        hidden
+        onChange={handleUploadStageBg}
+      />
+      <input
+        ref={aeSecondaryFileInputRef}
+        type="file"
+        accept={EDITOR_IMPORT_ACCEPT}
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) void handleAddSecondaryFileInAeComposer(f, aeSecondaryZOrder);
+        }}
+      />
+      <input
+        ref={aeMaskSvgaFrameInputRef}
+        type="file"
+        accept={EDITOR_IMPORT_ACCEPT}
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = '';
+          if (f) void handleAddSecondaryFileInAeComposer(f, 'above');
+        }}
+      />
+
       {/* 1. SUB-HEADER TOOLBAR */}
       <div
         style={{
@@ -7666,8 +8810,11 @@ export default function SvgaAeEditor({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0 12px',
-          gap: '10px',
+          padding: '0 8px',
+          gap: '6px',
+          overflowX: 'auto',
+          overflowY: 'hidden',
+          scrollbarWidth: 'none',
         }}
       >
         {/* Left tool icons */}
@@ -8022,8 +9169,9 @@ export default function SvgaAeEditor({
               type="button"
               id="edOpenSvga"
               onClick={() => openSvgaInputRef.current?.click()}
+              title="فتح أي صيغة مدعومة داخل المحرر (SVGA, PAG, VAP, YYEVA, Lottie, MP4, MOV, WebM, GIF, WebP, APNG, SVG, ZIP, PNG/JPG)"
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -8037,14 +9185,14 @@ export default function SvgaAeEditor({
               }}
             >
               <FolderOpen size={12} color="#a0a0b4" />
-              <span>Open SVGA</span>
+              <span>فتح أي صيغة</span>
             </button>
             <button
               type="button"
               id="edAddImageLayer"
               onClick={() => addLayerInputRef.current?.click()}
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -8070,7 +9218,7 @@ export default function SvgaAeEditor({
               }}
               title="تحديد مقاسات مشروع العمل أو استدعاء صورة وتعديل مقاسات المشروع تلقائياً على مقاساتها الأصلية"
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: '1px solid rgba(167, 139, 250, 0.45)',
                 background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.22), rgba(99, 102, 241, 0.14))',
@@ -8085,7 +9233,7 @@ export default function SvgaAeEditor({
               }}
             >
               <Scaling size={12} color="#c084fc" />
-              <span>📐 مقاسات المشروع</span>
+              <span>📐 مقاسات</span>
             </button>
             <button
               type="button"
@@ -8093,7 +9241,7 @@ export default function SvgaAeEditor({
               onClick={() => handleCreateShineLayer(undefined, 'beam_sweep')}
               title="إضافة طبقة لمعة احترافية (Shine Layer) مع قناع نقاط ومسار حركة مثل إطار الهند"
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: '1px solid rgba(167, 139, 250, 0.45)',
                 background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.25), rgba(99, 102, 241, 0.16))',
@@ -8108,7 +9256,7 @@ export default function SvgaAeEditor({
               }}
             >
               <Sparkles size={12} color="#c084fc" />
-              <span>✨ إضافة لمعة</span>
+              <span>✨ لمعة</span>
             </button>
             <button
               type="button"
@@ -8116,7 +9264,7 @@ export default function SvgaAeEditor({
               onClick={() => handleConvertAddedLayerToColorCloneShine(selectedTarget)}
               title="نسخ الطبقة المحددة تلقائياً (سواء من ملف SVGA الأساسي أو المرفوعة) وإضافة نسخة ثانية فوقها مع تطبيق تأثير اللمعة والفيذر (Feather)"
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: '1px solid rgba(167, 139, 250, 0.5)',
                 background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.26), rgba(99, 102, 241, 0.18))',
@@ -8131,14 +9279,15 @@ export default function SvgaAeEditor({
               }}
             >
               <Palette size={12} color="#c084fc" />
-              <span>🎨 نسخ الطبقة + لمعة وفيذر</span>
+              <span>🎨 نسخ + لمعة</span>
             </button>
             <button
               type="button"
               id="edMergeSvga"
               onClick={() => mergeSvgaInputRef.current?.click()}
+              title="دمج أي ملف/صيغة إضافية داخل المشروع كطبقة مجموعة مستقلة"
               style={{
-                padding: '4px 8px',
+                padding: '4px 6px',
                 borderRadius: '6px',
                 border: 0,
                 background: 'transparent',
@@ -8152,7 +9301,34 @@ export default function SvgaAeEditor({
               }}
             >
               <Upload size={12} color="#a0a0b4" />
-              <span>Merge SVGA</span>
+              <span>دمج صيغة</span>
+            </button>
+            <button
+              type="button"
+              id="edAeProjectComposerBtn"
+              onClick={() => setAeComposerOpen((v) => !v)}
+              title="قائمة تحريك المشروع + إضافة ملف ثاني + إدارة الأقنعة والترتيب داخل محرر After Effects"
+              style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: aeComposerOpen
+                  ? '1px solid #c084fc'
+                  : '1px solid rgba(192, 132, 252, 0.5)',
+                background: aeComposerOpen
+                  ? 'linear-gradient(135deg, rgba(168, 85, 247, 0.36), rgba(99, 102, 241, 0.28))'
+                  : 'linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(99, 102, 241, 0.14))',
+                color: '#f3e8ff',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Layers size={12} color="#c084fc" />
+              <span>🎯 تحريك المشروع + ملف ثاني</span>
             </button>
           </div>
 
@@ -8161,7 +9337,7 @@ export default function SvgaAeEditor({
             id="edSyncMotionTools"
             onClick={handleSyncToMotionTools}
             style={{
-              padding: '5px 9px',
+              padding: '4px 7px',
               borderRadius: '8px',
               border: '1px solid #242434',
               background: '#12121a',
@@ -8169,7 +9345,7 @@ export default function SvgaAeEditor({
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
@@ -8184,7 +9360,7 @@ export default function SvgaAeEditor({
             onClick={handleExportPag}
             title="تصدير المشروع وجميع الطبقات بصيغة PAG (.pag)"
             style={{
-              padding: '5px 10px',
+              padding: '4px 8px',
               borderRadius: '8px',
               border: '1px solid rgba(167, 139, 250, 0.55)',
               background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.35), rgba(99, 102, 241, 0.25))',
@@ -8193,7 +9369,7 @@ export default function SvgaAeEditor({
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
@@ -8207,7 +9383,7 @@ export default function SvgaAeEditor({
             id="edExportSvga"
             onClick={handleExportSvga}
             style={{
-              padding: '5px 11px',
+              padding: '4px 8px',
               borderRadius: '8px',
               border: '1px solid #7c5cff',
               background: '#7c5cff',
@@ -8216,7 +9392,7 @@ export default function SvgaAeEditor({
               cursor: 'pointer',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
@@ -8224,6 +9400,126 @@ export default function SvgaAeEditor({
             <Download size={12} />
             <span>Export SVGA</span>
           </button>
+
+          <div ref={exportMenuRef} style={{ position: 'relative', display: 'inline-block' }}>
+            <button
+              type="button"
+              id="edExportAllFormatsBtn"
+              disabled={isUniversalExporting}
+              aria-expanded={exportMenuOpen}
+              onClick={() => setExportMenuOpen((v) => !v)}
+              title="تصدير العمل بجميع صيغ المنصة (SVGA, PAG, VAP, YYEVA, MP4, MOV, WebM, GIF, WebP, APNG, Lottie, dotLottie, ZIP, AE)"
+              style={{
+                padding: '4px 8px',
+                borderRadius: '8px',
+                border: '1px solid rgba(56, 189, 248, 0.55)',
+                background: exportMenuOpen
+                  ? 'linear-gradient(135deg, rgba(56, 189, 248, 0.32), rgba(124, 92, 255, 0.3))'
+                  : 'linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(124, 92, 255, 0.16))',
+                color: '#e0f2fe',
+                fontWeight: 700,
+                cursor: isUniversalExporting ? 'wait' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                whiteSpace: 'nowrap',
+                opacity: isUniversalExporting ? 0.65 : 1,
+              }}
+            >
+              <Download size={12} color="#38bdf8" />
+              <span>{isUniversalExporting ? 'جاري التصدير...' : 'تصدير جميع الصيغ'}</span>
+              <ChevronDown size={11} color="#bae6fd" />
+            </button>
+
+            {exportMenuOpen &&
+              typeof document !== 'undefined' &&
+              createPortal(
+                <div
+                  ref={exportPopoverRef}
+                  id="edExportAllFormatsPopover"
+                  role="menu"
+                  style={{
+                    position: 'fixed',
+                    top: `${exportPopoverPos.top}px`,
+                    left: `${exportPopoverPos.left}px`,
+                    width: '295px',
+                    maxHeight: `${exportPopoverPos.maxHeight}px`,
+                    overflowY: 'auto',
+                    background: '#101018',
+                    border: '1px solid rgba(167, 139, 250, 0.5)',
+                    borderRadius: '10px',
+                    boxShadow: '0 20px 50px rgba(0,0,0,0.9)',
+                    padding: '6px',
+                    zIndex: 10050,
+                    direction: 'rtl',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '5px 8px',
+                      fontSize: '10.5px',
+                      fontWeight: 700,
+                      color: '#a78bfa',
+                      borderBottom: '1px solid #1f1f2e',
+                      marginBottom: '2px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <span>اختر صيغة التصدير ({EDITOR_EXPORT_FORMATS.length} صيغة)</span>
+                    <span style={{ color: '#64748b', fontSize: '9.5px' }}>
+                      {canvasW}×{canvasH} · {totalFrames}f
+                    </span>
+                  </div>
+                  {EDITOR_EXPORT_FORMATS.map((fmt) => (
+                    <button
+                      key={fmt.key}
+                      type="button"
+                      role="menuitem"
+                      id={`edExportFmt_${fmt.key}`}
+                      onClick={() => handleExportUniversalFormat(fmt.key)}
+                      style={{
+                        width: '100%',
+                        padding: '6px 9px',
+                        borderRadius: '7px',
+                        border: '1px solid transparent',
+                        background: 'rgba(255,255,255,0.03)',
+                        color: '#f1f5f9',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        fontSize: '11px',
+                        textAlign: 'right',
+                      }}
+                    >
+                      <span style={{ fontWeight: 700 }}>{fmt.labelAr}</span>
+                      <span
+                        style={{
+                          fontSize: '9.5px',
+                          padding: '1px 6px',
+                          borderRadius: '5px',
+                          background: 'rgba(124, 92, 255, 0.22)',
+                          border: '1px solid rgba(167, 139, 250, 0.35)',
+                          color: '#ddd6fe',
+                          fontWeight: 700,
+                          direction: 'ltr',
+                        }}
+                      >
+                        {fmt.badge} · .{fmt.ext}
+                      </span>
+                    </button>
+                  ))}
+                </div>,
+                document.body
+              )}
+          </div>
         </div>
       </div>
 
@@ -8236,7 +9532,7 @@ export default function SvgaAeEditor({
             minWidth: '44px',
             background: '#0c0c12',
             borderRight: '1px solid #1b1b26',
-            display: 'flex',
+            display: isTheaterMode ? 'none' : 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             padding: '8px 0',
@@ -8279,7 +9575,7 @@ export default function SvgaAeEditor({
         </div>
 
         {/* Left Drawer Panel (256px) */}
-        {leftTab && (
+        {leftTab && !isTheaterMode && (
           <aside
             style={{
               width: '256px',
@@ -8361,7 +9657,7 @@ export default function SvgaAeEditor({
                     <span>
                       {spriteLayers.length + addedLayers.length + shapes.length} decomposed layers
                     </span>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
                       {(() => {
                         const isAnyGrouped = isAllLayersGrouped || mergedGroups.some((g) => !g.isUngrouped);
                         return (
@@ -8399,6 +9695,52 @@ export default function SvgaAeEditor({
                           </button>
                         );
                       })()}
+                      <button
+                        type="button"
+                        id="edLayersHeaderFlipHBtn"
+                        onClick={() => handleFlipLayerHorizontally(selectedTarget, 'canvas')}
+                        title="قلب العنصر أو الطبقة المحددة من الشمال لليمين"
+                        aria-label="قلب العنصر المحدد من الشمال لليمين"
+                        style={{
+                          background: 'rgba(124, 92, 255, 0.18)',
+                          border: '1px solid rgba(167, 139, 250, 0.45)',
+                          color: '#e9d5ff',
+                          borderRadius: '5px',
+                          padding: '2px 6px',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                        }}
+                      >
+                        <FlipHorizontal2 size={11} color="#c084fc" />
+                        <span>↔️</span>
+                      </button>
+                      <button
+                        type="button"
+                        id="edLayersHeaderFlipVBtn"
+                        onClick={() => handleFlipLayerVertically(selectedTarget, 'canvas')}
+                        title="قلب العنصر أو الطبقة المحددة من الأعلى للأسفل"
+                        aria-label="قلب العنصر المحدد من الأعلى للأسفل"
+                        style={{
+                          background: 'rgba(124, 92, 255, 0.18)',
+                          border: '1px solid rgba(167, 139, 250, 0.45)',
+                          color: '#e9d5ff',
+                          borderRadius: '5px',
+                          padding: '2px 6px',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                        }}
+                      >
+                        <FlipVertical2 size={11} color="#c084fc" />
+                        <span>↕️</span>
+                      </button>
                       {selectedTarget !== 'DOCUMENT' && selectedTarget !== 'GROUP_ALL' && (
                         <button
                           type="button"
@@ -8489,6 +9831,48 @@ export default function SvgaAeEditor({
                         >
                           📁 مجموعة كل الطبقات ({spriteLayers.length + addedLayers.length + shapes.length} طبقة)
                         </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleFlipLayerHorizontally('GROUP_ALL', 'canvas');
+                          }}
+                          title="قلب مجموعة كل الطبقات من الشمال لليمين"
+                          aria-label="قلب مجموعة كل الطبقات شمال لليمين"
+                          style={{
+                            background: docTransform.sx < 0 ? 'rgba(124, 92, 255, 0.45)' : 'rgba(255,255,255,0.08)',
+                            border: '1px solid rgba(167, 139, 250, 0.5)',
+                            color: '#f3e8ff',
+                            borderRadius: '4px',
+                            padding: '2px 4px',
+                            cursor: 'pointer',
+                            display: 'grid',
+                            placeItems: 'center',
+                          }}
+                        >
+                          <FlipHorizontal2 size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleFlipLayerVertically('GROUP_ALL', 'canvas');
+                          }}
+                          title="قلب مجموعة كل الطبقات من الأعلى للأسفل"
+                          aria-label="قلب مجموعة كل الطبقات أعلى لأسفل"
+                          style={{
+                            background: docTransform.sy < 0 ? 'rgba(124, 92, 255, 0.45)' : 'rgba(255,255,255,0.08)',
+                            border: '1px solid rgba(167, 139, 250, 0.5)',
+                            color: '#f3e8ff',
+                            borderRadius: '4px',
+                            padding: '2px 4px',
+                            cursor: 'pointer',
+                            display: 'grid',
+                            placeItems: 'center',
+                          }}
+                        >
+                          <FlipVertical2 size={11} />
+                        </button>
                         <span
                           style={{
                             fontSize: '9px',
@@ -8538,6 +9922,48 @@ export default function SvgaAeEditor({
                     >
                       {docName}
                     </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleFlipLayerHorizontally('DOCUMENT', 'canvas');
+                      }}
+                      title="قلب المشروع بالكامل من الشمال لليمين"
+                      aria-label="قلب المشروع شمال لليمين"
+                      style={{
+                        background: docTransform.sx < 0 ? 'rgba(124, 92, 255, 0.4)' : 'rgba(255,255,255,0.05)',
+                        border: docTransform.sx < 0 ? '1px solid #a78bfa' : '1px solid #282838',
+                        color: docTransform.sx < 0 ? '#f3e8ff' : '#a78bfa',
+                        borderRadius: '4px',
+                        padding: '2px 4px',
+                        cursor: 'pointer',
+                        display: 'grid',
+                        placeItems: 'center',
+                      }}
+                    >
+                      <FlipHorizontal2 size={11} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleFlipLayerVertically('DOCUMENT', 'canvas');
+                      }}
+                      title="قلب المشروع بالكامل من الأعلى للأسفل"
+                      aria-label="قلب المشروع أعلى لأسفل"
+                      style={{
+                        background: docTransform.sy < 0 ? 'rgba(124, 92, 255, 0.4)' : 'rgba(255,255,255,0.05)',
+                        border: docTransform.sy < 0 ? '1px solid #a78bfa' : '1px solid #282838',
+                        color: docTransform.sy < 0 ? '#f3e8ff' : '#a78bfa',
+                        borderRadius: '4px',
+                        padding: '2px 4px',
+                        cursor: 'pointer',
+                        display: 'grid',
+                        placeItems: 'center',
+                      }}
+                    >
+                      <FlipVertical2 size={11} />
+                    </button>
                     <span
                       style={{
                         fontSize: '9px',
@@ -8556,9 +9982,12 @@ export default function SvgaAeEditor({
                   {mergedGroups.map((mg, gIdx) => {
                     const isHidden = hiddenLayerIds.has(mg.id);
                     const isSel = selectedTarget === mg.id;
+                    const isFlippedH = mg.transform.sx < 0;
+                    const isFlippedV = mg.transform.sy < 0;
                     return (
                       <div
                         key={mg.id}
+                        id={`merged_group_card_${mg.id}`}
                         draggable
                         onDragStart={(e) => {
                           e.dataTransfer.setData('text/plain', `merged_group_idx:${gIdx}`);
@@ -8604,7 +10033,7 @@ export default function SvgaAeEditor({
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '6px',
+                            gap: '5px',
                             padding: '6px 8px',
                             cursor: 'pointer',
                           }}
@@ -8624,11 +10053,12 @@ export default function SvgaAeEditor({
                               padding: 0,
                               display: 'grid',
                               placeItems: 'center',
+                              flexShrink: 0,
                             }}
                           >
                             {isHidden ? <EyeOff size={13} /> : <Eye size={13} />}
                           </button>
-                          <Layers size={14} color="#a78bfa" />
+                          <Layers size={14} color="#a78bfa" style={{ flexShrink: 0 }} />
                           <span
                             style={{
                               flex: 1,
@@ -8640,32 +10070,8 @@ export default function SvgaAeEditor({
                               whiteSpace: 'nowrap',
                             }}
                           >
-                            {mg.name} ({mg.spriteIds.length} طبقة)
+                            {mg.name} ({mg.spriteIds.length})
                           </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleGroupUngroup(mg.id);
-                            }}
-                            title={mg.isUngrouped ? 'تجميع الطبقات المدمجة' : 'فك التجميع (Ungroup)'}
-                            style={{
-                              background: mg.isUngrouped
-                                ? 'rgba(239, 68, 68, 0.25)'
-                                : 'rgba(124, 92, 255, 0.3)',
-                              border: mg.isUngrouped
-                                ? '1px solid rgba(239, 68, 68, 0.5)'
-                                : '1px solid #a78bfa',
-                              color: mg.isUngrouped ? '#fca5a5' : '#e9d5ff',
-                              borderRadius: '4px',
-                              padding: '2px 5px',
-                              fontSize: '10px',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            {mg.isUngrouped ? 'تجميع' : 'فك التجميع (Ungroup)'}
-                          </button>
                           <button
                             type="button"
                             onClick={(e) => {
@@ -8673,7 +10079,7 @@ export default function SvgaAeEditor({
                               handleMoveMergedGroupUp(mg.id);
                             }}
                             title="رفع المجموعة للأعلى"
-                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px' }}
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', flexShrink: 0 }}
                           >
                             <MoveUp size={12} />
                           </button>
@@ -8684,7 +10090,7 @@ export default function SvgaAeEditor({
                               handleMoveMergedGroupDown(mg.id);
                             }}
                             title="خفض المجموعة للأسفل"
-                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px' }}
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid #3e3e52', color: '#c4b5fd', cursor: 'pointer', padding: '2px 4px', borderRadius: '4px', flexShrink: 0 }}
                           >
                             <MoveDown size={12} />
                           </button>
@@ -8695,9 +10101,120 @@ export default function SvgaAeEditor({
                               handleDeleteLayer(mg.id);
                             }}
                             title="حذف المجموعة"
-                            style={{ background: 0, border: 0, color: '#f87171', cursor: 'pointer', padding: '1px' }}
+                            style={{ background: 0, border: 0, color: '#f87171', cursor: 'pointer', padding: '1px', flexShrink: 0 }}
                           >
                             <Trash2 size={12} />
+                          </button>
+                        </div>
+
+                        {/* Quick Flip Left↔Right, Top↕Bottom & Ungroup row */}
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            padding: '4px 6px 5px',
+                            borderTop: '1px solid rgba(167, 139, 250, 0.18)',
+                            background: 'rgba(10, 10, 18, 0.36)',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            id={`edFlipGroupH_${mg.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedTarget(mg.id);
+                              setSelectedAssetKey(null);
+                              handleFlipLayerHorizontally(mg.id, 'canvas');
+                            }}
+                            title="قلب المجموعة أفقياً من الشمال لليمين (Left ↔ Right)"
+                            aria-label={`قلب ${mg.name} من الشمال لليمين`}
+                            style={{
+                              flex: '1 1 0',
+                              minWidth: 0,
+                              justifyContent: 'center',
+                              background: isFlippedH
+                                ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.5), rgba(168, 85, 247, 0.38))'
+                                : 'rgba(124, 92, 255, 0.16)',
+                              border: isFlippedH ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                              color: '#f3e8ff',
+                              borderRadius: '5px',
+                              padding: '3px 4px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '2px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <FlipHorizontal2 size={10} color="#e9d5ff" />
+                            <span>شمال↔يمين</span>
+                          </button>
+                          <button
+                            type="button"
+                            id={`edFlipGroupV_${mg.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedTarget(mg.id);
+                              setSelectedAssetKey(null);
+                              handleFlipLayerVertically(mg.id, 'canvas');
+                            }}
+                            title="قلب المجموعة عمودياً من الأعلى للأسفل (Top ↕ Bottom)"
+                            aria-label={`قلب ${mg.name} من الأعلى للأسفل`}
+                            style={{
+                              flex: '1 1 0',
+                              minWidth: 0,
+                              justifyContent: 'center',
+                              background: isFlippedV
+                                ? 'linear-gradient(135deg, rgba(124, 92, 255, 0.5), rgba(168, 85, 247, 0.38))'
+                                : 'rgba(124, 92, 255, 0.16)',
+                              border: isFlippedV ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                              color: '#f3e8ff',
+                              borderRadius: '5px',
+                              padding: '3px 4px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '2px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <FlipVertical2 size={10} color="#e9d5ff" />
+                            <span>أعلى↕أسفل</span>
+                          </button>
+                          <button
+                            type="button"
+                            id={`edUngroupBtn_${mg.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleGroupUngroup(mg.id);
+                            }}
+                            title={mg.isUngrouped ? 'تجميع الطبقات المدمجة' : 'فك التجميع (Ungroup)'}
+                            style={{
+                              flex: '1 1 0',
+                              minWidth: 0,
+                              background: mg.isUngrouped
+                                ? 'rgba(239, 68, 68, 0.25)'
+                                : 'rgba(124, 92, 255, 0.3)',
+                              border: mg.isUngrouped
+                                ? '1px solid rgba(239, 68, 68, 0.5)'
+                                : '1px solid #a78bfa',
+                              color: mg.isUngrouped ? '#fca5a5' : '#e9d5ff',
+                              borderRadius: '5px',
+                              padding: '3px 4px',
+                              fontSize: '9.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              textAlign: 'center',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {mg.isUngrouped ? 'تجميع' : 'فك التجميع'}
                           </button>
                         </div>
                       </div>
@@ -8774,6 +10291,30 @@ export default function SvgaAeEditor({
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  handleFlipLayerHorizontally(sh.id, 'canvas');
+                                }}
+                                title="قلب الشكل/النص من الشمال لليمين"
+                                aria-label={`قلب ${sh.name} شمال لليمين`}
+                                style={{ background: 'rgba(124, 92, 255, 0.14)', border: '1px solid rgba(167,139,250,0.4)', color: '#e9d5ff', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                              >
+                                <FlipHorizontal2 size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleFlipLayerVertically(sh.id, 'canvas');
+                                }}
+                                title="قلب الشكل/النص من الأعلى للأسفل"
+                                aria-label={`قلب ${sh.name} أعلى لأسفل`}
+                                style={{ background: 'rgba(124, 92, 255, 0.14)', border: '1px solid rgba(167,139,250,0.4)', color: '#e9d5ff', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                              >
+                                <FlipVertical2 size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setMoveMenuLayerId(moveMenuLayerId === sh.id ? null : sh.id);
                                 }}
                                 title="نقل وترتيب الطبقة في المشروع (Move Layer)"
@@ -8782,13 +10323,13 @@ export default function SvgaAeEditor({
                                   border: moveMenuLayerId === sh.id ? '1px solid #8b5cf6' : '1px solid #2a2a3c',
                                   color: moveMenuLayerId === sh.id ? '#f3e8ff' : '#c4b5fd',
                                   borderRadius: '6px',
-                                  padding: '3px 8px',
+                                  padding: '3px 7px',
                                   fontSize: '10.5px',
                                   fontWeight: 600,
                                   cursor: 'pointer',
                                   display: 'inline-flex',
                                   alignItems: 'center',
-                                  gap: '4px',
+                                  gap: '3px',
                                 }}
                               >
                                 <ArrowUpDown size={11} color="#a78bfa" />
@@ -9522,6 +11063,58 @@ export default function SvgaAeEditor({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                handleFlipLayerHorizontally(al.id, 'canvas');
+                              }}
+                              title="قلب الطبقة الحالية من الشمال لليمين"
+                              aria-label={`قلب ${al.name} شمال لليمين`}
+                              style={{
+                                background: 'rgba(124, 92, 255, 0.16)',
+                                border: '1px solid rgba(167, 139, 250, 0.45)',
+                                color: '#f3e8ff',
+                                borderRadius: '6px',
+                                padding: '4px 7px',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              <FlipHorizontal2 size={11} color="#c084fc" />
+                              <span>↔️</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleFlipLayerVertically(al.id, 'canvas');
+                              }}
+                              title="قلب الطبقة الحالية من الأعلى للأسفل"
+                              aria-label={`قلب ${al.name} أعلى لأسفل`}
+                              style={{
+                                background: 'rgba(124, 92, 255, 0.16)',
+                                border: '1px solid rgba(167, 139, 250, 0.45)',
+                                color: '#f3e8ff',
+                                borderRadius: '6px',
+                                padding: '4px 7px',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              <FlipVertical2 size={11} color="#c084fc" />
+                              <span>↕️</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 handleDuplicateLayer(al.id, 'canvas');
                               }}
                               title="نسخ الطبقة وعكسها من الشمال لليمين (Mirror Left-to-Right)"
@@ -9654,6 +11247,30 @@ export default function SvgaAeEditor({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                handleFlipLayerHorizontally(sl.id, 'canvas');
+                              }}
+                              title={`قلب الطبقة #${sl.displayNum} من الشمال لليمين`}
+                              aria-label={`قلب الطبقة #${sl.displayNum} شمال لليمين`}
+                              style={{ background: 'rgba(124, 92, 255, 0.14)', border: '1px solid rgba(167, 139, 250, 0.4)', color: '#e9d5ff', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                            >
+                              <FlipHorizontal2 size={11} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleFlipLayerVertically(sl.id, 'canvas');
+                              }}
+                              title={`قلب الطبقة #${sl.displayNum} من الأعلى للأسفل`}
+                              aria-label={`قلب الطبقة #${sl.displayNum} أعلى لأسفل`}
+                              style={{ background: 'rgba(124, 92, 255, 0.14)', border: '1px solid rgba(167, 139, 250, 0.4)', color: '#e9d5ff', cursor: 'pointer', padding: '2px 4px', borderRadius: '5px' }}
+                            >
+                              <FlipVertical2 size={11} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setMoveMenuLayerId(moveMenuLayerId === sl.id ? null : sl.id);
                               }}
                               title="نقل وترتيب الطبقة في المشروع (Move Layer)"
@@ -9662,13 +11279,13 @@ export default function SvgaAeEditor({
                                 border: moveMenuLayerId === sl.id ? '1px solid #8b5cf6' : '1px solid #2a2a3c',
                                 color: moveMenuLayerId === sl.id ? '#f3e8ff' : '#c4b5fd',
                                 borderRadius: '6px',
-                                padding: '3px 8px',
+                                padding: '3px 7px',
                                 fontSize: '10.5px',
                                 fontWeight: 600,
                                 cursor: 'pointer',
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '4px',
+                                gap: '3px',
                               }}
                             >
                               <ArrowUpDown size={11} color="#a78bfa" />
@@ -10639,6 +12256,14 @@ export default function SvgaAeEditor({
         {/* CENTER CANVAS STAGE */}
         <div
           ref={stageContainerRef}
+          onWheel={(e) => {
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              setZoom((z) =>
+                e.deltaY < 0 ? Math.min(400, z + 15) : Math.max(25, z - 15)
+              );
+            }
+          }}
           style={{
             flex: 1,
             position: 'relative',
@@ -10646,6 +12271,7 @@ export default function SvgaAeEditor({
             display: 'grid',
             placeItems: 'center',
             overflow: 'auto',
+            padding: isTheaterMode ? '54px 16px 64px' : '12px 12px 54px',
           }}
         >
           <div
@@ -10654,22 +12280,64 @@ export default function SvgaAeEditor({
               height: `${Math.round(baseStageDisplayDims.h * (zoom / 100))}px`,
               transform: `translate(${pan.x}px, ${pan.y}px)`,
               background:
-                'repeating-conic-gradient(#17171e 0 25%, #101015 0 50%) 0 0 / 28px 28px',
+                stageBgMode === 'color'
+                  ? stageBgColor
+                  : stageBgMode === 'media'
+                    ? '#000000'
+                    : 'repeating-conic-gradient(#17171e 0 25%, #101015 0 50%) 0 0 / 28px 28px',
               border: '1px solid rgba(139, 92, 246, 0.38)',
               borderRadius: '6px',
               display: 'grid',
               placeItems: 'center',
               boxShadow: '0 20px 55px rgba(0,0,0,0.75)',
               position: 'relative',
+              overflow: 'hidden',
               transition: 'width 0.12s ease-out, height 0.12s ease-out',
             }}
           >
+            {stageBgMode === 'media' && stageBgUrl && stageBgMediaType === 'image' && (
+              <img
+                ref={stageBgImgRef}
+                src={stageBgUrl}
+                alt={stageBgName || 'خلفية المعاينة'}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: stageBgFit,
+                  opacity: stageBgOpacity / 100,
+                  pointerEvents: 'none',
+                  userSelect: 'none',
+                }}
+              />
+            )}
+            {stageBgMode === 'media' && stageBgUrl && stageBgMediaType === 'video' && (
+              <video
+                ref={stageBgVideoRef}
+                src={stageBgUrl}
+                muted
+                loop
+                playsInline
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: stageBgFit,
+                  opacity: stageBgOpacity / 100,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
             <canvas
               ref={canvasRef}
               onPointerDown={handleCanvasPointerDown}
               onPointerMove={handleCanvasPointerMove}
               onPointerUp={handleCanvasPointerUp}
               style={{
+                position: 'relative',
+                zIndex: 2,
                 width: '100%',
                 height: '100%',
                 display: 'block',
@@ -10689,6 +12357,7 @@ export default function SvgaAeEditor({
                 style={{
                   position: 'absolute',
                   inset: 0,
+                  zIndex: 3,
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
@@ -10706,12 +12375,12 @@ export default function SvgaAeEditor({
                     fontWeight: 600,
                   }}
                 >
-                  Decomposed SVGA 2.0 Stage ({canvasW} × {canvasH})
+                  Universal Animation Stage ({canvasW} × {canvasH})
                 </div>
-                <div style={{ color: '#6e6e82', fontSize: '11px', maxWidth: '280px' }}>
-                  Click <b>Open SVGA</b> (or drop an .svga file here) to inspect & edit all
-                  decomposed layers, or click <b>Add image layer</b> / <b>Shape</b> to build from
-                  scratch.
+                <div style={{ color: '#6e6e82', fontSize: '11px', maxWidth: '310px' }}>
+                  Click <b>فتح أي صيغة</b> (or drop SVGA, PAG, VAP, YYEVA, Lottie, MP4, MOV, WebM, GIF,
+                  WebP, APNG, SVG, ZIP, or PNG/JPG here) to inspect, edit, flip & export to all 15
+                  formats.
                 </div>
               </div>
             )}
@@ -10748,21 +12417,340 @@ export default function SvgaAeEditor({
             onDeleteLayer={handleDeleteLayer}
             onDuplicateLayer={handleDuplicateLayer}
             onFlipLayerHorizontally={handleFlipLayerHorizontally}
+            onFlipLayerVertically={handleFlipLayerVertically}
             onOpenCopyMotionModal={(layerId) => {
               setCopyMotionSearch('');
               setCopyMotionModalLayerId(layerId);
             }}
           />
 
-          {/* Enhanced Zoom & Fit-To-Center Floating Control Widget */}
+          {/* Bottom-left Stage Background & Synced Backdrop Control Pill */}
+          <div
+            id="edStageBackdropBar"
+            style={{
+              position: 'absolute',
+              left: '16px',
+              bottom: '12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              flexWrap: 'wrap',
+              maxWidth: 'calc(100% - 340px)',
+              background: '#111119',
+              border: '1px solid rgba(167, 139, 250, 0.35)',
+              borderRadius: '99px',
+              padding: '4px 10px',
+              fontSize: '11px',
+              color: '#e2e8f0',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.65)',
+              zIndex: 30,
+              direction: 'rtl',
+            }}
+          >
+            <button
+              type="button"
+              id="edUploadStageBgBtn"
+              onClick={() => stageBgInputRef.current?.click()}
+              title="رفع صورة أو فيديو خلفية لمعاينة الهدية ومزامنتها من البداية للنهاية"
+              style={{
+                background:
+                  stageBgMode === 'media'
+                    ? 'linear-gradient(135deg, #7c5cff, #6366f1)'
+                    : 'rgba(124, 92, 255, 0.18)',
+                border: '1px solid rgba(167, 139, 250, 0.55)',
+                borderRadius: '99px',
+                padding: '3px 9px',
+                color: '#f3e8ff',
+                fontWeight: 700,
+                fontSize: '10.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <ImagePlus size={12} color="#e9d5ff" />
+              <span>رفع خلفية</span>
+            </button>
+
+            <button
+              type="button"
+              id="edStageBgCheckerBtn"
+              onClick={() => setStageBgMode('checker')}
+              title="خلفية شفافة"
+              style={{
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                border:
+                  stageBgMode === 'checker'
+                    ? '2px solid #a78bfa'
+                    : '1px solid #3f3f54',
+                background:
+                  'repeating-conic-gradient(#555 0 25%, #222 0 50%) 0 0 / 8px 8px',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            />
+            {(['#000000', '#0f172a', '#ffffff', '#00b140', '#3b0764'] as const).map(
+              (c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => {
+                    setStageBgColor(c);
+                    setStageBgMode('color');
+                  }}
+                  title={`خلفية بلون ${c}`}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    border:
+                      stageBgMode === 'color' && stageBgColor === c
+                        ? '2px solid #a78bfa'
+                        : '1px solid rgba(255,255,255,0.22)',
+                    background: c,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                />
+              )
+            )}
+            <input
+              type="color"
+              id="edStageBgColorInput"
+              value={stageBgColor}
+              onChange={(e) => {
+                setStageBgColor(e.target.value);
+                setStageBgMode('color');
+              }}
+              title="اختيار أي لون مخصص للخلفية"
+              style={{
+                width: '20px',
+                height: '20px',
+                padding: 0,
+                border: '1px solid #3f3f54',
+                borderRadius: '50%',
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            />
+
+            {stageBgMode !== 'checker' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setStageBgControlsExpanded((v) => !v)}
+                  style={{
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid #2d2d42',
+                    borderRadius: '99px',
+                    padding: '2px 8px',
+                    color: '#cbd5e1',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {stageBgControlsExpanded ? 'إخفاء الضبط' : '⚙️ ضبط الخلفية'}
+                </button>
+                <button
+                  type="button"
+                  id="edClearStageBgBtn"
+                  onClick={handleClearStageBg}
+                  title="إزالة الخلفية والعودة للشفافية"
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.16)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    borderRadius: '50%',
+                    width: '20px',
+                    height: '20px',
+                    color: '#fca5a5',
+                    cursor: 'pointer',
+                    display: 'grid',
+                    placeItems: 'center',
+                    padding: 0,
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </>
+            )}
+
+            {stageBgControlsExpanded && stageBgMode !== 'checker' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 8px)',
+                  left: 0,
+                  background: '#13131d',
+                  border: '1px solid rgba(167, 139, 250, 0.45)',
+                  borderRadius: '10px',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  minWidth: '240px',
+                  boxShadow: '0 12px 30px rgba(0,0,0,0.8)',
+                  zIndex: 40,
+                }}
+              >
+                {stageBgMode === 'media' && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <span style={{ fontSize: '10.5px', color: '#cbd5e1' }}>احتواء الخلفية</span>
+                      <div style={{ display: 'inline-flex', gap: '4px' }}>
+                        {(['cover', 'contain'] as const).map((fitVal) => (
+                          <button
+                            key={fitVal}
+                            type="button"
+                            onClick={() => setStageBgFit(fitVal)}
+                            style={{
+                              padding: '2px 7px',
+                              borderRadius: '5px',
+                              border:
+                                stageBgFit === fitVal
+                                  ? '1px solid #a78bfa'
+                                  : '1px solid #2b2b3d',
+                              background:
+                                stageBgFit === fitVal
+                                  ? 'rgba(124, 92, 255, 0.28)'
+                                  : '#181826',
+                              color: '#f3e8ff',
+                              fontSize: '10px',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {fitVal === 'cover' ? 'ملء' : 'احتواء كامل'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '10.5px', color: '#cbd5e1', whiteSpace: 'nowrap' }}>
+                        شفافية {stageBgOpacity}%
+                      </span>
+                      <input
+                        type="range"
+                        min={15}
+                        max={100}
+                        value={stageBgOpacity}
+                        onChange={(e) => setStageBgOpacity(Number(e.target.value))}
+                        style={{ flex: 1, accentColor: '#8b5cf6' }}
+                      />
+                    </div>
+                    {stageBgMediaType === 'video' && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', color: '#a5f3fc', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={stageBgSyncVideo}
+                          onChange={(e) => setStageBgSyncVideo(e.target.checked)}
+                        />
+                        <span>مزامنة فيديو الخلفية مع كل فريم</span>
+                      </label>
+                    )}
+                  </>
+                )}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', color: '#e2e8f0', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    id="edIncludeStageBgInExportChk"
+                    checked={stageBgIncludeInExport}
+                    onChange={(e) => setStageBgIncludeInExport(e.target.checked)}
+                  />
+                  <span>دمج الخلفية داخل الملف عند التصدير</span>
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Theater / Full-Detail Scrubber Strip (from Frame 0 to final frame) */}
+          {isTheaterMode && (
+            <div
+              id="edTheaterScrubberBar"
+              style={{
+                position: 'absolute',
+                top: '10px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '10px',
+                background: 'rgba(17, 17, 25, 0.92)',
+                border: '1px solid rgba(167, 139, 250, 0.5)',
+                borderRadius: '99px',
+                padding: '5px 14px',
+                zIndex: 35,
+                boxShadow: '0 10px 28px rgba(0,0,0,0.75)',
+                direction: 'rtl',
+                minWidth: 'min(520px, 85vw)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setPlaying((p) => !p)}
+                style={{
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '50%',
+                  background: '#7c5cff',
+                  border: 0,
+                  color: '#fff',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                {playing ? <Pause size={12} /> : <Play size={12} />}
+              </button>
+              <span style={{ fontSize: '11px', fontWeight: 700, color: '#e9d5ff', whiteSpace: 'nowrap' }}>
+                F{currentFrame}/{Math.max(0, totalFrames - 1)}
+              </span>
+              <input
+                type="range"
+                aria-label="Full detail frame scrubber"
+                min={0}
+                max={Math.max(0, totalFrames - 1)}
+                value={currentFrame}
+                onChange={(e) => setCurrentFrame(Number(e.target.value))}
+                style={{ flex: 1, accentColor: '#8b5cf6', cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: '11px', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                {(currentFrame / Math.max(1, fps)).toFixed(2)}s / {durationSec.toFixed(2)}s
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsTheaterMode(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid #3f3f54',
+                  borderRadius: '99px',
+                  padding: '2px 9px',
+                  color: '#f1f5f9',
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                إغلاق التكبير (Esc)
+              </button>
+            </div>
+          )}
+
+          {/* Enhanced Zoom, Theater Full-Detail View & Fit-To-Center Floating Control Widget */}
           <div
             style={{
               position: 'absolute',
               right: '16px',
-              bottom: '14px',
+              bottom: '12px',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '6px',
+              gap: '5px',
               background: '#111119',
               border: '1px solid rgba(167, 139, 250, 0.45)',
               borderRadius: '99px',
@@ -10774,6 +12762,35 @@ export default function SvgaAeEditor({
               direction: 'rtl',
             }}
           >
+            <button
+              type="button"
+              id="edTheaterModeBtn"
+              onClick={() => {
+                setIsTheaterMode((v) => !v);
+                setZoom(100);
+                setPan({ x: 0, y: 0 });
+              }}
+              title="عرض كامل مكبر للهدية من البداية للنهاية بدون زحمة القوائم (Esc للرجوع)"
+              style={{
+                background: isTheaterMode
+                  ? 'linear-gradient(135deg, #0ea5e9, #6366f1)'
+                  : 'rgba(56, 189, 248, 0.16)',
+                border: '1px solid rgba(56, 189, 248, 0.5)',
+                borderRadius: '99px',
+                padding: '3px 9px',
+                color: '#e0f2fe',
+                fontWeight: 800,
+                fontSize: '10.5px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isTheaterMode ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+              <span>{isTheaterMode ? 'تصغير المسرح' : 'عرض كامل'}</span>
+            </button>
             <button
               type="button"
               id="edZoomOutBtn"
@@ -10883,7 +12900,7 @@ export default function SvgaAeEditor({
             minWidth: '290px',
             background: '#0d0d13',
             borderLeft: '1px solid #1b1b26',
-            display: 'flex',
+            display: isTheaterMode ? 'none' : 'flex',
             flexDirection: 'column',
             overflowY: 'auto',
             padding: '14px',
@@ -10891,6 +12908,7 @@ export default function SvgaAeEditor({
           }}
         >
           {selectedTarget === 'GROUP_ALL' ||
+          selectedMergedGroup ||
           selectedTarget.startsWith('sprite_') ||
           (effectiveSelectedAssetKey && selectedAssetStat) ||
           selectedAddedLayer ||
@@ -10952,6 +12970,53 @@ export default function SvgaAeEditor({
                     </button>
                   </div>
 
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <button
+                      type="button"
+                      id="edInspectorGroupAllFlipHBtn"
+                      onClick={() => handleFlipLayerHorizontally('GROUP_ALL', 'canvas')}
+                      style={{
+                        padding: '7px 8px',
+                        borderRadius: '7px',
+                        border: docTransform.sx < 0 ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                        background: docTransform.sx < 0 ? 'rgba(124, 92, 255, 0.35)' : 'rgba(124, 92, 255, 0.16)',
+                        color: '#f3e8ff',
+                        fontWeight: 700,
+                        fontSize: '10.5px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                      }}
+                    >
+                      <FlipHorizontal2 size={12} />
+                      <span>↔️ شمال ↔ يمين</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="edInspectorGroupAllFlipVBtn"
+                      onClick={() => handleFlipLayerVertically('GROUP_ALL', 'canvas')}
+                      style={{
+                        padding: '7px 8px',
+                        borderRadius: '7px',
+                        border: docTransform.sy < 0 ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                        background: docTransform.sy < 0 ? 'rgba(124, 92, 255, 0.35)' : 'rgba(124, 92, 255, 0.16)',
+                        color: '#f3e8ff',
+                        fontWeight: 700,
+                        fontSize: '10.5px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                      }}
+                    >
+                      <FlipVertical2 size={12} />
+                      <span>↕️ أعلى ↕ أسفل</span>
+                    </button>
+                  </div>
+
                   <div
                     style={{
                       background: 'rgba(124, 92, 255, 0.08)',
@@ -10963,7 +13028,136 @@ export default function SvgaAeEditor({
                       lineHeight: '1.45',
                     }}
                   >
-                    تتحرك جميع الطبقات وتكبر وتصغر معاً عبر المقابض الأربعة على الكانفاس أو لوحة Transform أدناه دون التأثير على جودة الـ SVGA أو تحويلها لصور.
+                    تتحرك جميع الطبقات وتكبر وتصغر وتنقلب معاً عبر المقابض أو أزرار القلب ولوحة Transform أدناه دون التأثير على جودة الـ SVGA.
+                  </div>
+                </>
+              ) : selectedMergedGroup ? (
+                <>
+                  {/* MERGED GROUP INSPECTOR HEADER */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div
+                      style={{
+                        width: '30px',
+                        height: '30px',
+                        borderRadius: '7px',
+                        background: 'rgba(124, 92, 255, 0.24)',
+                        border: '1px solid rgba(167, 139, 250, 0.5)',
+                        display: 'grid',
+                        placeItems: 'center',
+                        color: '#e9d5ff',
+                      }}
+                    >
+                      <Layers size={15} />
+                    </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          color: '#f2f2f8',
+                          fontSize: '13px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {selectedMergedGroup.name}
+                      </div>
+                      <div style={{ color: '#a78bfa', fontSize: '11px' }}>
+                        {selectedMergedGroup.spriteIds.length} طبقة داخل المجموعة
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleGroupUngroup(selectedMergedGroup.id)}
+                      style={{
+                        background: selectedMergedGroup.isUngrouped
+                          ? 'rgba(239, 68, 68, 0.18)'
+                          : 'rgba(124, 92, 255, 0.25)',
+                        border: '1px solid rgba(167, 139, 250, 0.45)',
+                        color: '#f3e8ff',
+                        borderRadius: '6px',
+                        padding: '3px 8px',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {selectedMergedGroup.isUngrouped ? 'تجميع' : 'فك التجميع'}
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    <button
+                      type="button"
+                      id="edInspectorMergedGroupFlipHBtn"
+                      onClick={() => handleFlipLayerHorizontally(selectedMergedGroup.id, 'canvas')}
+                      style={{
+                        padding: '7px 8px',
+                        borderRadius: '7px',
+                        border:
+                          selectedMergedGroup.transform.sx < 0
+                            ? '1px solid #c084fc'
+                            : '1px solid rgba(167, 139, 250, 0.45)',
+                        background:
+                          selectedMergedGroup.transform.sx < 0
+                            ? 'rgba(124, 92, 255, 0.35)'
+                            : 'rgba(124, 92, 255, 0.16)',
+                        color: '#f3e8ff',
+                        fontWeight: 700,
+                        fontSize: '10.5px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                      }}
+                    >
+                      <FlipHorizontal2 size={12} />
+                      <span>↔️ شمال ↔ يمين</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="edInspectorMergedGroupFlipVBtn"
+                      onClick={() => handleFlipLayerVertically(selectedMergedGroup.id, 'canvas')}
+                      style={{
+                        padding: '7px 8px',
+                        borderRadius: '7px',
+                        border:
+                          selectedMergedGroup.transform.sy < 0
+                            ? '1px solid #c084fc'
+                            : '1px solid rgba(167, 139, 250, 0.45)',
+                        background:
+                          selectedMergedGroup.transform.sy < 0
+                            ? 'rgba(124, 92, 255, 0.35)'
+                            : 'rgba(124, 92, 255, 0.16)',
+                        color: '#f3e8ff',
+                        fontWeight: 700,
+                        fontSize: '10.5px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                      }}
+                    >
+                      <FlipVertical2 size={12} />
+                      <span>↕️ أعلى ↕ أسفل</span>
+                    </button>
+                  </div>
+
+                  <div
+                    style={{
+                      background: 'rgba(124, 92, 255, 0.08)',
+                      border: '1px solid rgba(139, 92, 246, 0.25)',
+                      borderRadius: '7px',
+                      padding: '8px 10px',
+                      fontSize: '11px',
+                      color: '#ddd6fe',
+                      lineHeight: '1.45',
+                    }}
+                  >
+                    يمكنك قلب المجموعة أفقياً وعمودياً أو تحريكها وتكبيرها مباشرة مع حفظ التعديل حتى بعد فك التجميع.
                   </div>
                 </>
               ) : (
@@ -11221,11 +13415,12 @@ export default function SvgaAeEditor({
                       </button>
                     </div>
 
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                       <button
                         type="button"
                         id="edInspectorFlipInPlaceBtn"
                         onClick={() => handleFlipLayerHorizontally(selectedTarget, 'canvas')}
-                        title="عكس الطبقة الحالية نفسها من الشمال لليمين"
+                        title="قلب الطبقة الحالية أفقياً من الشمال لليمين"
                         style={{
                           width: '100%',
                           padding: '6px 8px',
@@ -11247,8 +13442,38 @@ export default function SvgaAeEditor({
                         }}
                       >
                         <FlipHorizontal2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#c084fc' : '#e8e8ee'} />
-                        <span>↔️ عكس الطبقة الحالية من الشمال لليمين</span>
+                        <span>↔️ شمال ↔ يمين</span>
                       </button>
+
+                      <button
+                        type="button"
+                        id="edInspectorFlipVerticalBtn"
+                        onClick={() => handleFlipLayerVertically(selectedTarget, 'canvas')}
+                        title="قلب الطبقة الحالية عمودياً من الأعلى للأسفل"
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          borderRadius: '7px',
+                          border: selectedAddedLayer?.shineConfig?.enabled
+                            ? '1px solid rgba(167, 139, 250, 0.4)'
+                            : '1px solid #28283a',
+                          background: selectedAddedLayer?.shineConfig?.enabled
+                            ? 'rgba(124, 92, 255, 0.16)'
+                            : '#14141e',
+                          color: selectedAddedLayer?.shineConfig?.enabled ? '#e9d5ff' : '#e8e8ee',
+                          fontWeight: 600,
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '5px',
+                        }}
+                      >
+                        <FlipVertical2 size={12} color={selectedAddedLayer?.shineConfig?.enabled ? '#c084fc' : '#e8e8ee'} />
+                        <span>↕️ أعلى ↕ أسفل</span>
+                      </button>
+                    </div>
 
                       {/* ✨ زر إضافة لمعة احترافية على الطبقة الحالية أو تحويل طبقة قناع إلى لمعة */}
                       {!selectedAddedLayer?.shineConfig?.enabled && (
@@ -12413,6 +14638,53 @@ export default function SvgaAeEditor({
                 </div>
               </div>
 
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                <button
+                  type="button"
+                  id="edDocFlipHorizBtn"
+                  onClick={() => handleFlipLayerHorizontally('DOCUMENT', 'canvas')}
+                  style={{
+                    padding: '7px 8px',
+                    borderRadius: '7px',
+                    border: docTransform.sx < 0 ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                    background: docTransform.sx < 0 ? 'rgba(124, 92, 255, 0.35)' : 'rgba(124, 92, 255, 0.14)',
+                    color: '#f3e8ff',
+                    fontWeight: 700,
+                    fontSize: '10.5px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <FlipHorizontal2 size={12} />
+                  <span>↔️ شمال ↔ يمين</span>
+                </button>
+                <button
+                  type="button"
+                  id="edDocFlipVertBtn"
+                  onClick={() => handleFlipLayerVertically('DOCUMENT', 'canvas')}
+                  style={{
+                    padding: '7px 8px',
+                    borderRadius: '7px',
+                    border: docTransform.sy < 0 ? '1px solid #c084fc' : '1px solid rgba(167, 139, 250, 0.45)',
+                    background: docTransform.sy < 0 ? 'rgba(124, 92, 255, 0.35)' : 'rgba(124, 92, 255, 0.14)',
+                    color: '#f3e8ff',
+                    fontWeight: 700,
+                    fontSize: '10.5px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <FlipVertical2 size={12} />
+                  <span>↕️ أعلى ↕ أسفل</span>
+                </button>
+              </div>
+
               <div>
                 <div
                   style={{
@@ -12722,45 +14994,49 @@ export default function SvgaAeEditor({
       </div>
 
       {/* 3. BOTTOM AFTER-EFFECTS TIMELINE PANEL (PER-PROPERTY KEYFRAMES + DRAGGABLE/TRIMMABLE BARS) */}
-      <SvgaTimelinePanel
-        docName={docName}
-        playing={playing}
-        onTogglePlay={() => setPlaying((p) => !p)}
-        currentFrame={currentFrame}
-        totalFrames={totalFrames}
-        fps={fps}
-        durationSec={durationSec}
-        rulerMarks={rulerMarks}
-        rulerRef={rulerRef}
-        onScrubFromClientX={scrubFromClientX}
-        onSetCurrentFrame={setCurrentFrame}
-        selectedTarget={selectedTarget}
-        onSelectTarget={(id, assetKey) => {
-          setSelectedTarget(id);
-          setSelectedAssetKey(assetKey);
-        }}
-        docTrackExpanded={docTrackExpanded}
-        onToggleDocTrackExpanded={() => setDocTrackExpanded((v) => !v)}
-        expandedTimelineLayerIds={expandedTimelineLayerIds}
-        onToggleLayerExpand={toggleTimelineLayerExpand}
-        hiddenLayerIds={hiddenLayerIds}
-        onToggleLayerVisibility={toggleLayerVisibility}
-        onDeleteLayer={handleDeleteLayer}
-        scaleLinked={scaleLinked}
-        onToggleScaleLinked={() => setScaleLinked((v) => !v)}
-        spriteLayers={spriteLayers}
-        addedLayers={addedLayers}
-        shapes={shapes}
-        spriteFrameRanges={spriteFrameRanges}
-        layerKeyframes={layerKeyframes}
-        getEffectiveTransform={getEffectiveTransform}
-        onUpdateLayerTransform={updateLayerTransformById}
-        onTogglePropertyKeyframe={handleTogglePropertyKeyframe}
-        onStartLayerBarDrag={handleStartLayerBarDrag}
-        onSplitOrTrimLayerAtCurrentFrame={handleSplitOrTrimLayerAtCurrentFrame}
-        collapsed={timelineCollapsed}
-        onToggleCollapse={() => setTimelineCollapsed((v) => !v)}
-      />
+      {!isTheaterMode && (
+        <SvgaTimelinePanel
+          docName={docName}
+          playing={playing}
+          onTogglePlay={() => setPlaying((p) => !p)}
+          currentFrame={currentFrame}
+          totalFrames={totalFrames}
+          fps={fps}
+          durationSec={durationSec}
+          rulerMarks={rulerMarks}
+          rulerRef={rulerRef}
+          onScrubFromClientX={scrubFromClientX}
+          onSetCurrentFrame={setCurrentFrame}
+          selectedTarget={selectedTarget}
+          onSelectTarget={(id, assetKey) => {
+            setSelectedTarget(id);
+            setSelectedAssetKey(assetKey);
+          }}
+          docTrackExpanded={docTrackExpanded}
+          onToggleDocTrackExpanded={() => setDocTrackExpanded((v) => !v)}
+          expandedTimelineLayerIds={expandedTimelineLayerIds}
+          onToggleLayerExpand={toggleTimelineLayerExpand}
+          hiddenLayerIds={hiddenLayerIds}
+          onToggleLayerVisibility={toggleLayerVisibility}
+          onDeleteLayer={handleDeleteLayer}
+          scaleLinked={scaleLinked}
+          onToggleScaleLinked={() => setScaleLinked((v) => !v)}
+          spriteLayers={spriteLayers}
+          addedLayers={addedLayers}
+          shapes={shapes}
+          spriteFrameRanges={spriteFrameRanges}
+          layerKeyframes={layerKeyframes}
+          getEffectiveTransform={getEffectiveTransform}
+          onUpdateLayerTransform={updateLayerTransformById}
+          onTogglePropertyKeyframe={handleTogglePropertyKeyframe}
+          onStartLayerBarDrag={handleStartLayerBarDrag}
+          onSplitOrTrimLayerAtCurrentFrame={handleSplitOrTrimLayerAtCurrentFrame}
+          onFlipLayerHorizontally={handleFlipLayerHorizontally}
+          onFlipLayerVertically={handleFlipLayerVertically}
+          collapsed={timelineCollapsed}
+          onToggleCollapse={() => setTimelineCollapsed((v) => !v)}
+        />
+      )}
 
       {/* NEW TEXT LAYER MODAL */}
       {newTextModalOpen && (
@@ -13800,6 +16076,1262 @@ export default function SvgaAeEditor({
           </div>
         </div>
       )}
+
+      {/* AE STUDIO INTEGRATED: قائمة تحريك المشروع ودمج الملفات */}
+      {aeComposerOpen &&
+        (() => {
+          const primaryId = getPrimaryTargetId();
+          const primaryTr = getEffectiveTransform(primaryId, undefined, currentFrame);
+          const secondaryGroups = mergedGroups.filter((g) => g.id !== primaryId);
+          const nonMaskAdded = addedLayers.filter((l) => !l.maskConfig?.isMaskSlot);
+          const maskLayers = addedLayers.filter((l) => l.maskConfig?.isMaskSlot);
+          const totalSecondaryCount = secondaryGroups.length + nonMaskAdded.length;
+
+          return (
+            <div
+              id="edAeComposerPanel"
+              style={{
+                position: 'fixed',
+                top: '56px',
+                right: '16px',
+                width: '410px',
+                maxWidth: 'calc(100vw - 32px)',
+                maxHeight: 'calc(100vh - 80px)',
+                zIndex: 9990,
+                background: 'linear-gradient(160deg, rgba(16, 15, 26, 0.98), rgba(10, 10, 17, 0.99))',
+                border: '1px solid rgba(168, 85, 247, 0.5)',
+                borderRadius: '14px',
+                boxShadow: '0 24px 60px rgba(0, 0, 0, 0.85)',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                direction: 'rtl',
+                color: '#f1f5f9',
+              }}
+            >
+              {/* Header */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '10px 14px',
+                  background: 'rgba(139, 92, 246, 0.14)',
+                  borderBottom: '1px solid rgba(139, 92, 246, 0.25)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span
+                    style={{
+                      width: '26px',
+                      height: '26px',
+                      borderRadius: '7px',
+                      background: 'linear-gradient(135deg, #8b5cf6, #6366f1)',
+                      display: 'grid',
+                      placeItems: 'center',
+                      fontSize: '13px',
+                    }}
+                  >
+                    🎯
+                  </span>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: '12.5px', color: '#f8fafc' }}>
+                      قائمة تحريك المشروع ودمج الملفات (AE)
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#a78bfa' }}>
+                      مقاس المشروع {canvasW} × {canvasH} · فريم {currentFrame}/{Math.max(0, totalFrames - 1)}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAeComposerOpen(false)}
+                  style={{
+                    width: '26px',
+                    height: '26px',
+                    borderRadius: '7px',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    background: 'rgba(255,255,255,0.06)',
+                    color: '#cbd5e1',
+                    cursor: 'pointer',
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gap: '5px',
+                  padding: '8px 10px',
+                  borderBottom: '1px solid rgba(255,255,255,0.08)',
+                  background: '#0c0c14',
+                }}
+              >
+                {(
+                  [
+                    { id: 'primary', label: '🎯 الأساسي' },
+                    { id: 'secondary', label: `⚡ الطبقات (${totalSecondaryCount})` },
+                    { id: 'masks', label: `🎭 الأقنعة (${maskLayers.length})` },
+                    { id: 'stack', label: '🗂️ الترتيب' },
+                  ] as const
+                ).map((t) => {
+                  const active = aeComposerTab === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      id={`aeComposerTab_${t.id}`}
+                      onClick={() => setAeComposerTab(t.id)}
+                      style={{
+                        padding: '6px 4px',
+                        borderRadius: '7px',
+                        fontSize: '10.5px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        border: active ? '1px solid #a855f7' : '1px solid rgba(255,255,255,0.08)',
+                        background: active
+                          ? 'linear-gradient(135deg, rgba(168, 85, 247, 0.34), rgba(99, 102, 241, 0.22))'
+                          : '#13131f',
+                        color: active ? '#f5f3ff' : '#94a3b8',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {aeComposerStatus && (
+                <div
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '10.5px',
+                    background: 'rgba(124, 92, 255, 0.14)',
+                    borderBottom: '1px solid rgba(167, 139, 250, 0.25)',
+                    color: '#ddd6fe',
+                    fontWeight: 600,
+                  }}
+                >
+                  {aeComposerStatus}
+                </div>
+              )}
+
+              {/* Body */}
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                }}
+              >
+                {/* TAB 1: PRIMARY PROJECT TRANSFORM & AE KEYFRAMING */}
+                {aeComposerTab === 'primary' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div
+                      style={{
+                        padding: '10px',
+                        borderRadius: '9px',
+                        background: '#141422',
+                        border: '1px solid rgba(167, 139, 250, 0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: 700, fontSize: '11.5px', color: '#e9d5ff' }}>
+                          🎬 الملف الأساسي: {docName}
+                        </span>
+                        <div style={{ display: 'flex', gap: '5px' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTarget(primaryId);
+                              setSelectedAssetKey(null);
+                            }}
+                            style={{
+                              padding: '3px 8px',
+                              borderRadius: '6px',
+                              border: '1px solid rgba(167, 139, 250, 0.45)',
+                              background: 'rgba(139, 92, 246, 0.22)',
+                              color: '#e9d5ff',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            تحديد على المسرح
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updateLayerTransformById(primaryId, null, { ...DEFAULT_TRANSFORM }, 'تصفير التحويل')}
+                            style={{
+                              padding: '3px 7px',
+                              borderRadius: '6px',
+                              border: '1px solid rgba(255,255,255,0.12)',
+                              background: '#1a1a2a',
+                              color: '#cbd5e1',
+                              fontSize: '10px',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                            }}
+                          >
+                            <RotateCcw size={10} /> تصفير
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px', fontSize: '10.5px' }}>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span style={{ color: '#94a3b8' }}>إزاحة X (px)</span>
+                          <input
+                            type="number"
+                            value={Math.round(primaryTr.x)}
+                            onChange={(e) =>
+                              updateLayerTransformById(primaryId, null, { x: Number(e.target.value) || 0 }, 'تحريك الأساسي X')
+                            }
+                            style={{
+                              background: '#0c0c14',
+                              border: '1px solid #2b2b42',
+                              borderRadius: '6px',
+                              padding: '5px 7px',
+                              color: '#fff',
+                              textAlign: 'left',
+                            }}
+                          />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span style={{ color: '#94a3b8' }}>إزاحة Y (px)</span>
+                          <input
+                            type="number"
+                            value={Math.round(primaryTr.y)}
+                            onChange={(e) =>
+                              updateLayerTransformById(primaryId, null, { y: Number(e.target.value) || 0 }, 'تحريك الأساسي Y')
+                            }
+                            style={{
+                              background: '#0c0c14',
+                              border: '1px solid #2b2b42',
+                              borderRadius: '6px',
+                              padding: '5px 7px',
+                              color: '#fff',
+                              textAlign: 'left',
+                            }}
+                          />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span style={{ color: '#94a3b8' }}>الحجم العام (%)</span>
+                          <input
+                            type="number"
+                            min="5"
+                            max="500"
+                            value={Math.round(primaryTr.zoom ?? 100)}
+                            onChange={(e) => {
+                              const z = Math.max(5, Number(e.target.value) || 100);
+                              updateLayerTransformById(primaryId, null, { zoom: z }, 'تكبير/تصغير الأساسي');
+                            }}
+                            style={{
+                              background: '#0c0c14',
+                              border: '1px solid #2b2b42',
+                              borderRadius: '6px',
+                              padding: '5px 7px',
+                              color: '#fff',
+                              textAlign: 'left',
+                            }}
+                          />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span style={{ color: '#94a3b8' }}>الدوران (°)</span>
+                          <input
+                            type="number"
+                            value={Math.round(primaryTr.rotation)}
+                            onChange={(e) =>
+                              updateLayerTransformById(primaryId, null, { rotation: Number(e.target.value) || 0 }, 'تدوير الأساسي')
+                            }
+                            style={{
+                              background: '#0c0c14',
+                              border: '1px solid #2b2b42',
+                              borderRadius: '6px',
+                              padding: '5px 7px',
+                              color: '#fff',
+                              textAlign: 'left',
+                            }}
+                          />
+                        </label>
+                      </div>
+
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '10.5px' }}>
+                        <span style={{ color: '#94a3b8' }}>الشفافية: {Math.round(primaryTr.opacity)}%</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={Math.round(primaryTr.opacity)}
+                          onChange={(e) =>
+                            updateLayerTransformById(primaryId, null, { opacity: Number(e.target.value) }, 'شفافية الأساسي')
+                          }
+                          style={{ flex: 1, accentColor: '#a855f7' }}
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePropertyKeyframe(primaryId, 'all', currentFrame)}
+                        style={{
+                          width: '100%',
+                          padding: '7px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(251, 191, 36, 0.5)',
+                          background: 'rgba(251, 191, 36, 0.14)',
+                          color: '#fde68a',
+                          fontWeight: 700,
+                          fontSize: '11px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <Diamond size={12} color="#fbbf24" />
+                        <span>إضافة / تبديل Keyframe تحريك عند الفريم {currentFrame}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: SECONDARY FILES & LAYERS */}
+                {aeComposerTab === 'secondary' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                    <div
+                      style={{
+                        padding: '9px',
+                        borderRadius: '9px',
+                        background: '#141422',
+                        border: '1px solid rgba(56, 189, 248, 0.28)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '7px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                        <span style={{ fontSize: '10.5px', color: '#bae6fd', fontWeight: 700 }}>
+                          موضع الملف الثاني عند الرفع:
+                        </span>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          {(['above', 'below'] as const).map((pos) => (
+                            <button
+                              key={pos}
+                              type="button"
+                              onClick={() => setAeSecondaryZOrder(pos)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: aeSecondaryZOrder === pos ? '1px solid #38bdf8' : '1px solid #2a2a40',
+                                background: aeSecondaryZOrder === pos ? 'rgba(56, 189, 248, 0.24)' : '#0f0f1a',
+                                color: aeSecondaryZOrder === pos ? '#e0f2fe' : '#94a3b8',
+                              }}
+                            >
+                              {pos === 'above' ? '⬆️ أمام الأساسي' : '⬇️ خلف الأساسي'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        id="edAeComposerAddSecondaryBtn"
+                        onClick={() => aeSecondaryFileInputRef.current?.click()}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          borderRadius: '8px',
+                          border: '1px solid rgba(167, 139, 250, 0.55)',
+                          background: 'linear-gradient(135deg, rgba(124, 92, 255, 0.34), rgba(56, 189, 248, 0.22))',
+                          color: '#fff',
+                          fontWeight: 800,
+                          fontSize: '11.5px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                        }}
+                      >
+                        <Upload size={13} />
+                        <span>+ إضافة ملف ثاني (SVGA, PAG, VAP, MP4, GIF, Lottie, PNG)</span>
+                      </button>
+                    </div>
+
+                    {secondaryGroups.map((mg) => {
+                      const tr = mg.transform;
+                      const abovePrimary = isTargetAbovePrimary(mg.spriteIds);
+                      const isSel = selectedTarget === mg.id;
+                      return (
+                        <div
+                          key={mg.id}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            background: isSel ? 'rgba(139, 92, 246, 0.16)' : '#12121d',
+                            border: isSel ? '1px solid #a855f7' : '1px solid #26263a',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '6px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTarget(mg.id);
+                                setSelectedAssetKey(null);
+                              }}
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: '#f1f5f9',
+                                fontWeight: 700,
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                textAlign: 'right',
+                                flex: 1,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {mg.name} ({mg.spriteIds.length} طبقة)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSetAeTargetPositionRelativeToPrimary(
+                                  mg.spriteIds,
+                                  abovePrimary ? 'below' : 'above'
+                                )
+                              }
+                              style={{
+                                padding: '2px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                background: 'rgba(56, 189, 248, 0.15)',
+                                color: '#bae6fd',
+                                fontSize: '9.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {abovePrimary ? 'أمام الأساسي ↕' : 'خلف الأساسي ↕'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePropertyKeyframe(mg.id, 'all', currentFrame)}
+                              title="إضافة Keyframe عند الإطار الحالي"
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(251, 191, 36, 0.45)',
+                                background: 'rgba(251, 191, 36, 0.14)',
+                                color: '#fde68a',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Diamond size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLayer(mg.id)}
+                              title="حذف الملف المدمج"
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(248, 113, 113, 0.4)',
+                                background: 'rgba(248, 113, 113, 0.14)',
+                                color: '#fca5a5',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', fontSize: '10px' }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>X</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.x)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(mg.id, null, { x: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>Y</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.y)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(mg.id, null, { y: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>حجم %</span>
+                              <input
+                                type="number"
+                                min="5"
+                                max="500"
+                                value={Math.round(tr.zoom ?? 100)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(mg.id, null, { zoom: Math.max(5, Number(e.target.value) || 100) })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>دوران °</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.rotation)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(mg.id, null, { rotation: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {nonMaskAdded.map((al) => {
+                      const tr = getEffectiveTransform(al.id, al.assetKey, currentFrame);
+                      const abovePrimary = isTargetAbovePrimary([al.id]);
+                      const isHidden = hiddenLayerIds.has(al.id);
+                      const isSel = selectedTarget === al.id;
+                      return (
+                        <div
+                          key={al.id}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            background: isSel ? 'rgba(139, 92, 246, 0.16)' : '#12121d',
+                            border: isSel ? '1px solid #a855f7' : '1px solid #26263a',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '6px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                            <img
+                              src={al.dataUrl}
+                              alt={al.name}
+                              style={{ width: '26px', height: '26px', borderRadius: '5px', objectFit: 'cover', background: '#09090d' }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTarget(al.id);
+                                setSelectedAssetKey(null);
+                              }}
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: '#f1f5f9',
+                                fontWeight: 700,
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                textAlign: 'right',
+                                flex: 1,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {al.name}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSetAeTargetPositionRelativeToPrimary(
+                                  [al.id],
+                                  abovePrimary ? 'below' : 'above'
+                                )
+                              }
+                              style={{
+                                padding: '2px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                background: 'rgba(56, 189, 248, 0.15)',
+                                color: '#bae6fd',
+                                fontSize: '9.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {abovePrimary ? 'أمام الأساسي ↕' : 'خلف الأساسي ↕'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePropertyKeyframe(al.id, 'all', currentFrame)}
+                              title="Keyframe"
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(251, 191, 36, 0.45)',
+                                background: 'rgba(251, 191, 36, 0.14)',
+                                color: '#fde68a',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Diamond size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleLayerVisibility(al.id)}
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid #2b2b42',
+                                background: '#171726',
+                                color: isHidden ? '#64748b' : '#cbd5e1',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isHidden ? <EyeOff size={10} /> : <Eye size={10} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLayer(al.id)}
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(248, 113, 113, 0.4)',
+                                background: 'rgba(248, 113, 113, 0.14)',
+                                color: '#fca5a5',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', fontSize: '10px' }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>X</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.x)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(al.id, al.assetKey, { x: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>Y</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.y)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(al.id, al.assetKey, { y: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>حجم %</span>
+                              <input
+                                type="number"
+                                min="5"
+                                max="500"
+                                value={Math.round(tr.zoom ?? 100)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(al.id, al.assetKey, { zoom: Math.max(5, Number(e.target.value) || 100) })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>دوران °</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.rotation)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(al.id, al.assetKey, { rotation: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {totalSecondaryCount === 0 && (
+                      <div
+                        style={{
+                          padding: '18px',
+                          borderRadius: '8px',
+                          border: '1px dashed #2e2e46',
+                          textAlign: 'center',
+                          fontSize: '11px',
+                          color: '#94a3b8',
+                        }}
+                      >
+                        لا توجد ملفات ثانية مدمجة بعد — اضغط الزر أعلاه لرفع أي ملف أو صورة وتحريكها وتصميمها على التايم لاين.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: DYNAMIC MASKS IN AFTER EFFECTS */}
+                {aeComposerTab === 'masks' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                    <div
+                      style={{
+                        padding: '9px',
+                        borderRadius: '9px',
+                        background: '#141422',
+                        border: '1px solid rgba(168, 85, 247, 0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '7px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '10.5px', color: '#e9d5ff', fontWeight: 700 }}>
+                          عمق القناع الجديد:
+                        </span>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          {(['below', 'above'] as const).map((pos) => (
+                            <button
+                              key={pos}
+                              type="button"
+                              onClick={() => setAeMaskPlacement(pos)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: aeMaskPlacement === pos ? '1px solid #a855f7' : '1px solid #2a2a40',
+                                background: aeMaskPlacement === pos ? 'rgba(168, 85, 247, 0.25)' : '#0f0f1a',
+                                color: aeMaskPlacement === pos ? '#f3e8ff' : '#94a3b8',
+                              }}
+                            >
+                              {pos === 'below' ? '⬇️ خلف الأساسي' : '⬆️ أمام الأساسي'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                        <button
+                          type="button"
+                          id="edAeComposerAddImgMaskBtn"
+                          onClick={() => void handleAddAeMaskSlot('img')}
+                          style={{
+                            padding: '7px',
+                            borderRadius: '7px',
+                            border: '1px solid rgba(192, 132, 252, 0.45)',
+                            background: 'rgba(139, 92, 246, 0.24)',
+                            color: '#f3e8ff',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          + قناع صورة
+                        </button>
+                        <button
+                          type="button"
+                          id="edAeComposerAddTxtMaskBtn"
+                          onClick={() => void handleAddAeMaskSlot('txt')}
+                          style={{
+                            padding: '7px',
+                            borderRadius: '7px',
+                            border: '1px solid rgba(56, 189, 248, 0.45)',
+                            background: 'rgba(56, 189, 248, 0.18)',
+                            color: '#e0f2fe',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          + قناع اسم
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => aeMaskSvgaFrameInputRef.current?.click()}
+                        style={{
+                          width: '100%',
+                          padding: '6px',
+                          borderRadius: '7px',
+                          border: '1px solid rgba(16, 185, 129, 0.45)',
+                          background: 'rgba(16, 185, 129, 0.16)',
+                          color: '#a7f3d0',
+                          fontWeight: 700,
+                          fontSize: '10.5px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        🟣 رفع ملف SVGA في خانة الأقنعة (إطار / هدية)
+                      </button>
+                    </div>
+
+                    {maskLayers.map((ml) => {
+                      const mc = ml.maskConfig!;
+                      const tr = getEffectiveTransform(ml.id, ml.assetKey, currentFrame);
+                      const abovePrimary = isTargetAbovePrimary([ml.id]);
+                      const isSel = selectedTarget === ml.id;
+                      const isColored = mc.fillColor && mc.fillColor !== 'transparent';
+                      return (
+                        <div
+                          key={ml.id}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            background: isSel ? 'rgba(168, 85, 247, 0.16)' : '#12121d',
+                            border: isSel ? '1px solid #a855f7' : '1px solid #26263a',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '7px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '5px' }}>
+                            <img
+                              src={ml.dataUrl}
+                              alt={ml.name}
+                              style={{ width: '28px', height: '28px', borderRadius: '6px', objectFit: 'contain', background: '#09090d' }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTarget(ml.id);
+                                setSelectedAssetKey(null);
+                              }}
+                              style={{
+                                background: 0,
+                                border: 0,
+                                color: '#f8fafc',
+                                fontWeight: 700,
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                textAlign: 'right',
+                                flex: 1,
+                              }}
+                            >
+                              {ml.name} ({ml.width}×{ml.height})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSetAeTargetPositionRelativeToPrimary(
+                                  [ml.id],
+                                  abovePrimary ? 'below' : 'above'
+                                )
+                              }
+                              style={{
+                                padding: '2px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                background: 'rgba(56, 189, 248, 0.16)',
+                                color: '#bae6fd',
+                                fontSize: '9.5px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {abovePrimary ? 'أمام الأساسي ↕' : 'خلف الأساسي ↕'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePropertyKeyframe(ml.id, 'all', currentFrame)}
+                              title="Keyframe"
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(251, 191, 36, 0.45)',
+                                background: 'rgba(251, 191, 36, 0.14)',
+                                color: '#fde68a',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Diamond size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteLayer(ml.id)}
+                              style={{
+                                padding: '3px 6px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(248, 113, 113, 0.4)',
+                                background: 'rgba(248, 113, 113, 0.14)',
+                                color: '#fca5a5',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+
+                          {/* Shape + PNG Silhouette + Color/Transparent */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                            <select
+                              value={mc.shapePreset}
+                              onChange={(e) =>
+                                void handleUpdateAeMaskLayer(ml.id, {
+                                  shapePreset: e.target.value as AeMaskShapePreset,
+                                })
+                              }
+                              style={{
+                                flex: 1,
+                                minWidth: '100px',
+                                background: '#0b0b12',
+                                border: '1px solid #2d2d44',
+                                borderRadius: '5px',
+                                padding: '4px 6px',
+                                color: '#f1f5f9',
+                                fontSize: '10px',
+                              }}
+                            >
+                              <option value="circle">⭕ دائرة</option>
+                              <option value="roundedRect">▢ مستطيل دائري</option>
+                              <option value="rect">▭ مستطيل</option>
+                              <option value="shield">🛡️ درع</option>
+                              <option value="customImage">🎭 PNG مخصص</option>
+                            </select>
+
+                            <label
+                              style={{
+                                padding: '4px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid rgba(167, 139, 250, 0.4)',
+                                background: 'rgba(139, 92, 246, 0.18)',
+                                color: '#ddd6fe',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              🎭 شكل PNG
+                              <input
+                                type="file"
+                                accept="image/*"
+                                hidden
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  e.target.value = '';
+                                  if (f) handleUploadAeMaskFile(ml.id, 'silhouette', f);
+                                }}
+                              />
+                            </label>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void handleUpdateAeMaskLayer(ml.id, {
+                                  fillColor: isColored ? 'transparent' : '#ec4899',
+                                })
+                              }
+                              style={{
+                                padding: '4px 7px',
+                                borderRadius: '5px',
+                                border: '1px solid #2d2d44',
+                                background: isColored ? mc.fillColor : '#1b1b2b',
+                                color: '#fff',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {isColored ? 'لون' : 'شفاف'}
+                            </button>
+
+                            <input
+                              type="color"
+                              value={isColored ? mc.fillColor : '#ec4899'}
+                              onChange={(e) =>
+                                void handleUpdateAeMaskLayer(ml.id, { fillColor: e.target.value })
+                              }
+                              style={{ width: '24px', height: '24px', border: 0, background: 'transparent', cursor: 'pointer' }}
+                            />
+                          </div>
+
+                          {/* Upload photo or edit text inside mask */}
+                          {mc.srcType === 'img' ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <label
+                                style={{
+                                  flex: 1,
+                                  padding: '5px 8px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(16, 185, 129, 0.4)',
+                                  background: 'rgba(16, 185, 129, 0.14)',
+                                  color: '#a7f3d0',
+                                  fontSize: '10.5px',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  textAlign: 'center',
+                                }}
+                              >
+                                🖼️ {mc.photoDataUrl ? 'تغيير الصورة داخل القناع' : 'رفع صورة داخل القناع'}
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  hidden
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    e.target.value = '';
+                                    if (f) handleUploadAeMaskFile(ml.id, 'photo', f);
+                                  }}
+                                />
+                              </label>
+                              <select
+                                value={mc.fitMode || 'cover'}
+                                onChange={(e) =>
+                                  void handleUpdateAeMaskLayer(ml.id, {
+                                    fitMode: e.target.value as 'cover' | 'contain' | 'fitXY',
+                                  })
+                                }
+                                style={{
+                                  background: '#0b0b12',
+                                  border: '1px solid #2d2d44',
+                                  borderRadius: '5px',
+                                  padding: '4px 6px',
+                                  color: '#e2e8f0',
+                                  fontSize: '10px',
+                                }}
+                              >
+                                <option value="cover">Cover</option>
+                                <option value="contain">Contain</option>
+                                <option value="fitXY">FitXY</option>
+                              </select>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <input
+                                type="text"
+                                value={mc.textContent || ''}
+                                placeholder="اكتب النص داخل القناع..."
+                                onChange={(e) =>
+                                  void handleUpdateAeMaskLayer(ml.id, { textContent: e.target.value })
+                                }
+                                style={{
+                                  flex: 1,
+                                  background: '#0b0b12',
+                                  border: '1px solid #2d2d44',
+                                  borderRadius: '5px',
+                                  padding: '4px 7px',
+                                  color: '#fff',
+                                  fontSize: '11px',
+                                }}
+                              />
+                              <input
+                                type="color"
+                                value={mc.textColor || '#fde047'}
+                                onChange={(e) =>
+                                  void handleUpdateAeMaskLayer(ml.id, { textColor: e.target.value })
+                                }
+                                style={{ width: '24px', height: '24px', border: 0, background: 'transparent', cursor: 'pointer' }}
+                              />
+                            </div>
+                          )}
+
+                          {/* Geometry X, Y, W, H */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', fontSize: '10px' }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>X</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.x)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(ml.id, ml.assetKey, { x: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>Y</span>
+                              <input
+                                type="number"
+                                value={Math.round(tr.y)}
+                                onChange={(e) =>
+                                  updateLayerTransformById(ml.id, ml.assetKey, { y: Number(e.target.value) || 0 })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>W</span>
+                              <input
+                                type="number"
+                                min="16"
+                                value={ml.width}
+                                onChange={(e) =>
+                                  void handleUpdateAeMaskLayer(ml.id, {}, { width: Number(e.target.value) || ml.width })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span style={{ color: '#94a3b8' }}>H</span>
+                              <input
+                                type="number"
+                                min="16"
+                                value={ml.height}
+                                onChange={(e) =>
+                                  void handleUpdateAeMaskLayer(ml.id, {}, { height: Number(e.target.value) || ml.height })
+                                }
+                                style={{ background: '#0b0b12', border: '1px solid #28283e', borderRadius: '5px', padding: '3px 5px', color: '#fff' }}
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {maskLayers.length === 0 && (
+                      <div
+                        style={{
+                          padding: '16px',
+                          borderRadius: '8px',
+                          border: '1px dashed #2e2e46',
+                          textAlign: 'center',
+                          fontSize: '11px',
+                          color: '#94a3b8',
+                        }}
+                      >
+                        لا توجد أقنعة مضافة في AE — اضغط <b>+ قناع صورة</b> أو <b>+ قناع اسم</b> لإضافة قناع وتحريكه على التايم لاين.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 4: UNIFIED Z-ORDER STACK */}
+                {aeComposerTab === 'stack' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ fontSize: '10.5px', color: '#94a3b8', marginBottom: '2px' }}>
+                      الترتيب البصري من الأعلى (أمام) إلى الأسفل (خلف):
+                    </div>
+                    {[...effectiveLayerOrder].reverse().map((lid) => {
+                      const isPrimarySprite = getPrimarySpriteIdSet().has(lid);
+                      const al = addedLayers.find((a) => a.id === lid);
+                      const sh = shapes.find((s) => s.id === lid);
+                      let label = lid;
+                      if (lid.startsWith('sprite_')) {
+                        const sIdx = Number(lid.replace('sprite_', ''));
+                        const sp = movie.sp[sIdx];
+                        label = `${isPrimarySprite ? '🎯' : '⚡'} #${movie.sp.length - sIdx} · ${sp?.key || lid}`;
+                      } else if (al) {
+                        label = `${al.maskConfig?.isMaskSlot ? '🎭' : '🖼️'} ${al.name}`;
+                      } else if (sh) {
+                        label = `◆ ${sh.name}`;
+                      }
+                      const isSel = selectedTarget === lid;
+                      const isHidden = hiddenLayerIds.has(lid);
+                      return (
+                        <div
+                          key={lid}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '5px',
+                            padding: '5px 8px',
+                            borderRadius: '7px',
+                            background: isSel ? 'rgba(139, 92, 246, 0.2)' : '#12121d',
+                            border: isSel ? '1px solid #a855f7' : '1px solid #242438',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTarget(lid);
+                              setSelectedAssetKey(null);
+                            }}
+                            style={{
+                              flex: 1,
+                              background: 0,
+                              border: 0,
+                              color: isHidden ? '#64748b' : '#f1f5f9',
+                              fontSize: '10.5px',
+                              fontWeight: 600,
+                              textAlign: 'right',
+                              cursor: 'pointer',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {label}
+                          </button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveLayer(lid, 'top')}
+                              title="أعلى الكل"
+                              style={{ padding: '3px', borderRadius: '4px', border: '1px solid #2a2a40', background: '#171726', color: '#cbd5e1', cursor: 'pointer' }}
+                            >
+                              <ArrowUpToLine size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveLayer(lid, 'up')}
+                              title="للأعلى"
+                              style={{ padding: '3px', borderRadius: '4px', border: '1px solid #2a2a40', background: '#171726', color: '#cbd5e1', cursor: 'pointer' }}
+                            >
+                              <ChevronUp size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveLayer(lid, 'down')}
+                              title="للأسفل"
+                              style={{ padding: '3px', borderRadius: '4px', border: '1px solid #2a2a40', background: '#171726', color: '#cbd5e1', cursor: 'pointer' }}
+                            >
+                              <ChevronDown size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveLayer(lid, 'bottom')}
+                              title="أسفل الكل"
+                              style={{ padding: '3px', borderRadius: '4px', border: '1px solid #2a2a40', background: '#171726', color: '#cbd5e1', cursor: 'pointer' }}
+                            >
+                              <ArrowDownToLine size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleLayerVisibility(lid)}
+                              style={{ padding: '3px', borderRadius: '4px', border: '1px solid #2a2a40', background: '#171726', color: isHidden ? '#64748b' : '#cbd5e1', cursor: 'pointer' }}
+                            >
+                              {isHidden ? <EyeOff size={10} /> : <Eye size={10} />}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }

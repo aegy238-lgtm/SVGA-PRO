@@ -247,6 +247,16 @@ export default function App() {
     }
   }, [composerPanelOpen]);
 
+  useEffect(() => {
+    (window as any).__openComposerMenu = () => setComposerPanelOpen(true);
+    const onOpenMasksTab = () => setComposerPanelOpen(true);
+    window.addEventListener('opencomposermaskstab', onOpenMasksTab);
+    return () => {
+      window.removeEventListener('opencomposermaskstab', onOpenMasksTab);
+      if ((window as any).__openComposerMenu) delete (window as any).__openComposerMenu;
+    };
+  }, []);
+
   // Sync active language to Gift Studio embedded iframe
   useEffect(() => {
     const frame = document.getElementById('giftsStudioFrame') as HTMLIFrameElement | null;
@@ -1394,32 +1404,7 @@ export default function App() {
     }
   }, [giftStudioAttemptStatus, effectiveIsPro]);
 
-  const renderAdminHiddenBadge = (viewId: string) => {
-    if (!(hasAdminAccess && adminPreviewRole === 'actual')) return null;
-    if (!isNavbarFeatureHiddenFromRegularUsers(viewId, settings)) return null;
-    return (
-      <span
-        style={{
-          fontSize: '8.5px',
-          fontWeight: 800,
-          padding: '0px 4px',
-          borderRadius: '99px',
-          background: 'rgba(239, 68, 68, 0.24)',
-          border: '1px solid rgba(239, 68, 68, 0.6)',
-          color: '#fca5a5',
-          whiteSpace: 'nowrap',
-          lineHeight: '13px',
-        }}
-        title={
-          isAr
-            ? 'مخفي عن المستخدمين (يظهر لحساب المدير فقط)'
-            : 'Hidden from users (visible to Admin only)'
-        }
-      >
-        🚫
-      </span>
-    );
-  };
+  const renderAdminHiddenBadge = (_viewId: string) => null;
 
   const renderNavProBadge = (status: ReturnType<typeof getFeatureFreeAttemptsStatus>) => {
     if (!status.rule.isPro) return null;
@@ -3114,6 +3099,14 @@ export default function App() {
         }}
         onRemoveSecondaryFile={(layerId) => {
           (window as any).__removeSecondaryOverlayFile?.(layerId);
+        }}
+        onOpenEdgeFeather={() => setEdgeFeatherModalOpen(true)}
+        onOpenChromaKey={() => setChromaKeyModalOpen(true)}
+        onOpenWatermark={handleOpenWatermarkModal}
+        onOpenBatchOps={() => {
+          const latest = (window as any).__getMotionAssets?.() || {};
+          setMotionAssetsMap({ ...latest });
+          setBatchModalOpen(true);
         }}
       />
 

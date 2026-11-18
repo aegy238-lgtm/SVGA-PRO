@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <defs>
+    <radialGradient id="phxBg" cx="50%" cy="55%" r="55%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.28"/>
+      <stop offset="55%" stop-color="#dc2626" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#0b101d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="phxWing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a"/>
+      <stop offset="45%" stop-color="#f59e0b"/>
+      <stop offset="85%" stop-color="#dc2626"/>
+      <stop offset="100%" stop-color="#7f1d1d"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#phxBg)"/>
+  <g transform="translate(200, 155)">
+    <animateTransform attributeName="transform" type="translate" values="200,160; 200,144; 200,160" dur="3.2s" repeatCount="indefinite"/>
+    <!-- Left Wing -->
+    <path d="M-8,-10 C-55,-65 -115,-75 -135,-30 C-110,-15 -85,10 -22,18 Z" fill="url(#phxWing)"/>
+    <path d="M-15,5 C-65,-25 -105,-20 -122,12 C-90,22 -55,28 -18,24 Z" fill="url(#phxWing)" opacity="0.85"/>
+    <!-- Right Wing -->
+    <path d="M8,-10 C55,-65 115,-75 135,-30 C110,-15 85,10 22,18 Z" fill="url(#phxWing)"/>
+    <path d="M15,5 C65,-25 105,-20 122,12 C90,22 55,28 18,24 Z" fill="url(#phxWing)" opacity="0.85"/>
+    <!-- Phoenix Body & Crest -->
+    <path d="M0,-68 C-14,-42 -18,5 0,48 C18,5 14,-42 0,-68 Z" fill="#fef08a" stroke="#f59e0b" stroke-width="1.5"/>
+    <!-- Tail Plumes -->
+    <path d="M0,45 Q-28,82 -48,96" fill="none" stroke="url(#phxWing)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M0,45 Q0,88 0,104" fill="none" stroke="#fef08a" stroke-width="4" stroke-linecap="round"/>
+    <path d="M0,45 Q28,82 48,96" fill="none" stroke="url(#phxWing)" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

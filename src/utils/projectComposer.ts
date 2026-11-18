@@ -1,3 +1,34 @@
+import { MaskDepthBand, resolveMaskDepthBand } from './vapDynamicMaskPacking';
+
+export type AnimationPreset =
+  | 'none'
+  | 'flyInLeft'
+  | 'flyInRight'
+  | 'swayRightLeft'
+  | 'windBreeze'
+  | 'glideRightToLeft'
+  | 'glideLeftToRight'
+  | 'slideBounceRightLeft'
+  | 'dropFromTop'
+  | 'riseFromBottom'
+  | 'royalEntrance'
+  | 'zoomIn'
+  | 'elasticBounce'
+  | 'rubberSnap'
+  | 'popPulse'
+  | 'heartbeatPulse'
+  | 'breathingAura'
+  | 'floatingHover'
+  | 'orbitFloat'
+  | 'spinFade'
+  | 'spiralZoom'
+  | 'slideFade'
+  | 'flip3DReveal'
+  | 'swingPendulum'
+  | 'shakeImpact'
+  | 'glowFlashReveal'
+  | 'neonStrobe';
+
 export interface ProjectLayerTransform {
   offsetX: number;
   offsetY: number;
@@ -7,6 +38,21 @@ export interface ProjectLayerTransform {
   flipH: boolean;
   flipV: boolean;
   visible: boolean;
+  animationPreset?: AnimationPreset;
+  startFrame?: number;
+  endFrame?: number;
+  visibilityEnabled?: boolean;
+  visibilityStartFrame?: number;
+  visibilityEndFrame?: number;
+  linkFrameAndLayer?: boolean;
+  motionWaypoints?: Array<{
+    frame: number;
+    offsetX: number;
+    offsetY: number;
+    scale: number;
+    rotation: number;
+    opacity: number;
+  }>;
 }
 
 export type OverlayZOrder = 'above' | 'below';
@@ -29,6 +75,7 @@ export interface SecondaryOverlayLayer {
   isVapMask?: boolean;
   linkedMaskSlotId?: string;
   maskTag?: string;
+  thumbnailDataUrl?: string;
 }
 
 export interface ProjectComposerState {
@@ -65,8 +112,17 @@ export function createDefaultLayerTransform(
   };
 }
 
+export function hasAnimatedMotion(t: ProjectLayerTransform | null | undefined): boolean {
+  if (!t) return false;
+  if (t.animationPreset && t.animationPreset !== 'none') return true;
+  if (Array.isArray(t.motionWaypoints) && t.motionWaypoints.length > 0) return true;
+  if (t.visibilityEnabled) return true;
+  return false;
+}
+
 export function isDefaultLayerTransform(t: ProjectLayerTransform | null | undefined): boolean {
   if (!t) return true;
+  if (hasAnimatedMotion(t)) return false;
   return (
     Math.abs(Number(t.offsetX) || 0) < 0.01 &&
     Math.abs(Number(t.offsetY) || 0) < 0.01 &&
@@ -101,6 +157,17 @@ export function clampTransformValues(
   const rawRot = Number(t.rotation);
   const rawOp = Number(t.opacity);
 
+  const clampedWaypoints = Array.isArray(t.motionWaypoints)
+    ? t.motionWaypoints.map((wp) => ({
+        frame: Math.max(0, Math.round(Number(wp.frame) || 0)),
+        offsetX: Number.isFinite(Number(wp.offsetX)) ? Math.max(-maxOffX, Math.min(maxOffX, Math.round(Number(wp.offsetX)))) : 0,
+        offsetY: Number.isFinite(Number(wp.offsetY)) ? Math.max(-maxOffY, Math.min(maxOffY, Math.round(Number(wp.offsetY)))) : 0,
+        scale: Number.isFinite(Number(wp.scale)) ? Math.max(5, Math.min(500, Math.round(Number(wp.scale) * 10) / 10)) : 100,
+        rotation: Number.isFinite(Number(wp.rotation)) ? Math.max(-3600, Math.min(3600, Math.round(Number(wp.rotation)))) : 0,
+        opacity: Number.isFinite(Number(wp.opacity)) ? Math.max(0, Math.min(100, Math.round(Number(wp.opacity)))) : 100,
+      }))
+    : undefined;
+
   return {
     offsetX: Number.isFinite(rawX) ? Math.max(-maxOffX, Math.min(maxOffX, Math.round(rawX))) : 0,
     offsetY: Number.isFinite(rawY) ? Math.max(-maxOffY, Math.min(maxOffY, Math.round(rawY))) : 0,
@@ -110,6 +177,23 @@ export function clampTransformValues(
     flipH: Boolean(t.flipH),
     flipV: Boolean(t.flipV),
     visible: t.visible !== undefined ? Boolean(t.visible) : true,
+    ...(t.animationPreset !== undefined ? { animationPreset: t.animationPreset } : {}),
+    ...(t.startFrame !== undefined ? { startFrame: Math.max(0, Math.round(Number(t.startFrame) || 0)) } : {}),
+    ...(t.endFrame !== undefined ? { endFrame: Math.max(1, Number.isFinite(Number(t.endFrame)) ? Math.round(Number(t.endFrame)) : 30) } : {}),
+    ...(t.visibilityEnabled !== undefined ? { visibilityEnabled: Boolean(t.visibilityEnabled) } : {}),
+    ...(t.visibilityStartFrame !== undefined
+      ? { visibilityStartFrame: Math.max(0, Math.round(Number(t.visibilityStartFrame) || 0)) }
+      : {}),
+    ...(t.visibilityEndFrame !== undefined
+      ? {
+          visibilityEndFrame: Math.max(
+            0,
+            Number.isFinite(Number(t.visibilityEndFrame)) ? Math.round(Number(t.visibilityEndFrame)) : 30
+          ),
+        }
+      : {}),
+    ...(t.linkFrameAndLayer !== undefined ? { linkFrameAndLayer: Boolean(t.linkFrameAndLayer) } : {}),
+    ...(clampedWaypoints !== undefined ? { motionWaypoints: clampedWaypoints } : {}),
   };
 }
 
@@ -647,6 +731,9 @@ export interface ComposeDecomposedSvgaOptions {
     w: number;
     h: number;
     z: number;
+    zLayer?: MaskDepthBand;
+    clipPath?: string;
+    motionTransform?: ProjectLayerTransform;
     pngBytes: Uint8Array;
   }>;
 }
@@ -656,6 +743,41 @@ export interface ComposeDecomposedSvgaOptions {
  * and sprite tracks, applying affine transforms mathematically without canvas rasterization,
  * and embedding any added second files (overlays) as independent animated sprite tracks.
  */
+export function resolveLinkedTransformAtFrame(
+  layerTransform: ProjectLayerTransform | undefined,
+  primaryBase: ProjectLayerTransform | undefined,
+  primaryAtFrame: ProjectLayerTransform | undefined,
+  currentFrame: number,
+  totalFrames: number,
+  baseW = 500,
+  baseH = 500
+): ProjectLayerTransform {
+  const own = interpolateTransformAtFrame(layerTransform, currentFrame, totalFrames, baseW, baseH);
+  if (
+    primaryBase &&
+    primaryAtFrame &&
+    primaryBase.linkFrameAndLayer !== false &&
+    own.linkFrameAndLayer !== false &&
+    hasAnimatedMotion(primaryBase) &&
+    !hasAnimatedMotion(layerTransform)
+  ) {
+    const dx = (Number(primaryAtFrame.offsetX) || 0) - (Number(primaryBase.offsetX) || 0);
+    const dy = (Number(primaryAtFrame.offsetY) || 0) - (Number(primaryBase.offsetY) || 0);
+    const scaleRatio = (Number(primaryAtFrame.scale) || 100) / Math.max(1, Number(primaryBase.scale) || 100);
+    const dRot = (Number(primaryAtFrame.rotation) || 0) - (Number(primaryBase.rotation) || 0);
+    const opRatio = (Number(primaryAtFrame.opacity ?? 100)) / Math.max(1, Number(primaryBase.opacity ?? 100));
+    return {
+      ...own,
+      offsetX: (Number(own.offsetX) || 0) + dx,
+      offsetY: (Number(own.offsetY) || 0) + dy,
+      scale: Math.max(0.5, (Number(own.scale) || 100) * scaleRatio),
+      rotation: (Number(own.rotation) || 0) + dRot,
+      opacity: Math.max(0, Math.min(100, (Number(own.opacity ?? 100)) * opRatio)),
+    };
+  }
+  return own;
+}
+
 export function composeDecomposedSvgaMovie(
   primaryMovie: any,
   composerState: ProjectComposerState,
@@ -666,20 +788,64 @@ export function composeDecomposedSvgaMovie(
   const targetW = Math.max(1, Math.round(options.targetW || baseW));
   const targetH = Math.max(1, Math.round(options.targetH || baseH));
   const targetFps = Math.max(1, Math.round(options.targetFps || primaryMovie.fps || 20));
-  const totalFrames = Math.max(1, Math.round(primaryMovie.n || 1));
-
+  const primaryFramesCount = Math.max(1, Math.round(primaryMovie.n || 1));
   const pTrans = composerState?.primaryTransform || DEFAULT_LAYER_TRANSFORM;
-  const M_proj = buildPrimaryProjectAffineMatrix(
-    baseW,
-    baseH,
-    targetW,
-    targetH,
-    pTrans,
-    options.globalScalePercent || 100,
-    options.globalMirror || 'none'
-  );
-  const pAlpha = Math.max(0, Math.min(1, (Number(pTrans.opacity ?? 100) || 0) / 100));
-  const pVisible = pTrans.visible !== false && pAlpha > 0.001;
+  const overlays = composerState?.overlays || [];
+
+  let maxOverlayFrames = primaryFramesCount;
+  if (primaryFramesCount === 1) {
+    options.overlayMovies?.forEach((mv) => {
+      if (mv && Number(mv.n) > maxOverlayFrames) maxOverlayFrames = Math.round(mv.n);
+    });
+    options.overlayRenderedFrames?.forEach((rf) => {
+      if (rf && rf.frames.length > maxOverlayFrames) maxOverlayFrames = rf.frames.length;
+    });
+    const collectAnimMaxFrames = (t?: ProjectLayerTransform) => {
+      if (!t || !hasAnimatedMotion(t)) return 0;
+      let m = Number(t.endFrame ?? 30) + 1;
+      if (t.visibilityEnabled && Number.isFinite(Number(t.visibilityEndFrame))) {
+        m = Math.max(m, Number(t.visibilityEndFrame) + 1);
+      }
+      if (Array.isArray(t.motionWaypoints)) {
+        for (const wp of t.motionWaypoints) {
+          m = Math.max(m, (Number(wp.frame) || 0) + 1);
+        }
+      }
+      return Math.max(30, m);
+    };
+    maxOverlayFrames = Math.max(maxOverlayFrames, collectAnimMaxFrames(pTrans));
+    for (const ov of overlays) {
+      maxOverlayFrames = Math.max(maxOverlayFrames, collectAnimMaxFrames(ov.transform));
+    }
+    for (const ms of options.maskSprites || []) {
+      maxOverlayFrames = Math.max(maxOverlayFrames, collectAnimMaxFrames(ms.motionTransform));
+    }
+  }
+  const totalFrames = maxOverlayFrames;
+
+  const pTransFrames: ProjectLayerTransform[] = [];
+  const pMatrixFrames: AffineMatrix[] = [];
+  const pAlphaFrames: number[] = [];
+  const pVisibleFrames: boolean[] = [];
+
+  for (let fi = 0; fi < totalFrames; fi++) {
+    const pt = interpolateTransformAtFrame(pTrans, fi, totalFrames, baseW, baseH);
+    pTransFrames.push(pt);
+    pMatrixFrames.push(
+      buildPrimaryProjectAffineMatrix(
+        baseW,
+        baseH,
+        targetW,
+        targetH,
+        pt,
+        options.globalScalePercent || 100,
+        options.globalMirror || 'none'
+      )
+    );
+    const pa = Math.max(0, Math.min(1, (Number(pt.opacity ?? 100) || 0) / 100));
+    pAlphaFrames.push(pa);
+    pVisibleFrames.push(pt.visible !== false && pa > 0.001);
+  }
 
   // 1. Clone all original decomposed images (preserving img_20, img_105, etc.) and apply edits
   const composedImages: Record<string, Uint8Array> = { ...(primaryMovie.im || {}) };
@@ -689,18 +855,29 @@ export function composeDecomposedSvgaMovie(
     }
   }
 
-  // 2. Transform primary sprites purely via matrix multiplication (Zero rasterization!)
+  // 2. Transform primary sprites purely via per-frame matrix multiplication (Zero rasterization!)
   const transformedPrimarySprites = (primaryMovie.sp || []).map((sp: any) => {
-    const transformedFrames = (sp.fr || []).map((origFr: any) => {
+    const srcFrames = sp.fr || [];
+    const srcLen = Math.max(1, srcFrames.length);
+    const transformedFrames: any[] = [];
+    for (let fi = 0; fi < totalFrames; fi++) {
+      const origFr = srcFrames[primaryFramesCount === 1 ? fi % srcLen : fi] || {
+        a: 0,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        t: [1, 0, 0, 1, 0, 0],
+      };
       const origT: AffineMatrix = origFr.t && origFr.t.length === 6 ? origFr.t : [1, 0, 0, 1, 0, 0];
-      const newT = multiplyAffine(M_proj, origT);
-      const newAlpha = pVisible ? (origFr.a ?? 1) * pAlpha : 0;
-      return {
+      const newT = multiplyAffine(pMatrixFrames[fi], origT);
+      const newAlpha = pVisibleFrames[fi] ? (origFr.a ?? 1) * pAlphaFrames[fi] : 0;
+      transformedFrames.push({
         ...origFr,
         t: newT,
         a: Number(newAlpha.toFixed(4)),
-      };
-    });
+      });
+    }
 
     return {
       ...sp,
@@ -712,7 +889,6 @@ export function composeDecomposedSvgaMovie(
   const underlaySprites: any[] = [];
   const overlaySprites: any[] = [];
 
-  const overlays = composerState?.overlays || [];
   for (const layer of overlays) {
     if (layer.transform?.visible === false) continue;
     if (layer.isVapMask && layer.linkedMaskSlotId) continue;
@@ -724,16 +900,34 @@ export function composeDecomposedSvgaMovie(
     if (secondarySvga && secondarySvga.im && secondarySvga.sp) {
       const ovW = Math.max(1, Math.round(secondarySvga.w || baseW));
       const ovH = Math.max(1, Math.round(secondarySvga.h || baseH));
-      const { matrix: M_ov, opacity: ovOpacity, visible: ovVis } = buildOverlayLayerAffineMatrix(
-        ovW,
-        ovH,
-        baseW,
-        baseH,
-        targetW,
-        targetH,
-        layer.fitMode || 'contain',
-        layer.transform || DEFAULT_LAYER_TRANSFORM
-      );
+
+      const ovFrameMats: AffineMatrix[] = [];
+      const ovFrameOps: number[] = [];
+      const ovFrameVis: boolean[] = [];
+      for (let fi = 0; fi < totalFrames; fi++) {
+        const effT = resolveLinkedTransformAtFrame(
+          layer.transform || DEFAULT_LAYER_TRANSFORM,
+          pTrans,
+          pTransFrames[fi],
+          fi,
+          totalFrames,
+          baseW,
+          baseH
+        );
+        const res = buildOverlayLayerAffineMatrix(
+          ovW,
+          ovH,
+          baseW,
+          baseH,
+          targetW,
+          targetH,
+          layer.fitMode || 'contain',
+          effT
+        );
+        ovFrameMats.push(res.matrix);
+        ovFrameOps.push(res.opacity);
+        ovFrameVis.push(res.visible);
+      }
 
       // Prefix images to prevent key collisions
       for (const [k, v] of Object.entries(secondarySvga.im as Record<string, Uint8Array>)) {
@@ -748,8 +942,8 @@ export function composeDecomposedSvgaMovie(
         for (let fi = 0; fi < totalFrames; fi++) {
           const origFr = ospFrames[fi % ospCount] || { a: 0, x: 0, y: 0, w: 0, h: 0, t: [1, 0, 0, 1, 0, 0] };
           const origT: AffineMatrix = origFr.t && origFr.t.length === 6 ? origFr.t : [1, 0, 0, 1, 0, 0];
-          const newT = multiplyAffine(M_ov, origT);
-          const newAlpha = ovVis ? (origFr.a ?? 1) * ovOpacity : 0;
+          const newT = multiplyAffine(ovFrameMats[fi], origT);
+          const newAlpha = ovFrameVis[fi] ? (origFr.a ?? 1) * ovFrameOps[fi] : 0;
           transformedFrames.push({
             ...origFr,
             t: newT,
@@ -771,16 +965,34 @@ export function composeDecomposedSvgaMovie(
     if (renderedLayer && renderedLayer.frames.length > 0) {
       const ovW = Math.max(1, renderedLayer.width || layer.width || 300);
       const ovH = Math.max(1, renderedLayer.height || layer.height || 300);
-      const { matrix: M_ov, opacity: ovOpacity, visible: ovVis } = buildOverlayLayerAffineMatrix(
-        ovW,
-        ovH,
-        baseW,
-        baseH,
-        targetW,
-        targetH,
-        layer.fitMode || 'contain',
-        layer.transform || DEFAULT_LAYER_TRANSFORM
-      );
+      const ovFrameMats: AffineMatrix[] = [];
+      const ovFrameOps: number[] = [];
+      const ovFrameVis: boolean[] = [];
+
+      for (let fi = 0; fi < totalFrames; fi++) {
+        const effT = resolveLinkedTransformAtFrame(
+          layer.transform || DEFAULT_LAYER_TRANSFORM,
+          pTrans,
+          pTransFrames[fi],
+          fi,
+          totalFrames,
+          baseW,
+          baseH
+        );
+        const res = buildOverlayLayerAffineMatrix(
+          ovW,
+          ovH,
+          baseW,
+          baseH,
+          targetW,
+          targetH,
+          layer.fitMode || 'contain',
+          effT
+        );
+        ovFrameMats.push(res.matrix);
+        ovFrameOps.push(res.opacity);
+        ovFrameVis.push(res.visible);
+      }
 
       const framesCount = renderedLayer.frames.length;
       const spriteFrames: any[] = [];
@@ -793,12 +1005,12 @@ export function composeDecomposedSvgaMovie(
         }
 
         spriteFrames.push({
-          a: ovVis ? Number(ovOpacity.toFixed(4)) : 0,
+          a: ovFrameVis[fi] ? Number(ovFrameOps[fi].toFixed(4)) : 0,
           x: 0,
           y: 0,
           w: ovW,
           h: ovH,
-          t: M_ov,
+          t: ovFrameMats[fi],
         });
       }
 
@@ -816,12 +1028,12 @@ export function composeDecomposedSvgaMovie(
           for (let k = 0; k < totalFrames; k++) {
             const active = k % framesCount === fi;
             trackFrames.push({
-              a: active && ovVis ? Number(ovOpacity.toFixed(4)) : 0,
+              a: active && ovFrameVis[k] ? Number(ovFrameOps[k].toFixed(4)) : 0,
               x: 0,
               y: 0,
               w: ovW,
               h: ovH,
-              t: M_ov,
+              t: ovFrameMats[k],
             });
           }
           targetBucket.push({
@@ -833,30 +1045,85 @@ export function composeDecomposedSvgaMovie(
     }
   }
 
-  // 4. Process active replaced/colored mask sprites cleanly in Z-order
+  // 4. Process active replaced/colored mask sprites cleanly across the 4 depth bands
   const maskSprites = [...(options.maskSprites || [])].sort((a, b) => a.z - b.z);
   const scaleX = targetW / baseW;
   const scaleY = targetH / baseH;
+  const belowOverlaysMaskSprites: any[] = [];
+  const behindPrimaryMaskSprites: any[] = [];
+  const abovePrimaryMaskSprites: any[] = [];
+  const aboveOverlaysMaskSprites: any[] = [];
+
   for (const ms of maskSprites) {
     if (!ms.pngBytes || ms.pngBytes.length === 0) continue;
     const key = `vapmask_${ms.id}`;
     composedImages[key] = ms.pngBytes;
     const lw = Math.max(2, Math.round(ms.w));
     const lh = Math.max(2, Math.round(ms.h));
-    const mat: AffineMatrix = [scaleX, 0, 0, scaleY, ms.x * scaleX, ms.y * scaleY];
+    const baseMat: AffineMatrix = [scaleX, 0, 0, scaleY, ms.x * scaleX, ms.y * scaleY];
+    const mcx = (ms.x + lw / 2) * scaleX;
+    const mcy = (ms.y + lh / 2) * scaleY;
     const spriteFrames: any[] = [];
     for (let fi = 0; fi < totalFrames; fi++) {
-      spriteFrames.push({ a: 1, x: 0, y: 0, w: lw, h: lh, t: mat });
+      const effT = resolveLinkedTransformAtFrame(
+        ms.motionTransform || DEFAULT_LAYER_TRANSFORM,
+        pTrans,
+        pTransFrames[fi],
+        fi,
+        totalFrames,
+        baseW,
+        baseH
+      );
+      const isVis = effT.visible !== false && (Number(effT.opacity ?? 100) || 0) > 0.001;
+      const alpha = isVis ? Math.max(0, Math.min(1, (Number(effT.opacity ?? 100) || 0) / 100)) : 0;
+
+      let mat = baseMat;
+      if (!isDefaultLayerTransform(effT)) {
+        const dx = (Number(effT.offsetX) || 0) * scaleX;
+        const dy = (Number(effT.offsetY) || 0) * scaleY;
+        const sRatio = Math.max(0.05, Math.min(5, (Number(effT.scale) || 100) / 100));
+        const rotRad = ((Number(effT.rotation) || 0) * Math.PI) / 180;
+        const fx = effT.flipH ? -1 : 1;
+        const fy = effT.flipV ? -1 : 1;
+        const cos = Math.cos(rotRad);
+        const sin = Math.sin(rotRad);
+        const a = cos * sRatio * fx;
+        const b = sin * sRatio * fx;
+        const c = -sin * sRatio * fy;
+        const d = cos * sRatio * fy;
+        const tx = mcx + dx - (a * mcx + c * mcy);
+        const ty = mcy + dy - (b * mcx + d * mcy);
+        mat = multiplyAffine([a, b, c, d, tx, ty], baseMat);
+      }
+
+      spriteFrames.push({
+        a: Number(alpha.toFixed(4)),
+        x: 0,
+        y: 0,
+        w: lw,
+        h: lh,
+        t: mat,
+        ...(ms.clipPath ? { clipPath: ms.clipPath } : {}),
+      });
     }
-    const targetBucket = ms.z < 0 ? underlaySprites : overlaySprites;
-    targetBucket.push({ key, fr: spriteFrames });
+    const band = resolveMaskDepthBand(ms);
+    const entry = { key, fr: spriteFrames };
+    if (band === 'belowOverlays') belowOverlaysMaskSprites.push(entry);
+    else if (band === 'behindPrimary') behindPrimaryMaskSprites.push(entry);
+    else if (band === 'aboveOverlays') aboveOverlaysMaskSprites.push(entry);
+    else abovePrimaryMaskSprites.push(entry);
   }
 
-  // Combine in exact visual order: Underlays -> Decomposed Primary Sprites -> Overlays
+  // Combine in exact visual order:
+  // Below-All Masks -> Underlay Added Layers -> Behind-Gift Masks -> Primary Sprites -> Above-Gift (Behind-Frame) Masks -> Overlay Added Layers -> Above-All Masks
   const finalSprites = [
+    ...belowOverlaysMaskSprites,
     ...underlaySprites,
+    ...behindPrimaryMaskSprites,
     ...transformedPrimarySprites,
+    ...abovePrimaryMaskSprites,
     ...overlaySprites,
+    ...aboveOverlaysMaskSprites,
   ];
 
   return {
@@ -870,5 +1137,424 @@ export function composeDecomposedSvgaMovie(
     shapes: primaryMovie.shapes,
     matte: primaryMovie.matte,
   };
+}
+
+export function interpolateTransformAtFrame(
+  transform: ProjectLayerTransform | undefined,
+  currentFrame: number,
+  totalFrames: number,
+  baseW = 500,
+  baseH = 500
+): ProjectLayerTransform {
+  if (!transform) return DEFAULT_LAYER_TRANSFORM;
+  if (transform.visible === false) {
+    return { ...transform, visible: false, opacity: 0 };
+  }
+
+  // Respect explicit visibility duration window inside the gift (e.g. show from frame 15 to 60)
+  let visStart = 0;
+  if (transform.visibilityEnabled) {
+    visStart = Math.max(0, Math.round(Number(transform.visibilityStartFrame ?? 0)));
+    const rawVisEnd = transform.visibilityEndFrame;
+    const visEnd =
+      rawVisEnd !== undefined && Number.isFinite(Number(rawVisEnd))
+        ? Math.max(visStart, Math.round(Number(rawVisEnd)))
+        : Math.max(visStart, Math.max(1, totalFrames) - 1);
+    if (currentFrame < visStart || currentFrame > visEnd) {
+      return { ...transform, visible: false, opacity: 0 };
+    }
+  }
+
+  const rawStartF = Number(transform.startFrame ?? 0);
+  const rawEndF = Number(transform.endFrame ?? 30);
+  const span = Math.max(1, rawEndF - rawStartF);
+  const effStartF = transform.visibilityEnabled ? Math.max(visStart, rawStartF) : rawStartF;
+  const effEndF = effStartF + span;
+  const rawProgress = Math.max(0, Math.min(1, (currentFrame - effStartF) / span));
+
+  if (Array.isArray(transform.motionWaypoints) && transform.motionWaypoints.length > 0) {
+    const wps = [...transform.motionWaypoints].sort((a, b) => a.frame - b.frame);
+    if (currentFrame <= wps[0].frame) {
+      return { ...transform, offsetX: wps[0].offsetX, offsetY: wps[0].offsetY, scale: wps[0].scale, rotation: wps[0].rotation, opacity: wps[0].opacity };
+    }
+    if (currentFrame >= wps[wps.length - 1].frame) {
+      const last = wps[wps.length - 1];
+      return { ...transform, offsetX: last.offsetX, offsetY: last.offsetY, scale: last.scale, rotation: last.rotation, opacity: last.opacity };
+    }
+    let prev = wps[0];
+    let next = wps[1];
+    for (let i = 0; i < wps.length - 1; i++) {
+      if (currentFrame >= wps[i].frame && currentFrame <= wps[i + 1].frame) {
+        prev = wps[i];
+        next = wps[i + 1];
+        break;
+      }
+    }
+    const segSpan = Math.max(1, next.frame - prev.frame);
+    const p = Math.max(0, Math.min(1, (currentFrame - prev.frame) / segSpan));
+    const easeP = p * p * (3 - 2 * p);
+    return {
+      ...transform,
+      offsetX: prev.offsetX + (next.offsetX - prev.offsetX) * easeP,
+      offsetY: prev.offsetY + (next.offsetY - prev.offsetY) * easeP,
+      scale: prev.scale + (next.scale - prev.scale) * easeP,
+      rotation: prev.rotation + (next.rotation - prev.rotation) * easeP,
+      opacity: prev.opacity + (next.opacity - prev.opacity) * easeP,
+    };
+  }
+
+  const preset = transform.animationPreset || 'none';
+  const targetX = Number(transform.offsetX) || 0;
+  const targetY = Number(transform.offsetY) || 0;
+  const targetScale = Number(transform.scale) || 100;
+  const targetOpacity = Number(transform.opacity ?? 100);
+  const targetRot = Number(transform.rotation) || 0;
+
+  if (preset === 'none') {
+    return transform;
+  }
+
+  // Continuous loop presets remain alive throughout the visible window after smooth fade-in
+  const loopAge = Math.max(0, currentFrame - effStartF);
+  const entranceFade = Math.min(1, loopAge / Math.max(3, Math.min(8, Math.round(span * 0.35))));
+
+  if (preset === 'heartbeatPulse') {
+    const phase = (loopAge % 20) / 20;
+    let boost = 0;
+    if (phase < 0.16) boost = Math.sin((phase / 0.16) * Math.PI) * 0.14;
+    else if (phase >= 0.22 && phase < 0.4) boost = Math.sin(((phase - 0.22) / 0.18) * Math.PI) * 0.08;
+    return {
+      ...transform,
+      scale: targetScale * (1 + boost),
+      opacity: targetOpacity * (loopAge < 3 ? 0.3 + 0.7 * entranceFade : 1),
+    };
+  }
+
+  if (preset === 'breathingAura') {
+    const wave = Math.sin((loopAge / 28) * Math.PI * 2);
+    return {
+      ...transform,
+      scale: targetScale * (1 + wave * 0.065),
+      opacity: targetOpacity * (0.88 + wave * 0.12) * (loopAge < 4 ? entranceFade : 1),
+    };
+  }
+
+  if (preset === 'floatingHover') {
+    const wave = Math.sin((loopAge / 24) * Math.PI * 2);
+    const sway = Math.cos((loopAge / 30) * Math.PI * 2);
+    return {
+      ...transform,
+      offsetY: targetY + wave * (baseH * 0.032),
+      offsetX: targetX + sway * (baseW * 0.014),
+      rotation: targetRot + wave * 3.5,
+      opacity: targetOpacity * (loopAge < 4 ? entranceFade : 1),
+    };
+  }
+
+  if (preset === 'swayRightLeft') {
+    // Smooth continuous right <-> left horizontal sway with gentle banking angle
+    const cycle = Math.sin((loopAge / 26) * Math.PI * 2);
+    const tilt = Math.cos((loopAge / 26) * Math.PI * 2);
+    return {
+      ...transform,
+      offsetX: targetX + cycle * (baseW * 0.16),
+      offsetY: targetY,
+      rotation: targetRot + tilt * 3.5,
+      opacity: targetOpacity * (loopAge < 4 ? entranceFade : 1),
+    };
+  }
+
+  if (preset === 'windBreeze') {
+    // Multi-harmonic organic wind gust drifting left & right with subtle lift and tilt
+    const gustMain = Math.sin((loopAge / 28) * Math.PI * 2);
+    const gustSub = Math.sin((loopAge / 13) * Math.PI * 2) * 0.32;
+    const combined = (gustMain + gustSub) / 1.32;
+    const lift = Math.cos((loopAge / 20) * Math.PI * 2);
+    return {
+      ...transform,
+      offsetX: targetX + combined * (baseW * 0.2),
+      offsetY: targetY + lift * (baseH * 0.028),
+      rotation: targetRot + combined * 7.5,
+      scale: targetScale * (1 + Math.abs(combined) * 0.03),
+      opacity: targetOpacity * (loopAge < 4 ? entranceFade : 1),
+    };
+  }
+
+  if (preset === 'orbitFloat') {
+    const ang = (loopAge / 32) * Math.PI * 2;
+    const orbitX = Math.cos(ang) * (baseW * 0.085);
+    const orbitY = Math.sin(ang) * (baseH * 0.048);
+    const depth = Math.sin(ang);
+    return {
+      ...transform,
+      offsetX: targetX + orbitX,
+      offsetY: targetY + orbitY,
+      scale: targetScale * (1 + depth * 0.055),
+      rotation: targetRot + Math.cos(ang) * 2.5,
+      opacity: targetOpacity * (loopAge < 4 ? entranceFade : 1),
+    };
+  }
+
+  if (preset === 'neonStrobe') {
+    const pulse = 0.5 + 0.5 * Math.sin((loopAge / 14) * Math.PI * 2);
+    return {
+      ...transform,
+      scale: targetScale * (0.98 + pulse * 0.065),
+      opacity: targetOpacity * (0.68 + pulse * 0.32) * (loopAge < 3 ? entranceFade : 1),
+    };
+  }
+
+  if (rawProgress >= 1 || currentFrame >= effEndF) {
+    if (preset === 'glideRightToLeft') {
+      return { ...transform, offsetX: targetX - baseW * 1.05, opacity: 0, visible: false };
+    }
+    if (preset === 'glideLeftToRight') {
+      return { ...transform, offsetX: targetX + baseW * 1.05, opacity: 0, visible: false };
+    }
+    return transform;
+  }
+
+  // Smooth cubic / quartic ease-out & smoothstep helpers
+  const p = rawProgress * rawProgress * (3 - 2 * rawProgress);
+  const easeOutCubic = 1 - Math.pow(1 - rawProgress, 3);
+  const easeOutQuart = 1 - Math.pow(1 - rawProgress, 4);
+  const easeOutBack = (t: number, s = 1.70158) => {
+    const inv = t - 1;
+    return 1 + (s + 1) * Math.pow(inv, 3) + s * Math.pow(inv, 2);
+  };
+  const easeOutElastic = (t: number) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    const c4 = (2 * Math.PI) / 3;
+    return Math.pow(2, -9 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+  };
+
+  if (preset === 'flyInLeft') {
+    // Enters from left side (-offset) gliding smoothly rightward to center
+    const e = easeOutQuart;
+    return {
+      ...transform,
+      offsetX: targetX - baseW * 0.88 * (1 - e),
+      offsetY: targetY,
+      scale: targetScale * (0.72 + 0.28 * e),
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.4),
+      rotation: targetRot - 8 * (1 - e),
+    };
+  } else if (preset === 'flyInRight') {
+    // Enters from right side (+offset) gliding smoothly leftward to center
+    const e = easeOutQuart;
+    return {
+      ...transform,
+      offsetX: targetX + baseW * 0.88 * (1 - e),
+      offsetY: targetY,
+      scale: targetScale * (0.72 + 0.28 * e),
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.4),
+      rotation: targetRot + 8 * (1 - e),
+    };
+  } else if (preset === 'glideRightToLeft') {
+    // Full smooth horizontal pass from far right edge across to far left edge
+    const edgeFade =
+      rawProgress < 0.14
+        ? rawProgress / 0.14
+        : rawProgress > 0.86
+        ? (1 - rawProgress) / 0.14
+        : 1;
+    return {
+      ...transform,
+      offsetX: targetX + baseW * 1.05 * (1 - 2 * p),
+      offsetY: targetY - Math.sin(rawProgress * Math.PI) * (baseH * 0.04),
+      scale: targetScale * (0.94 + 0.08 * Math.sin(rawProgress * Math.PI)),
+      opacity: targetOpacity * Math.max(0, Math.min(1, edgeFade)),
+      rotation: targetRot - Math.sin(rawProgress * Math.PI) * 4,
+    };
+  } else if (preset === 'glideLeftToRight') {
+    // Full smooth horizontal pass from far left edge across to far right edge
+    const edgeFade =
+      rawProgress < 0.14
+        ? rawProgress / 0.14
+        : rawProgress > 0.86
+        ? (1 - rawProgress) / 0.14
+        : 1;
+    return {
+      ...transform,
+      offsetX: targetX - baseW * 1.05 * (1 - 2 * p),
+      offsetY: targetY - Math.sin(rawProgress * Math.PI) * (baseH * 0.04),
+      scale: targetScale * (0.94 + 0.08 * Math.sin(rawProgress * Math.PI)),
+      opacity: targetOpacity * Math.max(0, Math.min(1, edgeFade)),
+      rotation: targetRot + Math.sin(rawProgress * Math.PI) * 4,
+    };
+  } else if (preset === 'slideBounceRightLeft') {
+    // Damped springy horizontal left-right settle onto target center
+    const decay = Math.pow(1 - rawProgress, 1.8);
+    const dampSwing = Math.cos(rawProgress * Math.PI * 3.5) * (baseW * 0.34) * decay;
+    return {
+      ...transform,
+      offsetX: targetX + dampSwing,
+      offsetY: targetY,
+      scale: targetScale * (0.85 + 0.15 * easeOutCubic),
+      rotation: targetRot + Math.cos(rawProgress * Math.PI * 3.5) * 8 * decay,
+      opacity: targetOpacity * Math.min(1, rawProgress * 3),
+    };
+  } else if (preset === 'dropFromTop') {
+    const e = easeOutBack(rawProgress, 1.45);
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY - baseH * 0.65 * (1 - e),
+      scale: targetScale * (1.16 - 0.16 * Math.min(1, easeOutCubic)),
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.5),
+      rotation: targetRot,
+    };
+  } else if (preset === 'riseFromBottom') {
+    const e = easeOutBack(rawProgress, 1.35);
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY + baseH * 0.68 * (1 - e),
+      scale: targetScale * (0.82 + 0.18 * Math.min(1, easeOutCubic)),
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.4),
+      rotation: targetRot,
+    };
+  } else if (preset === 'royalEntrance') {
+    const e = easeOutQuart;
+    const settleScale = 1 + (1 - e) * 0.35 + Math.sin(e * Math.PI) * 0.06;
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY - baseH * 0.16 * (1 - e),
+      scale: targetScale * settleScale,
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.6),
+      rotation: targetRot + (1 - e) * 6,
+    };
+  } else if (preset === 'zoomIn') {
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: targetScale * (0.1 + 0.9 * easeOutCubic),
+      opacity: targetOpacity * p,
+      rotation: targetRot,
+    };
+  } else if (preset === 'elasticBounce') {
+    const el = Math.max(0.05, easeOutElastic(rawProgress));
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: targetScale * el,
+      opacity: targetOpacity * Math.min(1, rawProgress * 3),
+      rotation: targetRot,
+    };
+  } else if (preset === 'rubberSnap') {
+    const el = Math.max(0.2, easeOutElastic(rawProgress));
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: targetScale * (1.28 - 0.28 * el),
+      opacity: targetOpacity * Math.min(1, rawProgress * 3.2),
+      rotation: targetRot + (1 - Math.min(1, easeOutCubic)) * -10,
+    };
+  } else if (preset === 'popPulse') {
+    const popScale =
+      p < 0.7
+        ? targetScale * (p / 0.7) * 1.18
+        : targetScale * (1.18 - 0.18 * ((p - 0.7) / 0.3));
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: popScale,
+      opacity: targetOpacity * Math.min(1, p * 1.6),
+      rotation: targetRot,
+    };
+  } else if (preset === 'spinFade') {
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: targetScale * Math.max(0.05, easeOutCubic),
+      opacity: targetOpacity * p,
+      rotation: targetRot + (1 - easeOutCubic) * -180,
+    };
+  } else if (preset === 'spiralZoom') {
+    const arcY = Math.sin(rawProgress * Math.PI) * (-baseH * 0.12) * (1 - rawProgress);
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY + arcY,
+      scale: targetScale * (0.12 + 0.88 * easeOutCubic),
+      opacity: targetOpacity * Math.min(1, rawProgress * 1.8),
+      rotation: targetRot + (1 - easeOutCubic) * -360,
+    };
+  } else if (preset === 'slideFade') {
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY + baseH * 0.4 * (1 - easeOutCubic),
+      scale: targetScale,
+      opacity: targetOpacity * p,
+      rotation: targetRot,
+    };
+  } else if (preset === 'flip3DReveal') {
+    const flipWave = Math.cos((1 - easeOutCubic) * Math.PI * 1.5);
+    const sc = targetScale * Math.max(0.08, Math.abs(flipWave) * 0.45 + 0.55 * easeOutCubic);
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY - Math.sin(rawProgress * Math.PI) * (baseH * 0.08),
+      scale: sc,
+      rotation: targetRot + (1 - easeOutCubic) * 28,
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.2),
+    };
+  } else if (preset === 'swingPendulum') {
+    const decay = Math.pow(1 - rawProgress, 1.5);
+    const swing = Math.sin(rawProgress * Math.PI * 3.5) * 24 * decay;
+    return {
+      ...transform,
+      offsetX: targetX + Math.sin(rawProgress * Math.PI * 3.5) * (baseW * 0.06) * decay,
+      offsetY: targetY - (1 - easeOutCubic) * (baseH * 0.18),
+      scale: targetScale * (0.75 + 0.25 * easeOutCubic),
+      rotation: targetRot + swing,
+      opacity: targetOpacity * Math.min(1, rawProgress * 2.5),
+    };
+  } else if (preset === 'shakeImpact') {
+    if (rawProgress < 0.3) {
+      const k = rawProgress / 0.3;
+      return {
+        ...transform,
+        offsetX: targetX,
+        offsetY: targetY,
+        scale: targetScale * (1.42 - 0.42 * k),
+        opacity: targetOpacity * k,
+        rotation: targetRot,
+      };
+    }
+    const tShake = (rawProgress - 0.3) / 0.7;
+    const damp = (1 - tShake) * (1 - tShake);
+    return {
+      ...transform,
+      offsetX: targetX + Math.sin(tShake * Math.PI * 6) * (baseW * 0.045) * damp,
+      offsetY: targetY + Math.cos(tShake * Math.PI * 5) * (baseH * 0.025) * damp,
+      scale: targetScale * (1 + 0.05 * damp),
+      rotation: targetRot + Math.sin(tShake * Math.PI * 6) * 5 * damp,
+      opacity: targetOpacity,
+    };
+  } else if (preset === 'glowFlashReveal') {
+    const flash =
+      rawProgress < 0.2
+        ? rawProgress / 0.2
+        : 0.55 + 0.45 * Math.abs(Math.sin(rawProgress * Math.PI * 3.5));
+    return {
+      ...transform,
+      offsetX: targetX,
+      offsetY: targetY,
+      scale: targetScale * (1.28 - 0.28 * easeOutCubic),
+      opacity: targetOpacity * (rawProgress > 0.85 ? 1 : flash),
+      rotation: targetRot,
+    };
+  }
+
+  return transform;
 }
 
