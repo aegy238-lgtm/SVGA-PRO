@@ -533,7 +533,10 @@ export const ProjectComposerPanel: React.FC<ProjectComposerPanelProps> = ({
     await onUploadSecondaryFile(f, repId);
   };
 
-  const defaultStyle: React.CSSProperties = panelPos
+  const isNarrowViewport = typeof window !== 'undefined' && window.innerWidth <= 820;
+  const defaultStyle: React.CSSProperties = isNarrowViewport
+    ? { left: '8px', right: '8px', top: '54px' }
+    : panelPos
     ? { left: `${panelPos.x}px`, top: `${panelPos.y}px` }
     : isAr
     ? { left: '286px', top: '64px' }

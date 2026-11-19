@@ -1774,7 +1774,7 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+        <div className="nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
           {/* Consolidated Single Quick-Actions Menu Button (Admin Dashboard, Subscribe, WhatsApp, Language) */}
           <div
             id="navQuickActionsContainer"
@@ -2054,7 +2054,7 @@ export default function App() {
             type="button"
             id="userAccountBtn"
             onClick={() => setAuthOpen(true)}
-            className="av"
+            className="av nav-user-btn"
             style={{
               width: 'auto',
               height: '28px',
@@ -3041,7 +3041,7 @@ export default function App() {
           />
         </section>
 
-        <section className="view" id="gifts" style={{ height: '100%', overflow: 'hidden' }}>
+        <section className="view view-full" id="gifts">
           <iframe
             src={`/gifts-studio.html?v=pag_fix_13&lang=${platformState.language}`}
             id="giftsStudioFrame"
@@ -3070,7 +3070,7 @@ export default function App() {
           />
         </section>
 
-        <section className="view" id="gift-image" style={{ height: '100%', overflow: 'hidden' }}>
+        <section className="view view-full" id="gift-image">
           <GiftImageCreator
             isAr={isAr}
             attemptStatus={giftImageAttemptStatus}
@@ -3085,7 +3085,7 @@ export default function App() {
           />
         </section>
 
-        <section className="view" id="gold-designer" style={{ height: '100%', overflow: 'hidden' }}>
+        <section className="view view-full" id="gold-designer">
           <GoldNameDesignerStudio
             isAr={isAr}
             attemptStatus={goldDesignerAttemptStatus}
@@ -3100,11 +3100,11 @@ export default function App() {
           />
         </section>
 
-        <section className="view" id="name3d-studio" style={{ height: '100%', overflow: 'hidden' }}>
+        <section className="view view-full" id="name3d-studio">
           <Name3DStudio isAr={isAr} isActive={activeView === 'name3d-studio'} />
         </section>
 
-        <section className="view" id="gift-finder" style={{ height: '100%', overflow: 'hidden' }}>
+        <section className="view view-full" id="gift-finder">
           <AiGiftFinderStudio isAr={isAr} />
         </section>
       </main>

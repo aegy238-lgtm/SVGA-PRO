@@ -9524,9 +9524,10 @@ export default function SvgaAeEditor({
       </div>
 
       {/* 2. MIDDLE WORKSPACE */}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <div className="svga-ae-workspace" style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {/* Far-left Icon Rail (44px) */}
         <div
+          className="svga-ae-rail"
           style={{
             width: '44px',
             minWidth: '44px',
@@ -9577,6 +9578,7 @@ export default function SvgaAeEditor({
         {/* Left Drawer Panel (256px) */}
         {leftTab && !isTheaterMode && (
           <aside
+            className="svga-ae-left-drawer"
             style={{
               width: '256px',
               minWidth: '256px',
@@ -12255,6 +12257,7 @@ export default function SvgaAeEditor({
 
         {/* CENTER CANVAS STAGE */}
         <div
+          className="svga-ae-stage"
           ref={stageContainerRef}
           onWheel={(e) => {
             if (e.ctrlKey || e.metaKey) {
@@ -12744,6 +12747,7 @@ export default function SvgaAeEditor({
 
           {/* Enhanced Zoom, Theater Full-Detail View & Fit-To-Center Floating Control Widget */}
           <div
+            className="svga-ae-zoom-bar"
             style={{
               position: 'absolute',
               right: '16px',
@@ -12895,6 +12899,7 @@ export default function SvgaAeEditor({
 
         {/* RIGHT INSPECTOR PANEL (290px) */}
         <aside
+          className="svga-ae-inspector"
           style={{
             width: '290px',
             minWidth: '290px',

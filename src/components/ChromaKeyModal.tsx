@@ -386,6 +386,7 @@ export default function ChromaKeyModal({
 
         {/* Main 2-Column Layout */}
         <div
+          className="mobile-stack-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'minmax(300px, 1.15fr) minmax(320px, 1.4fr)',

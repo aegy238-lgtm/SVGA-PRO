@@ -854,6 +854,7 @@ export default function EdgeFeatherModal({
 
         {/* Main 2-Column Content */}
         <div
+          className="mobile-stack-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: 'minmax(310px, 1.25fr) minmax(320px, 1.45fr)',

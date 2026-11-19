@@ -1038,6 +1038,7 @@ export default function GoldNameDesignerStudio({
 
       {/* ALL-IN-ONE 3-COLUMN STUDIO WORKSPACE: Everything visible in the main screen without scrolling! */}
       <div
+        className="gold-studio-grid"
         style={{
           maxWidth: '1760px',
           margin: '0 auto',
@@ -1049,6 +1050,7 @@ export default function GoldNameDesignerStudio({
       >
         {/* COLUMN 1: Live High-Resolution 3D Preview Stage + Direct Quick Bar + Instant Sliders + Export Bar */}
         <div
+          className="gold-studio-preview-card"
           style={{
             ...cardStyle,
             padding: '12px 14px',

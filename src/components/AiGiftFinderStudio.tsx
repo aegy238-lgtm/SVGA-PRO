@@ -919,7 +919,7 @@ export const AiGiftFinderStudio: React.FC<AiGiftFinderStudioProps> = ({ isAr }) 
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))',
             gap: '16px',
             alignItems: 'stretch',
           }}

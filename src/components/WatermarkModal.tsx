@@ -539,6 +539,7 @@ export default function WatermarkModal({
 
         {/* Body */}
         <div
+          className="mobile-stack-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: '1.15fr 1fr',
