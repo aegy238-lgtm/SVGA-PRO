@@ -27,6 +27,7 @@ import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
+import Name3DStudio from './components/Name3DStudio';
 import { AiGiftFinderStudio } from './components/AiGiftFinderStudio';
 import SiteClosedScreen from './components/SiteClosedScreen';
 import ProjectComposerPanel from './components/ProjectComposerPanel';
@@ -1692,6 +1693,34 @@ export default function App() {
                   {renderAdminHiddenBadge('gold-designer')}
                 </a>
                 <a
+                  data-v="name3d-studio"
+                  id="name3dStudioNavBtn"
+                  style={{
+                    padding: '3px 9px',
+                    borderRadius: '7px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.16), #14141c)',
+                    border: '1px solid rgba(245, 158, 11, 0.5)',
+                    color: '#fde047',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    transition: 'border-color 0.15s ease, color 0.15s ease',
+                  }}
+                >
+                  <span dir={isAr ? 'rtl' : 'ltr'}>
+                    {isAr ? (
+                      <>
+                        مصمم الأسماء ثلاثي الأبعاد <bdi>3D</bdi>
+                      </>
+                    ) : (
+                      '3D Name Designer'
+                    )}
+                  </span>
+                </a>
+                <a
                   data-v="gift-finder"
                   id="aiGiftFinderNavBtn"
                   hidden={!isGiftFinderVisible}
@@ -3069,6 +3098,10 @@ export default function App() {
               return (window as any).__consumeFeatureAttempt?.('gold_designer');
             }}
           />
+        </section>
+
+        <section className="view" id="name3d-studio" style={{ height: '100%', overflow: 'hidden' }}>
+          <Name3DStudio isAr={isAr} isActive={activeView === 'name3d-studio'} />
         </section>
 
         <section className="view" id="gift-finder" style={{ height: '100%', overflow: 'hidden' }}>
