@@ -1,0 +1,87 @@
+appId: com.motiontools.svgapro
+productName: AHMED & CR8 SVGA · MotionTools
+copyright: Copyright © 2026 Ahmed Pro SVGA · MotionTools
+directories:
+  output: release
+asar: true
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  - "!**/node_modules/**/*"
+  - "!**/*.map"
+  - "!src/**/*"
+  - "!public/**/*"
+fileAssociations:
+  - ext: svga
+    name: SVGA Animation File
+    description: AHMED & CR8 SVGA Animation
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: motiontools
+    name: MotionTools Project
+    description: MotionTools Saved Project
+    icon: public/pwa-512x512.png
+    role: Editor
+  - ext: vap
+    name: VAP Animation File
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: yyeva
+    name: YYEVA Animation File
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: pag
+    name: PAG Animation File
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: lottie
+    name: Lottie Animation File
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: dotlottie
+    name: DotLottie Animation File
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: gif
+    name: GIF Animation
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: webp
+    name: WebP Animation
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: apng
+    name: APNG Animation
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: mp4
+    name: MP4 Video
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: webm
+    name: WebM Video
+    icon: public/pwa-512x512.png
+    role: Viewer
+  - ext: mov
+    name: MOV Video
+    icon: public/pwa-512x512.png
+    role: Viewer
+win:
+  icon: public/pwa-512x512.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AHMED & CR8 SVGA · MotionTools
+  deleteAppDataOnUninstall: false
+portable:
+  artifactName: "${productName}-Portable-${version}.exe"

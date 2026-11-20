@@ -1301,6 +1301,38 @@ export function canUserCaptureScreen(
 }
 
 /**
+ * Pure function: Checks whether the Windows Offline Desktop Installer download button/modal
+ * is visible and permitted for the current account.
+ * Strictly restricted to active Admin accounts (Super Admin or authorized Admin) in 'actual' view mode;
+ * hidden completely from guests, regular free users, Pro subscribers, banned users, and Admin preview modes.
+ */
+export function canDownloadWindowsInstaller(
+  user: UserAccount | null | undefined,
+  adminPreviewRole: 'actual' | 'free_user' | 'pro_user' = 'actual'
+): boolean {
+  if (adminPreviewRole !== 'actual') return false;
+  if (!user || isPurgedLegacyAdmin(user)) return false;
+  if (user.isBanned || user.networkBanned) return false;
+  return canAccessAdminDashboard(user);
+}
+
+/**
+ * Pure function: Verifies the dedicated access password protecting the Admin-only
+ * Windows Offline Installer download button and modal.
+ * Accepts both compact ("150150150") and space-delimited ("150 150 150") formats.
+ */
+export function verifyWindowsDownloadPassword(inputPassword: string): boolean {
+  if (typeof inputPassword !== 'string') return false;
+  const trimmed = inputPassword.trim();
+  if (!trimmed) return false;
+  const normalizedSpaces = trimmed.replace(/\s+/g, ' ');
+  return (
+    constantTimeEqual(trimmed, '150150150') ||
+    constantTimeEqual(normalizedSpaces, '150 150 150')
+  );
+}
+
+/**
  * Pure function: Grants or revokes the account-level permission to take screenshots and record screen video.
  */
 export function setUserScreenCapturePermission(

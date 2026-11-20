@@ -1620,6 +1620,7 @@ export function getBrowserLibpag(): Promise<any> {
     const w = window as any;
     if (!w.libpag) {
       const urls = [
+        './lib/libpag.min.js',
         '/lib/libpag.min.js',
         'https://cdn.jsdelivr.net/npm/libpag@4.3.45/lib/libpag.min.js',
       ];
@@ -1646,6 +1647,7 @@ export function getBrowserLibpag(): Promise<any> {
 
     if (!w.__pagWasm) {
       const wasmUrls = [
+        './lib/libpag.wasm',
         '/lib/libpag.wasm',
         'https://cdn.jsdelivr.net/npm/libpag@4.3.45/lib/libpag.wasm',
       ];

@@ -250,7 +250,7 @@ export function initMotionToolsFixed() {
     $$('.view').forEach((e) => e.classList.toggle('on', e.id === v));
     $$('nav a[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === v));
     try {
-      history.replaceState(null, '', '#' + v);
+      history.replaceState(null, '', (location.search || '') + '#' + v);
     } catch (e) {}
     try {
       window.dispatchEvent(new CustomEvent('motionviewchange', { detail: v }));
@@ -259,9 +259,14 @@ export function initMotionToolsFixed() {
   (window as any).__showNavView = show;
   const syncViewFromHash = () => {
     const rawHash = (location.hash || '').replace(/^#/, '').trim();
-    if (
+    const qs = new URLSearchParams(location.search || '');
+    const isOsFileLaunch =
+      qs.has('openFileToken') || qs.get('file_launch') === '1' || qs.get('shared') === '1';
+    if (isOsFileLaunch) {
+      show('convert');
+    } else if (
       rawHash &&
-      ['home', 'convert', 'editor', 'editor-ae2', 'gifts', 'gift-image', 'gold-designer', 'name3d-studio', 'gift-finder'].includes(rawHash)
+      ['home', 'convert', 'editor', 'editor-ae2', 'gifts', 'gift-image', 'gold-designer', 'gift-finder'].includes(rawHash)
     ) {
       show(rawHash);
     } else {
@@ -334,21 +339,18 @@ export function initMotionToolsFixed() {
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
-        document.getElementById('name3d-studio')?.classList.contains('on') ||
         document.getElementById('gift-finder')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
-        location.hash === '#name3d-studio' ||
         location.hash === '#gift-finder' ||
         location.hash === '#editor' ||
         location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
-        e.target?.closest?.('#name3d-studio') ||
         e.target?.closest?.('#gift-finder') ||
         e.target?.closest?.('#editor') ||
         e.target?.closest?.('#editor-ae2') ||
@@ -367,21 +369,18 @@ export function initMotionToolsFixed() {
         document.getElementById('gifts')?.classList.contains('on') ||
         document.getElementById('gift-image')?.classList.contains('on') ||
         document.getElementById('gold-designer')?.classList.contains('on') ||
-        document.getElementById('name3d-studio')?.classList.contains('on') ||
         document.getElementById('gift-finder')?.classList.contains('on') ||
         document.getElementById('editor')?.classList.contains('on') ||
         document.getElementById('editor-ae2')?.classList.contains('on') ||
         location.hash === '#gifts' ||
         location.hash === '#gift-image' ||
         location.hash === '#gold-designer' ||
-        location.hash === '#name3d-studio' ||
         location.hash === '#gift-finder' ||
         location.hash === '#editor' ||
         location.hash === '#editor-ae2' ||
         e.target?.closest?.('#gifts') ||
         e.target?.closest?.('#gift-image') ||
         e.target?.closest?.('#gold-designer') ||
-        e.target?.closest?.('#name3d-studio') ||
         e.target?.closest?.('#gift-finder') ||
         e.target?.closest?.('#editor') ||
         e.target?.closest?.('#editor-ae2') ||
@@ -11003,7 +11002,7 @@ export function initMotionToolsFixed() {
             if (!bridge) {
               bridge = document.createElement('iframe');
               bridge.id = 'aeScriptHiddenBridge';
-              bridge.src = '/svga-to-after-effects.html';
+              bridge.src = './svga-to-after-effects.html';
               bridge.style.position = 'fixed';
               bridge.style.left = '-9999px';
               bridge.style.top = '-9999px';

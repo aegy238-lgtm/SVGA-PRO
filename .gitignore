@@ -13,4 +13,5 @@ dist/
 public/assets/aistudio
 public/assets/aistudio/
 *.log
-
+release
+release/

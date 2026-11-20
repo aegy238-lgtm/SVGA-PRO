@@ -47,6 +47,7 @@ import {
   getEffectiveUserNetworkId,
   isNetworkIdBanned,
   isUserAccountBanned,
+  canDownloadWindowsInstaller,
 } from '../utils/platformStore';
 import { setGlobalAdminCertificateEnabled } from '../utils/giftCertificateEngine';
 import { getTranslation } from '../utils/i18n';
@@ -84,6 +85,7 @@ interface AdminDashboardModalProps {
   onUpdateActivityLogs?: (next: ActivityLogEntry[]) => void;
   onChangePreviewRole: (role: 'actual' | 'free_user' | 'pro_user') => void;
   onPreviewBanScreen?: (mode: 'account' | 'network') => void;
+  onOpenWindowsInstaller?: () => void;
   initialTab?: AdminDashboardTabId;
 }
 
@@ -97,6 +99,7 @@ export default function AdminDashboardModal({
   onUpdateActivityLogs,
   onChangePreviewRole,
   onPreviewBanScreen,
+  onOpenWindowsInstaller,
   initialTab = 'users',
 }: AdminDashboardModalProps) {
   const [activeTab, setActiveTab] = useState<AdminDashboardTabId>(initialTab);
@@ -1620,6 +1623,33 @@ export default function AdminDashboardModal({
                 <span>{isAr ? 'التحكم في أزرار ومزايا الموقع' : 'Navbar Features Control'}</span>
               </button>
             )}
+
+            {/* Admin-Only Windows Offline Installer Shortcut */}
+            {onOpenWindowsInstaller &&
+              canDownloadWindowsInstaller(currentUser, state.adminPreviewRole) && (
+                <button
+                  type="button"
+                  id="adminDashWindowsInstallerBtn"
+                  onClick={onOpenWindowsInstaller}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '10px',
+                    border: '1px solid rgba(124, 92, 255, 0.7)',
+                    background: 'linear-gradient(135deg, #6d28d9 0%, #4338ca 100%)',
+                    color: '#fff',
+                    fontWeight: 800,
+                    fontSize: '12.5px',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 14px rgba(109, 40, 217, 0.35)',
+                  }}
+                >
+                  <span>⬇️</span>
+                  <span>{isAr ? 'نسخة ويندوز أوفلاين' : 'Windows Offline App'}</span>
+                </button>
+              )}
 
             {/* Toggle Gift Authentication Certificate Open / Closed Button */}
             <button

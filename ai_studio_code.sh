@@ -1,0 +1,1 @@
+npm install lucide-react svga.lite pako protobufjs jszip upng-js

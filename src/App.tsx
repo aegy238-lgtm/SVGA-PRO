@@ -27,7 +27,6 @@ import BatchImageModal from './components/BatchImageModal';
 import WatermarkModal from './components/WatermarkModal';
 import GiftImageCreator from './components/GiftImageCreator';
 import GoldNameDesignerStudio from './components/GoldNameDesignerStudio';
-import Name3DStudio from './components/Name3DStudio';
 import { AiGiftFinderStudio } from './components/AiGiftFinderStudio';
 import SiteClosedScreen from './components/SiteClosedScreen';
 import ProjectComposerPanel from './components/ProjectComposerPanel';
@@ -99,8 +98,12 @@ import {
   isNavbarFeatureVisibleToUser,
   isNavbarFeatureHiddenFromRegularUsers,
   getFirstVisibleNavbarView,
+  canDownloadWindowsInstaller,
 } from './utils/platformStore';
+import WindowsInstallerModal from './components/WindowsInstallerModal';
 import { getTranslation } from './utils/i18n';
+import { usePWAInstall } from './hooks/usePWAInstall';
+import { initOsFileLaunchBridge } from './utils/osFileLaunch';
 import {
   testFirebaseConnection,
   syncSettingsToFirestore,
@@ -151,12 +154,14 @@ export default function App() {
   const hasAdminAccess = canAccessAdminDashboard(currentUser);
   const isSuperAdmin = isSuperAdminUser(currentUser);
   const canCaptureScreen = canUserCaptureScreen(currentUser, adminPreviewRole);
+  const canDownloadWindowsApp = canDownloadWindowsInstaller(currentUser, adminPreviewRole);
 
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<AdminDashboardTabId>('users');
   const [authOpen, setAuthOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [proModalOpen, setProModalOpen] = useState(false);
+  const [windowsInstallerOpen, setWindowsInstallerOpen] = useState(false);
   const [blockedFormatKey, setBlockedFormatKey] = useState('svga');
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [screenShieldActive, setScreenShieldActive] = useState(false);
@@ -166,6 +171,9 @@ export default function App() {
   const [navMenuOpen, setNavMenuOpen] = useState<boolean>(false);
   const [certModalOpen, setCertModalOpen] = useState<boolean>(false);
   const [certModalInitialId, setCertModalInitialId] = useState<string | undefined>(undefined);
+  const [osOpenedFileToast, setOsOpenedFileToast] = useState<string | null>(null);
+  const [iosInstallHintOpen, setIosInstallHintOpen] = useState<boolean>(false);
+  const pwaInstall = usePWAInstall();
   const [previewBlockMode, setPreviewBlockMode] = useState<'account' | 'network' | null>(null);
   const clientNetworkId = getClientNetworkId();
   const accessBlock = evaluatePlatformAccessBlock({
@@ -190,9 +198,17 @@ export default function App() {
   };
 
   useEffect(() => {
-    const cleanTitle = sanitizeSiteName(platformState.settings.siteName, 'MotionTools');
-    document.title = `${cleanTitle} — SVGA, VAP, YYEVA & Motion Converter`;
-    const cleanLogo = sanitizeSiteLogoUrl(platformState.settings.siteLogoUrl);
+    const desktopBranding =
+      typeof window !== 'undefined' ? (window as any).__MOTIONTOOLS_DESKTOP_BRANDING__ : null;
+    const cleanTitle =
+      desktopBranding?.appName || sanitizeSiteName(platformState.settings.siteName, 'MotionTools');
+    document.title = desktopBranding?.version
+      ? `${cleanTitle} v${desktopBranding.version} — ${desktopBranding.brandTitle || PLATFORM_BRAND_NAME_AR}`
+      : `${cleanTitle} — SVGA, VAP, YYEVA & Motion Converter`;
+    const cleanLogo =
+      desktopBranding?.hasCustomAppLogo && desktopBranding?.appLogoPath
+        ? desktopBranding.appLogoPath
+        : sanitizeSiteLogoUrl(platformState.settings.siteLogoUrl);
     if (cleanLogo && typeof document !== 'undefined') {
       let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
       if (!link) {
@@ -255,6 +271,32 @@ export default function App() {
     return () => {
       window.removeEventListener('opencomposermaskstab', onOpenMasksTab);
       if ((window as any).__openComposerMenu) delete (window as any).__openComposerMenu;
+    };
+  }, []);
+
+  // OS File-Association & PWA Launch Bridge (Windows & Android):
+  // Automatically switches to primary preview (#convert) and plays any clicked/shared file.
+  useEffect(() => {
+    let toastTimer: number | null = null;
+    const cleanup = initOsFileLaunchBridge({
+      onActivatePrimaryView: () => {
+        setActiveView('convert');
+        setAdminOpen(false);
+        setAuthOpen(false);
+        setNotifOpen(false);
+        setNavMenuOpen(false);
+      },
+      onFileOpened: (fileName) => {
+        setOsOpenedFileToast(fileName);
+        if (toastTimer) window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => {
+          setOsOpenedFileToast(null);
+        }, 4200);
+      },
+    });
+    return () => {
+      cleanup();
+      if (toastTimer) window.clearTimeout(toastTimer);
     };
   }, []);
 
@@ -1495,8 +1537,15 @@ export default function App() {
     isAr ? settings.whatsappDefaultMsgAr : settings.whatsappDefaultMsgEn
   );
 
-  const safeNavbarLogoUrl = sanitizeSiteLogoUrl(settings.siteLogoUrl);
-  const safeNavbarSiteName = sanitizeSiteName(settings.siteName, 'MotionTools');
+  const desktopBranding =
+    typeof window !== 'undefined' ? (window as any).__MOTIONTOOLS_DESKTOP_BRANDING__ : null;
+  const safeNavbarLogoUrl =
+    desktopBranding?.hasCustomAppLogo && desktopBranding?.appLogoPath
+      ? desktopBranding.appLogoPath
+      : sanitizeSiteLogoUrl(settings.siteLogoUrl);
+  const safeNavbarSiteName = desktopBranding?.appName
+    ? sanitizeSiteName(desktopBranding.appName, 'MotionTools')
+    : sanitizeSiteName(settings.siteName, 'MotionTools');
 
   return (
     <>
@@ -1693,34 +1742,6 @@ export default function App() {
                   {renderAdminHiddenBadge('gold-designer')}
                 </a>
                 <a
-                  data-v="name3d-studio"
-                  id="name3dStudioNavBtn"
-                  style={{
-                    padding: '3px 9px',
-                    borderRadius: '7px',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.16), #14141c)',
-                    border: '1px solid rgba(245, 158, 11, 0.5)',
-                    color: '#fde047',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap',
-                    transition: 'border-color 0.15s ease, color 0.15s ease',
-                  }}
-                >
-                  <span dir={isAr ? 'rtl' : 'ltr'}>
-                    {isAr ? (
-                      <>
-                        مصمم الأسماء ثلاثي الأبعاد <bdi>3D</bdi>
-                      </>
-                    ) : (
-                      '3D Name Designer'
-                    )}
-                  </span>
-                </a>
-                <a
                   data-v="gift-finder"
                   id="aiGiftFinderNavBtn"
                   hidden={!isGiftFinderVisible}
@@ -1775,7 +1796,7 @@ export default function App() {
         </div>
 
         <div className="nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-          {/* Consolidated Single Quick-Actions Menu Button (Admin Dashboard, Subscribe, WhatsApp, Language) */}
+          {/* Consolidated Single Quick-Actions Menu Button (Admin Dashboard, Windows Offline Installer, Subscribe, WhatsApp, Language) */}
           <div
             id="navQuickActionsContainer"
             style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
@@ -1882,6 +1903,73 @@ export default function App() {
                     >
                       <span>{isSuperAdmin ? '⚙️' : '🛡️'}</span>
                       <span>{t.navAdminDashboard}</span>
+                    </button>
+                  )}
+
+                  {/* 1b. Admin-Only Windows Offline Installer Menu Button */}
+                  {canDownloadWindowsApp && (
+                    <button
+                      type="button"
+                      id="windowsInstallerMenuBtn"
+                      onClick={() => {
+                        setNavMenuOpen(false);
+                        setWindowsInstallerOpen(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '10px',
+                        border: '1px solid rgba(124, 92, 255, 0.55)',
+                        background: 'rgba(124, 92, 255, 0.14)',
+                        color: '#ddd6fe',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        textAlign: 'start',
+                      }}
+                    >
+                      <span>💻</span>
+                      <span>{isAr ? 'تنزيل مثبت ويندوز (أوفلاين)' : 'Windows Offline Installer'}</span>
+                    </button>
+                  )}
+
+                  {/* 1c. Install App (PWA on Windows & Android/iOS) */}
+                  {(pwaInstall.isInstallable || pwaInstall.isIOS) && !pwaInstall.isInstalled && (
+                    <button
+                      type="button"
+                      id="pwaInstallMenuBtn"
+                      onClick={async () => {
+                        setNavMenuOpen(false);
+                        if (pwaInstall.isInstallable) {
+                          await pwaInstall.install();
+                        } else if (pwaInstall.isIOS) {
+                          setIosInstallHintOpen(true);
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '10px',
+                        border: '1px solid rgba(56, 189, 248, 0.5)',
+                        background:
+                          'linear-gradient(135deg, rgba(14, 165, 233, 0.18), rgba(59, 130, 246, 0.12))',
+                        color: '#bae6fd',
+                        fontSize: '12px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        textAlign: 'start',
+                      }}
+                    >
+                      <span>📲</span>
+                      <span>
+                        {isAr ? 'تثبيت التطبيق على الجهاز' : 'Install App (Windows / Mobile)'}
+                      </span>
                     </button>
                   )}
 
@@ -3043,7 +3131,7 @@ export default function App() {
 
         <section className="view view-full" id="gifts">
           <iframe
-            src={`/gifts-studio.html?v=pag_fix_13&lang=${platformState.language}`}
+            src={`./gifts-studio.html?v=pag_fix_13&lang=${platformState.language}`}
             id="giftsStudioFrame"
             title={isAr ? 'استوديو الهدايا' : 'Gift Files Studio'}
             onLoad={(e) => {
@@ -3100,10 +3188,6 @@ export default function App() {
           />
         </section>
 
-        <section className="view view-full" id="name3d-studio">
-          <Name3DStudio isAr={isAr} isActive={activeView === 'name3d-studio'} />
-        </section>
-
         <section className="view view-full" id="gift-finder">
           <AiGiftFinderStudio isAr={isAr} />
         </section>
@@ -3155,7 +3239,7 @@ export default function App() {
       {/* Headless Bridge for Direct After Effects Script & Package Export */}
       <iframe
         id="aeScriptHiddenBridge"
-        src="/svga-to-after-effects.html"
+        src="./svga-to-after-effects.html"
         style={{
           position: 'fixed',
           left: '-9999px',
@@ -3276,7 +3360,143 @@ export default function App() {
           setAdminOpen(false);
           setPreviewBlockMode(mode);
         }}
+        onOpenWindowsInstaller={
+          canDownloadWindowsApp
+            ? () => {
+                setAdminOpen(false);
+                setWindowsInstallerOpen(true);
+              }
+            : undefined
+        }
       />
+
+      {/* Admin-Only Windows Offline Installer Modal */}
+      {canDownloadWindowsApp && (
+        <WindowsInstallerModal
+          open={windowsInstallerOpen}
+          onClose={() => setWindowsInstallerOpen(false)}
+          currentUser={currentUser}
+          adminPreviewRole={adminPreviewRole}
+          settings={settings}
+          isAr={isAr}
+        />
+      )}
+
+      {/* Instant Auto-Open File Toast (Windows / Android File Association Launch) */}
+      {osOpenedFileToast && (
+        <div
+          id="osFileLaunchToast"
+          role="status"
+          dir={isAr ? 'rtl' : 'ltr'}
+          style={{
+            position: 'fixed',
+            bottom: '20px',
+            insetInlineEnd: '20px',
+            zIndex: 1200,
+            maxWidth: '340px',
+            padding: '10px 14px',
+            borderRadius: '12px',
+            border: '1px solid rgba(124, 92, 255, 0.65)',
+            background: 'rgba(12, 11, 20, 0.96)',
+            color: '#f8fafc',
+            boxShadow: '0 14px 36px rgba(0, 0, 0, 0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '12.5px',
+            fontWeight: 700,
+          }}
+        >
+          <span style={{ fontSize: '16px' }}>🎬</span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ color: '#a78bfa', fontSize: '11px', marginBottom: '2px' }}>
+              {isAr ? 'تم فتح الملف تلقائياً في العرض الأول' : 'File auto-opened in primary preview'}
+            </div>
+            <div
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                direction: 'ltr',
+                textAlign: isAr ? 'right' : 'left',
+              }}
+            >
+              {osOpenedFileToast}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOsOpenedFileToast(null)}
+            aria-label="Close"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#94a3b8',
+              cursor: 'pointer',
+              fontSize: '14px',
+              padding: '2px 4px',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* iOS Safari Add-to-Home-Screen Hint Modal */}
+      {iosInstallHintOpen && (
+        <div
+          onClick={() => setIosInstallHintOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1300,
+            background: 'rgba(2, 6, 23, 0.72)',
+            display: 'grid',
+            placeItems: 'center',
+            padding: '16px',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            dir={isAr ? 'rtl' : 'ltr'}
+            style={{
+              maxWidth: '380px',
+              width: '100%',
+              background: '#0f101a',
+              border: '1px solid rgba(56, 189, 248, 0.45)',
+              borderRadius: '16px',
+              padding: '18px',
+              color: '#f8fafc',
+              boxShadow: '0 20px 48px rgba(0, 0, 0, 0.75)',
+            }}
+          >
+            <div style={{ fontSize: '15px', fontWeight: 800, marginBottom: '8px', color: '#bae6fd' }}>
+              {isAr ? 'تثبيت التطبيق على iPhone / iPad' : 'Install App on iOS'}
+            </div>
+            <p style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: 1.7, margin: '0 0 14px' }}>
+              {isAr
+                ? 'اضغط على زر المشاركة (Share) في شريط متصفح Safari ثم اختر "إضافة إلى الشاشة الرئيسية" (Add to Home Screen).'
+                : 'Tap the Share button in Safari, then select "Add to Home Screen".'}
+            </p>
+            <button
+              type="button"
+              onClick={() => setIosInstallHintOpen(false)}
+              style={{
+                width: '100%',
+                padding: '9px',
+                borderRadius: '10px',
+                border: 'none',
+                background: '#7c5cff',
+                color: '#fff',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              {isAr ? 'حسناً' : 'Got it'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Site Closed Full-Screen Overlay for Non-Admin Users & Visitors */}
       {settings.isSiteClosed && !hasAdminAccess && !accessBlock.blocked && (

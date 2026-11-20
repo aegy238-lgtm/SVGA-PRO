@@ -1,0 +1,1 @@
+npm install lucide-react motion pako protobufjs

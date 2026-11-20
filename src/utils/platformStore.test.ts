@@ -41,6 +41,8 @@ import {
   isNavbarFeatureVisibleToUser,
   isNavbarFeatureHiddenFromRegularUsers,
   getFirstVisibleNavbarView,
+  canDownloadWindowsInstaller,
+  verifyWindowsDownloadPassword,
   type UserAccount,
 } from './platformStore.ts';
 
@@ -648,5 +650,49 @@ test('Navbar feature visibility & 4 access modes: hide/show single feature for u
     assert.equal(isNavbarFeatureHiddenFromRegularUsers(viewId, settingsAllVisible), false);
   }
 });
+
+test('canDownloadWindowsInstaller is strictly restricted to active Admin accounts only', () => {
+  const freeUser = INITIAL_USERS.find((u) => !u.isPro && u.role === 'user')!;
+  const proUser = INITIAL_USERS.find((u) => u.isPro && u.role === 'user')!;
+  const superAdmin = INITIAL_SUPER_ADMIN_ACCOUNT;
+
+  // Guests, Free users, and Pro users NEVER see the Windows download button
+  assert.equal(canDownloadWindowsInstaller(null, 'actual'), false);
+  assert.equal(canDownloadWindowsInstaller(undefined, 'actual'), false);
+  assert.equal(canDownloadWindowsInstaller(freeUser, 'actual'), false);
+  assert.equal(canDownloadWindowsInstaller(proUser, 'actual'), false);
+
+  // Active Super Admin sees it only in actual mode, hidden when previewing as regular users
+  assert.equal(canDownloadWindowsInstaller(superAdmin, 'actual'), true);
+  assert.equal(canDownloadWindowsInstaller(superAdmin, 'free_user'), false);
+  assert.equal(canDownloadWindowsInstaller(superAdmin, 'pro_user'), false);
+
+  // Delegated Admin sees it when unbanned and active, hidden if banned or revoked
+  const subAdmin: UserAccount = {
+    id: 'usr_sub_win',
+    name: 'Admin Mod',
+    email: 'mod@example.com',
+    role: 'admin',
+    adminPermissions: ['manage_users'],
+    isPro: true,
+    createdAt: '2026-10-25T00:00:00.000Z',
+  };
+  assert.equal(canDownloadWindowsInstaller(subAdmin, 'actual'), true);
+  assert.equal(canDownloadWindowsInstaller({ ...subAdmin, isBanned: true }, 'actual'), false);
+  assert.equal(canDownloadWindowsInstaller({ ...subAdmin, role: 'user', adminPermissions: [] }, 'actual'), false);
+});
+
+test('verifyWindowsDownloadPassword validates 150 150 150 / 150150150 and rejects invalid inputs', () => {
+  assert.equal(verifyWindowsDownloadPassword('150150150'), true);
+  assert.equal(verifyWindowsDownloadPassword('150 150 150'), true);
+  assert.equal(verifyWindowsDownloadPassword('  150  150  150  '), true);
+  assert.equal(verifyWindowsDownloadPassword(''), false);
+  assert.equal(verifyWindowsDownloadPassword('150'), false);
+  assert.equal(verifyWindowsDownloadPassword('150150'), false);
+  assert.equal(verifyWindowsDownloadPassword('150 150 151'), false);
+  assert.equal(verifyWindowsDownloadPassword('123456'), false);
+});
+
+
 
 
